@@ -104,14 +104,14 @@ func accumStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsa
 	}
 }
 
-func scrambleAcc(acc *[accNB]uint64, sec unsafe.Pointer) {
+func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int) {
 	switch backend {
 	case backendAVX512:
-		scrambleAVX512(acc, sec)
+		accumBlocksAVX512(acc, in, nbStripes, sec, secretLimit, soFar)
 	case backendAVX2:
-		scrambleAVX2(acc, sec)
+		accumBlocksAVX2(acc, in, nbStripes, sec, secretLimit, soFar)
 	default:
-		scrambleSSE2(acc, sec)
+		accumBlocksSSE2(acc, in, nbStripes, sec, secretLimit, soFar)
 	}
 }
 

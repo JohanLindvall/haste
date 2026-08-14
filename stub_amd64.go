@@ -14,42 +14,42 @@ import "unsafe"
 //go:noescape
 func hashLongSSE2(acc *[8]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
 
-// accumSSE2 absorbs nbStripes consecutive stripes, for the streaming path.
+// accumBlocksSSE2 absorbs nbStripes stripes starting soFar stripes into the current block, scrambling at every block boundary it crosses.
+//
+//go:noescape
+func accumBlocksSSE2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int)
+
+// accumSSE2 absorbs nbStripes consecutive stripes against one secret position, with no scramble.
 //
 //go:noescape
 func accumSSE2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer)
-
-// scrambleSSE2 applies the between-blocks accumulator scramble.
-//
-//go:noescape
-func scrambleSSE2(acc *[8]uint64, sec unsafe.Pointer)
 
 // hashLongAVX2 consumes a whole long input: blocks, scrambles, trailing stripes and the overlapping final stripe.
 //
 //go:noescape
 func hashLongAVX2(acc *[8]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
 
-// accumAVX2 absorbs nbStripes consecutive stripes, for the streaming path.
+// accumBlocksAVX2 absorbs nbStripes stripes starting soFar stripes into the current block, scrambling at every block boundary it crosses.
+//
+//go:noescape
+func accumBlocksAVX2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int)
+
+// accumAVX2 absorbs nbStripes consecutive stripes against one secret position, with no scramble.
 //
 //go:noescape
 func accumAVX2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer)
-
-// scrambleAVX2 applies the between-blocks accumulator scramble.
-//
-//go:noescape
-func scrambleAVX2(acc *[8]uint64, sec unsafe.Pointer)
 
 // hashLongAVX512 consumes a whole long input: blocks, scrambles, trailing stripes and the overlapping final stripe.
 //
 //go:noescape
 func hashLongAVX512(acc *[8]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
 
-// accumAVX512 absorbs nbStripes consecutive stripes, for the streaming path.
+// accumBlocksAVX512 absorbs nbStripes stripes starting soFar stripes into the current block, scrambling at every block boundary it crosses.
+//
+//go:noescape
+func accumBlocksAVX512(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int)
+
+// accumAVX512 absorbs nbStripes consecutive stripes against one secret position, with no scramble.
 //
 //go:noescape
 func accumAVX512(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer)
-
-// scrambleAVX512 applies the between-blocks accumulator scramble.
-//
-//go:noescape
-func scrambleAVX512(acc *[8]uint64, sec unsafe.Pointer)

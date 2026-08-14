@@ -6,9 +6,9 @@ package asmgen
 //
 // The three entry points mirror dispatch.go in the parent package:
 //
-//	hashLong<B>(acc *[8]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
-//	accum<B>(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer)
-//	scramble<B>(acc *[8]uint64, sec unsafe.Pointer)
+//	hashLong<B>(acc, in, n, sec, secretLimit)          one-shot, whole input
+//	accumBlocks<B>(acc, in, nbStripes, sec, secretLimit, soFar)   streaming
+//	accum<B>(acc, in, nbStripes, sec)                  one run, no scramble
 
 // Funcs returns the three function definitions a backend generates, in the
 // order EmitAll emits them.
@@ -20,14 +20,14 @@ func Funcs(suffix string) []FuncDef {
 			Doc:  "consumes a whole long input: blocks, scrambles, trailing stripes and the overlapping final stripe",
 		},
 		{
-			Name: "accum" + suffix,
-			Args: []string{"acc", "in", "nbStripes", "sec"},
-			Doc:  "absorbs nbStripes consecutive stripes, for the streaming path",
+			Name: "accumBlocks" + suffix,
+			Args: []string{"acc", "in", "nbStripes", "sec", "secretLimit", "soFar"},
+			Doc:  "absorbs nbStripes stripes starting soFar stripes into the current block, scrambling at every block boundary it crosses",
 		},
 		{
-			Name: "scramble" + suffix,
-			Args: []string{"acc", "sec"},
-			Doc:  "applies the between-blocks accumulator scramble",
+			Name: "accum" + suffix,
+			Args: []string{"acc", "in", "nbStripes", "sec"},
+			Doc:  "absorbs nbStripes consecutive stripes against one secret position, with no scramble",
 		},
 	}
 }
@@ -36,8 +36,8 @@ func Funcs(suffix string) []FuncDef {
 func EmitAll(new func() Arch) []Arch {
 	return []Arch{
 		emit(new(), emitHashLong),
+		emit(new(), emitAccumBlocks),
 		emit(new(), emitAccum),
-		emit(new(), emitScramble),
 	}
 }
 
@@ -127,11 +127,64 @@ func emitAccum(a Arch) {
 	a.Finish()
 }
 
-func emitScramble(a Arch) {
-	acc, sec := a.ArgGPR(0), a.ArgGPR(1)
+// emitAccumBlocks is the streaming path's outer step. It exists because the
+// alternative -- letting Go drive one call per block -- pays to load, fold and
+// store the accumulators at every 1 KiB boundary, which measured out at 9% of
+// a large single Write and considerably more when the caller writes in small
+// pieces.
+//
+// The caller works out the new position within the block itself: it advances
+// by nbStripes and wraps, which needs no return value.
+func emitAccumBlocks(a Arch) {
+	b := a.Build()
+	acc, in, left, sec := a.ArgGPR(0), a.ArgGPR(1), a.ArgGPR(2), a.ArgGPR(3)
+	lim, soFar := a.ArgGPR(4), a.ArgGPR(5)
+	nspb, s, k, cnt, tmp := a.TmpGPR(0), a.TmpGPR(1), a.TmpGPR(2), a.TmpGPR(3), a.TmpGPR(4)
+
 	a.Setup()
 	a.LoadAcc(acc)
-	a.Scramble(sec, 0)
+
+	a.MovRR(nspb, lim)
+	a.ShrRI(nspb, 3)
+
+	// The first run is however much of the current block is left; every run
+	// after a scramble is a whole block.
+	a.MovRR(s, soFar)
+	a.ShlRI(s, 3)
+	a.AddRR(s, sec)
+	a.MovRR(k, nspb)
+	a.SubRR(k, soFar)
+
+	loop, done := b.NewLabel("blocks"), b.NewLabel("bdone")
+	b.Label(loop)
+	a.BranchI(left, 0, LE, done)
+	{
+		// cnt = min(k, left)
+		a.MovRR(cnt, k)
+		skip := b.NewLabel("min")
+		a.BranchR(cnt, left, LE, skip)
+		a.MovRR(cnt, left)
+		b.Label(skip)
+
+		a.SubRR(left, cnt)
+		a.MovRR(tmp, cnt)
+		emitStripeLoop(a, in, s, cnt)
+
+		// Anything short of the whole run means the input ran out first.
+		a.BranchR(tmp, k, NE, done)
+
+		a.Materialize()
+		a.MovRR(tmp, sec)
+		a.AddRR(tmp, lim)
+		a.Scramble(tmp, 0)
+
+		a.MovRR(s, sec)
+		a.MovRR(k, nspb)
+		a.Jmp(loop)
+	}
+	b.Label(done)
+
+	a.Materialize()
 	a.StoreAcc(acc)
 	a.Finish()
 }

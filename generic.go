@@ -438,6 +438,30 @@ func hashLongGeneric(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Po
 		add(sec, uintptr(secretLimit-secretLastAccStart)))
 }
 
+// accumBlocksGeneric absorbs nbStripes stripes starting soFar stripes into the
+// current block, scrambling at every boundary it crosses. It is the portable
+// form of the streaming kernel; see the comment on emitAccumBlocks for why the
+// block walk lives below the dispatch boundary rather than above it.
+func accumBlocksGeneric(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int) {
+	nbStripesPerBlock := secretLimit / secretConsumeRate
+	s := add(sec, uintptr(soFar*secretConsumeRate))
+	k := nbStripesPerBlock - soFar
+	for nbStripes > 0 {
+		cnt := k
+		if cnt > nbStripes {
+			cnt = nbStripes
+		}
+		accumulateGeneric(acc, in, s, cnt)
+		in = add(in, uintptr(cnt*stripeLen))
+		nbStripes -= cnt
+		if cnt != k {
+			return
+		}
+		scrambleGeneric(acc, add(sec, uintptr(secretLimit)))
+		s, k = sec, nbStripesPerBlock
+	}
+}
+
 // mix2Accs folds an accumulator pair through the 128-bit multiply.
 func mix2Accs(acc *[accNB]uint64, i uintptr, sec unsafe.Pointer) uint64 {
 	return mul128Fold64(acc[i]^rd64(sec, 0), acc[i+1]^rd64(sec, 8))

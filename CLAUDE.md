@@ -26,9 +26,14 @@ Everything architecture-specific is behind exactly these:
 
 ```go
 hashLong(acc, in, n, sec, secretLimit)   // whole long input: blocks, scrambles, final stripe
-accumStripes(acc, in, nbStripes, sec)    // a run of stripes, for streaming
-scrambleAcc(acc, sec)                    // the between-blocks step
+accumBlocks(acc, in, nbStripes, sec, secretLimit, soFar)  // streaming: walks block boundaries
+accumStripes(acc, in, nbStripes, sec)    // one run, one secret position, no scramble
 ```
+
+`accumBlocks` exists because driving the block walk from Go costs a load, fold
+and store of the accumulators at every 1 KiB boundary: 12% of a large single
+Write. It takes the position within the current block and does not report the
+new one, because the caller can derive it — advance by nbStripes and wrap.
 
 `secretLimit` is `len(secret) - 64`, **not** `nbStripesPerBlock * 8`. They
 differ when the secret length is not a multiple of 8, and the reference uses
@@ -119,6 +124,12 @@ Measured on Neoverse N2 (2 vector pipes, 3.4 GHz):
   ~4.5 cycles/stripe against ~4 for the current kernel — a regression that
   cannot be measured on this hardware. Left out deliberately. Revisit with
   access to a wide arm64 core.
+- Streaming with small writes is copy-bound, not kernel-bound: a 1 KiB Write
+  copies ~320 bytes (buffer top-up, parked final stripe, remainder) against
+  1024 bytes hashed. A design keeping a 64-byte rolling tail and a sub-stripe
+  carry instead of the reference's 256-byte staging buffer would cut that to
+  ~127, worth an estimated 5%. Not done; the buffer layout currently mirrors
+  the reference, which makes it easy to check against.
 - Go's inliner budget (80) drives several structural choices: the public
   entry points are thin so they inline; the 0..16-byte cases live inside
   `sum64`/`sum128` rather than in their own functions; `mixHalf` takes its

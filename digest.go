@@ -152,22 +152,16 @@ func (d *Digest) write(p []byte) {
 // consumeStripes runs nbStripes stripes through acc, scrambling at each block
 // boundary. acc and soFar are parameters rather than fields because Sum64 must
 // run this over a copy of both.
+//
+// The whole run is one call: the kernel walks the block boundaries itself, so
+// the accumulators stay in registers across them. Where they end up within the
+// block follows from the count, so nothing has to come back.
 func (d *Digest) consumeStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, soFar *int) {
-	sec := d.secretPtr()
-	for nbStripes > 0 {
-		n := d.nbStripesPerBlock - *soFar
-		if n > nbStripes {
-			n = nbStripes
-		}
-		accumStripes(acc, in, n, add(sec, uintptr(*soFar*secretConsumeRate)))
-		*soFar += n
-		if *soFar == d.nbStripesPerBlock {
-			scrambleAcc(acc, add(sec, uintptr(d.secretLimit)))
-			*soFar = 0
-		}
-		in = add(in, uintptr(n*stripeLen))
-		nbStripes -= n
+	if nbStripes == 0 {
+		return
 	}
+	accumBlocks(acc, in, nbStripes, d.secretPtr(), d.secretLimit, *soFar)
+	*soFar = (*soFar + nbStripes) % d.nbStripesPerBlock
 }
 
 // digestLong finishes a long input on a copy of the accumulators, so that the

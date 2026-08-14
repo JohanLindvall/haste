@@ -40,8 +40,11 @@ var x86GPRNames = map[GPR]string{
 // Go's amd64 ABI keeps R14 for the goroutine pointer, R15 for dynamic linking
 // and X15 as a zero register, so none of them appear above or in the vector
 // pools below.
-var x86ArgGPR = []GPR{rDI, rSI, rDX, rCX, r8}
-var x86TmpGPR = []GPR{r9, r10, r11, r12, r13, rBX}
+var x86ArgGPR = []GPR{rDI, rSI, rDX, rCX, r8, r9}
+
+// rAX is last: Setup uses it to stage the broadcast constant, and does so
+// before any kernel has a temporary live.
+var x86TmpGPR = []GPR{r10, r11, r12, r13, rBX, rAX}
 
 type x86 struct {
 	b      *Builder

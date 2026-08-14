@@ -89,11 +89,15 @@ func simAccum(t *testing.T, k asmgen.Arch, acc *[accNB]uint64, in, sec []byte, n
 	*acc = r.acc()
 }
 
-func simScramble(t *testing.T, k asmgen.Arch, acc *[accNB]uint64, sec []byte) {
+func simAccumBlocks(t *testing.T, k asmgen.Arch, acc *[accNB]uint64, in, sec []byte, nbStripes, soFar int) {
 	t.Helper()
-	r := newSimRegion(acc, nil, sec)
+	r := newSimRegion(acc, in, sec)
 	r.m.R[k.ArgGPR(0)] = r.accAt
-	r.m.R[k.ArgGPR(1)] = r.secAt
+	r.m.R[k.ArgGPR(1)] = r.inAt
+	r.m.R[k.ArgGPR(2)] = uint64(nbStripes)
+	r.m.R[k.ArgGPR(3)] = r.secAt
+	r.m.R[k.ArgGPR(4)] = uint64(len(sec) - stripeLen)
+	r.m.R[k.ArgGPR(5)] = uint64(soFar)
 	if err := r.m.Run(k.Build().Insts()); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +120,7 @@ func TestSimulatedBackends(t *testing.T) {
 		b := b
 		t.Run(b.Name, func(t *testing.T) {
 			kernels := asmgen.EmitAll(b.New)
-			hashLongK, accumK, scrambleK := kernels[0], kernels[1], kernels[2]
+			hashLongK, blocksK, accumK := kernels[0], kernels[1], kernels[2]
 
 			for _, n := range simLengths {
 				in := buf[:n]
@@ -155,11 +159,20 @@ func TestSimulatedBackends(t *testing.T) {
 				}
 			}
 
-			got, want := initAcc, initAcc
-			scrambleGeneric(&want, unsafe.Pointer(&kSecret[secretDefaultSize-stripeLen]))
-			simScramble(t, scrambleK, &got, sec[secretDefaultSize-stripeLen:])
-			if got != want {
-				t.Fatalf("scramble:\n got %v\nwant %v", got, want)
+			// accumBlocks has to scramble at exactly the boundaries the
+			// portable walk does, from any starting position in the block.
+			for _, soFar := range []int{0, 1, 7, 15} {
+				for _, stripes := range []int{1, 2, 9, 15, 16, 17, 31, 32, 33, 48} {
+					in := buf[:stripeLen*stripes]
+					got, want := initAcc, initAcc
+					accumBlocksGeneric(&want, unsafe.Pointer(&in[0]), stripes,
+						unsafe.Pointer(&kSecret), secretDefaultSize-stripeLen, soFar)
+					simAccumBlocks(t, blocksK, &got, in, sec, stripes, soFar)
+					if got != want {
+						t.Fatalf("accumBlocks soFar=%d stripes=%d:\n got %v\nwant %v",
+							soFar, stripes, got, want)
+					}
+				}
 			}
 		})
 	}

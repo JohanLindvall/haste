@@ -181,7 +181,7 @@ type Function struct {
 func (f Function) Decl() string {
 	types := map[string]string{
 		"acc": "*[8]uint64", "in": "unsafe.Pointer", "sec": "unsafe.Pointer",
-		"n": "int", "nbStripes": "int", "secretLimit": "int",
+		"n": "int", "nbStripes": "int", "secretLimit": "int", "soFar": "int",
 	}
 	var args []string
 	for _, a := range f.Def.Args {

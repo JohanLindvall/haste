@@ -14,57 +14,57 @@ import "unsafe"
 //go:noescape
 func hashLongNEON(acc *[8]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
 
-// accumNEON absorbs nbStripes consecutive stripes, for the streaming path.
+// accumBlocksNEON absorbs nbStripes stripes starting soFar stripes into the current block, scrambling at every block boundary it crosses.
+//
+//go:noescape
+func accumBlocksNEON(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int)
+
+// accumNEON absorbs nbStripes consecutive stripes against one secret position, with no scramble.
 //
 //go:noescape
 func accumNEON(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer)
-
-// scrambleNEON applies the between-blocks accumulator scramble.
-//
-//go:noescape
-func scrambleNEON(acc *[8]uint64, sec unsafe.Pointer)
 
 // hashLongSVE2VL128 consumes a whole long input: blocks, scrambles, trailing stripes and the overlapping final stripe.
 //
 //go:noescape
 func hashLongSVE2VL128(acc *[8]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
 
-// accumSVE2VL128 absorbs nbStripes consecutive stripes, for the streaming path.
+// accumBlocksSVE2VL128 absorbs nbStripes stripes starting soFar stripes into the current block, scrambling at every block boundary it crosses.
+//
+//go:noescape
+func accumBlocksSVE2VL128(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int)
+
+// accumSVE2VL128 absorbs nbStripes consecutive stripes against one secret position, with no scramble.
 //
 //go:noescape
 func accumSVE2VL128(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer)
-
-// scrambleSVE2VL128 applies the between-blocks accumulator scramble.
-//
-//go:noescape
-func scrambleSVE2VL128(acc *[8]uint64, sec unsafe.Pointer)
 
 // hashLongSVE2VL256 consumes a whole long input: blocks, scrambles, trailing stripes and the overlapping final stripe.
 //
 //go:noescape
 func hashLongSVE2VL256(acc *[8]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
 
-// accumSVE2VL256 absorbs nbStripes consecutive stripes, for the streaming path.
+// accumBlocksSVE2VL256 absorbs nbStripes stripes starting soFar stripes into the current block, scrambling at every block boundary it crosses.
+//
+//go:noescape
+func accumBlocksSVE2VL256(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int)
+
+// accumSVE2VL256 absorbs nbStripes consecutive stripes against one secret position, with no scramble.
 //
 //go:noescape
 func accumSVE2VL256(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer)
-
-// scrambleSVE2VL256 applies the between-blocks accumulator scramble.
-//
-//go:noescape
-func scrambleSVE2VL256(acc *[8]uint64, sec unsafe.Pointer)
 
 // hashLongSVE2VL512 consumes a whole long input: blocks, scrambles, trailing stripes and the overlapping final stripe.
 //
 //go:noescape
 func hashLongSVE2VL512(acc *[8]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
 
-// accumSVE2VL512 absorbs nbStripes consecutive stripes, for the streaming path.
+// accumBlocksSVE2VL512 absorbs nbStripes stripes starting soFar stripes into the current block, scrambling at every block boundary it crosses.
+//
+//go:noescape
+func accumBlocksSVE2VL512(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int)
+
+// accumSVE2VL512 absorbs nbStripes consecutive stripes against one secret position, with no scramble.
 //
 //go:noescape
 func accumSVE2VL512(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer)
-
-// scrambleSVE2VL512 applies the between-blocks accumulator scramble.
-//
-//go:noescape
-func scrambleSVE2VL512(acc *[8]uint64, sec unsafe.Pointer)

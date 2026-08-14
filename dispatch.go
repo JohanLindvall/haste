@@ -11,20 +11,22 @@ import "unsafe"
 //
 //   - hashLong runs the whole long-input loop: blocks, scrambles, the trailing
 //     stripes and the overlapping final stripe. One call per one-shot hash.
-//   - accumStripes runs nbStripes stripes and nothing else, for the streaming
-//     path, which has to stop at block boundaries itself.
-//   - scrambleAcc is that boundary step.
+//   - accumBlocks runs a stripe count from a given position within the current
+//     block, scrambling at every boundary it crosses. This is the streaming
+//     path, and it keeps the accumulators in registers across those boundaries.
+//   - accumStripes runs a plain run of stripes against one secret position,
+//     which is what the final stripe of a streamed input needs.
 
 func hashLong(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) {
 	hashLongGeneric(acc, in, n, sec, secretLimit)
 }
 
-func accumStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer) {
-	accumulateGeneric(acc, in, sec, nbStripes)
+func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int) {
+	accumBlocksGeneric(acc, in, nbStripes, sec, secretLimit, soFar)
 }
 
-func scrambleAcc(acc *[accNB]uint64, sec unsafe.Pointer) {
-	scrambleGeneric(acc, sec)
+func accumStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer) {
+	accumulateGeneric(acc, in, sec, nbStripes)
 }
 
 // Backend names the kernel selected for this machine.

@@ -10,11 +10,11 @@ import "fmt"
 
 // Go's arm64 ABI reserves R18 (platform), R27 (assembler temporary), R28
 // (goroutine), R29 (frame pointer) and R30 (link register); none appear here.
-var armArgGPR = []GPR{0, 1, 2, 3, 4}
-var armTmpGPR = []GPR{5, 6, 7, 8, 9, 10}
+var armArgGPR = []GPR{0, 1, 2, 3, 4, 5}
+var armTmpGPR = []GPR{6, 7, 8, 9, 10, 11}
 
 // armConstGPR carries the scramble constant into a vector register.
-const armConstGPR GPR = 11
+const armConstGPR GPR = 12
 
 type arm64 struct {
 	b      *Builder

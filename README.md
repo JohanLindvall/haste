@@ -56,6 +56,12 @@ That is **20.1 GB/s** sustained versus 12.6 GB/s, a 1.6× speedup on long
 inputs, and a small deficit (3–5%) below 32 bytes. The 128-bit hash tracks the
 same shape: 1.6× at 64 KiB, ahead from 64 bytes up, behind by 7% at 240.
 
+Streaming a mebibyte through `Digest.Write`, in 4 KiB pieces: **15.6 GB/s**,
+against 8.7 for zeebo/xxh3 and 18.4 for cespare's XXH64. One large `Write`
+reaches 19.6 GB/s, which is what the one-shot path does — the kernel walks
+block boundaries itself, so the accumulators never leave registers between
+them.
+
 The gain on long inputs comes from restructuring the accumulator rather than
 from wider registers. XXH3 specifies
 
