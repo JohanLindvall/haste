@@ -1,0 +1,122 @@
+//go:build amd64 && !purego
+
+package xxhaste
+
+import "unsafe"
+
+// amd64 dispatch.
+//
+// SSE2 is part of the amd64 baseline, so it needs no detection and there is no
+// scalar fallback. AVX2 and AVX-512 are selected only when the CPU reports
+// them and the operating system has enabled the corresponding register state:
+// a CPU can have AVX-512 while the kernel refuses to save ZMM registers, and
+// using it then corrupts other processes' state.
+
+type backendID uint8
+
+const (
+	backendSSE2 backendID = iota
+	backendAVX2
+	backendAVX512
+)
+
+var backendNames = map[backendID]string{
+	backendSSE2:   "sse2",
+	backendAVX2:   "avx2",
+	backendAVX512: "avx512",
+}
+
+var backend = pickBackend()
+
+func pickBackend() backendID {
+	maxID, _, _, _ := cpuid(0, 0)
+	if maxID < 7 {
+		return backendSSE2
+	}
+	// OSXSAVE says XGETBV is usable at all; without it nothing below applies.
+	_, _, ecx1, _ := cpuid(1, 0)
+	if ecx1&(1<<27) == 0 {
+		return backendSSE2
+	}
+	xcr0, _ := xgetbv()
+	const (
+		xmmState = 1 << 1
+		ymmState = 1 << 2
+		opmask   = 1 << 5
+		zmmHi256 = 1 << 6
+		hi16ZMM  = 1 << 7
+	)
+	if xcr0&(xmmState|ymmState) != xmmState|ymmState {
+		return backendSSE2
+	}
+	_, ebx7, _, _ := cpuid(7, 0)
+	const (
+		featAVX2    = 1 << 5
+		featAVX512F = 1 << 16
+	)
+	if ebx7&featAVX512F != 0 && xcr0&(opmask|zmmHi256|hi16ZMM) == opmask|zmmHi256|hi16ZMM {
+		return backendAVX512
+	}
+	if ebx7&featAVX2 != 0 {
+		return backendAVX2
+	}
+	return backendSSE2
+}
+
+// Backend names the kernel selected for this machine.
+func Backend() string { return backendNames[backend] }
+
+// setBackend forces a backend, for tests and benchmarks. It reports whether
+// the name is one this machine can actually run.
+func setBackend(name string) bool {
+	for id, n := range backendNames {
+		if n != name {
+			continue
+		}
+		if id > pickBackend() {
+			return false
+		}
+		backend = id
+		return true
+	}
+	return false
+}
+
+func hashLong(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) {
+	switch backend {
+	case backendAVX512:
+		hashLongAVX512(acc, in, n, sec, secretLimit)
+	case backendAVX2:
+		hashLongAVX2(acc, in, n, sec, secretLimit)
+	default:
+		hashLongSSE2(acc, in, n, sec, secretLimit)
+	}
+}
+
+func accumStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer) {
+	switch backend {
+	case backendAVX512:
+		accumAVX512(acc, in, nbStripes, sec)
+	case backendAVX2:
+		accumAVX2(acc, in, nbStripes, sec)
+	default:
+		accumSSE2(acc, in, nbStripes, sec)
+	}
+}
+
+func scrambleAcc(acc *[accNB]uint64, sec unsafe.Pointer) {
+	switch backend {
+	case backendAVX512:
+		scrambleAVX512(acc, sec)
+	case backendAVX2:
+		scrambleAVX2(acc, sec)
+	default:
+		scrambleSSE2(acc, sec)
+	}
+}
+
+//go:noescape
+func cpuid(eaxArg, ecxArg uint32) (eax, ebx, ecx, edx uint32)
+
+//go:noescape
+func xgetbv() (eax, edx uint32)

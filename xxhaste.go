@@ -1,0 +1,226 @@
+package xxhaste
+
+import (
+	"math/bits"
+	"unsafe"
+)
+
+// The public entry points are deliberately thin: each is small enough for the
+// compiler to inline into its caller, so hashing a short key costs one call,
+// to sum64 or sum128. That matters because the shortest inputs take about ten
+// cycles of arithmetic, and a call level is a measurable share of that.
+
+// Sum64 returns the 64-bit XXH3 hash of b.
+func Sum64(b []byte) uint64 {
+	return sum64(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)),
+		unsafe.Pointer(&kSecret), secretDefaultSize, 0)
+}
+
+// Sum64String returns the 64-bit XXH3 hash of s. It does not copy s.
+func Sum64String(s string) uint64 {
+	return sum64(unsafe.Pointer(unsafe.StringData(s)), uintptr(len(s)),
+		unsafe.Pointer(&kSecret), secretDefaultSize, 0)
+}
+
+// Sum64Seed returns the 64-bit XXH3 hash of b, keyed by seed.
+//
+// A seed does not change the cost for inputs up to 240 bytes. Beyond that it
+// forces a 192-byte secret to be derived per call, so a caller hashing many
+// long inputs under one seed is better served by a Digest from NewSeed.
+func Sum64Seed(b []byte, seed uint64) uint64 {
+	return sum64Seeded(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)), seed)
+}
+
+// Sum64SeedString returns the 64-bit XXH3 hash of s, keyed by seed. It does not
+// copy s.
+func Sum64SeedString(s string, seed uint64) uint64 {
+	return sum64Seeded(unsafe.Pointer(unsafe.StringData(s)), uintptr(len(s)), seed)
+}
+
+// Sum64Secret returns the 64-bit XXH3 hash of b under a custom secret, which is
+// used verbatim rather than being derived from a seed.
+//
+// The secret must be at least MinSecretSize bytes and should be high-entropy:
+// XXH3 keys every one of its paths from it, and a low-entropy secret weakens
+// the hash. Sum64Secret panics if the secret is too short.
+func Sum64Secret(b, secret []byte) uint64 {
+	checkSecret(secret)
+	return sum64(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)),
+		unsafe.Pointer(unsafe.SliceData(secret)), len(secret), 0)
+}
+
+// Sum128 returns the 128-bit XXH3 hash of b.
+func Sum128(b []byte) Uint128 {
+	return sum128(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)),
+		unsafe.Pointer(&kSecret), secretDefaultSize, 0)
+}
+
+// Sum128String returns the 128-bit XXH3 hash of s. It does not copy s.
+func Sum128String(s string) Uint128 {
+	return sum128(unsafe.Pointer(unsafe.StringData(s)), uintptr(len(s)),
+		unsafe.Pointer(&kSecret), secretDefaultSize, 0)
+}
+
+// Sum128Seed returns the 128-bit XXH3 hash of b, keyed by seed. The note on
+// long inputs in Sum64Seed applies here too.
+func Sum128Seed(b []byte, seed uint64) Uint128 {
+	return sum128Seeded(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)), seed)
+}
+
+// Sum128SeedString returns the 128-bit XXH3 hash of s, keyed by seed. It does
+// not copy s.
+func Sum128SeedString(s string, seed uint64) Uint128 {
+	return sum128Seeded(unsafe.Pointer(unsafe.StringData(s)), uintptr(len(s)), seed)
+}
+
+// Sum128Secret returns the 128-bit XXH3 hash of b under a custom secret. See
+// Sum64Secret for the constraints on secret.
+func Sum128Secret(b, secret []byte) Uint128 {
+	checkSecret(secret)
+	return sum128(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)),
+		unsafe.Pointer(unsafe.SliceData(secret)), len(secret), 0)
+}
+
+// MinSecretSize is the shortest custom secret accepted by this package, and
+// matches XXH3_SECRET_SIZE_MIN in the reference implementation.
+const MinSecretSize = secretSizeMin
+
+func checkSecret(secret []byte) {
+	if len(secret) < MinSecretSize {
+		panic("xxhaste: secret shorter than MinSecretSize")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 64-bit
+// ---------------------------------------------------------------------------
+
+// sum64 hashes n bytes at in under the secret at sec.
+//
+// The four cases up to 16 bytes are written out here instead of being called,
+// which is what keeps a short hash to a single call. They are transcriptions
+// of XXH3_len_1to3_64b, len_4to8, len_9to16 and the empty-input case; each
+// keys the input with a different pair of secret words so that no two length
+// classes can collide through the same bits.
+//
+// It is nosplit because the stack-growth check in the prologue is a
+// measurable share of a ten-cycle hash. The frame is 64 bytes, well inside
+// the nosplit budget, and the linker verifies that at build time.
+//
+//go:nosplit
+func sum64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed uint64) uint64 {
+	if n > 16 {
+		return sum64Big(in, n, sec, secretLen, seed)
+	}
+	if n > 8 {
+		// 9..16 bytes: the two overlapping halves are folded through the
+		// 128-bit multiply, with the length mixed in so that repeats of a
+		// shorter input cannot reproduce a longer one.
+		bitflip1 := (rd64(sec, 24) ^ rd64(sec, 32)) + seed
+		bitflip2 := (rd64(sec, 40) ^ rd64(sec, 48)) - seed
+		inputLo := rd64(in, 0) ^ bitflip1
+		inputHi := rd64(in, n-8) ^ bitflip2
+		acc := uint64(n) + bits.ReverseBytes64(inputLo) + inputHi + mul128Fold64(inputLo, inputHi)
+		return avalanche(acc)
+	}
+	if n >= 4 {
+		// 4..8 bytes: the halves are swapped into one 64-bit word before
+		// keying, and rrmxmx folds the length in.
+		seed ^= uint64(bits.ReverseBytes32(uint32(seed))) << 32
+		in1 := rd32(in, 0)
+		in2 := rd32(in, n-4)
+		bitflip := (rd64(sec, 8) ^ rd64(sec, 16)) - seed
+		return rrmxmx(uint64(in2)+uint64(in1)<<32^bitflip, uint64(n))
+	}
+	if n > 0 {
+		// 1..3 bytes: first, middle and last byte plus the length, which is
+		// what keeps 1-byte and 2-byte inputs of the same byte apart.
+		c1 := uint32(rdb(in, 0))
+		c2 := uint32(rdb(in, n>>1))
+		c3 := uint32(rdb(in, n-1))
+		combined := c1<<16 | c2<<24 | c3 | uint32(n)<<8
+		bitflip := uint64(rd32(sec, 0)^rd32(sec, 4)) + seed
+		return avalanche64(uint64(combined) ^ bitflip)
+	}
+	return avalanche64(seed ^ rd64(sec, 56) ^ rd64(sec, 64))
+}
+
+// sum64Big handles everything above 16 bytes: two mid-size ladders and then
+// the accumulator loop.
+func sum64Big(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed uint64) uint64 {
+	if n <= 128 {
+		return len17to128_64(in, n, sec, seed)
+	}
+	if n <= midsizeMax {
+		return len129to240_64(in, n, sec, seed)
+	}
+	acc := initAcc
+	hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
+	return mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1)
+}
+
+// sum64Seeded applies a seed. Up to 240 bytes the seed enters the arithmetic
+// directly; above that XXH3 defines the seeded hash as the unseeded hash under
+// a secret derived from the seed, which has to be built first.
+func sum64Seeded(in unsafe.Pointer, n uintptr, seed uint64) uint64 {
+	if n <= midsizeMax || seed == 0 {
+		return sum64(in, n, unsafe.Pointer(&kSecret), secretDefaultSize, seed)
+	}
+	var secret [secretDefaultSize]byte
+	deriveSecret(&secret, seed)
+	return sum64(in, n, unsafe.Pointer(&secret), secretDefaultSize, 0)
+}
+
+// ---------------------------------------------------------------------------
+// 128-bit
+// ---------------------------------------------------------------------------
+
+// sum128 is sum64's counterpart. The short cases are not the 64-bit ones with
+// a second half bolted on: each produces both halves from the start, so that
+// neither can be derived from the other. It is nosplit for the reason given on
+// sum64.
+//
+//go:nosplit
+func sum128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed uint64) Uint128 {
+	if n > 16 {
+		return sum128Big(in, n, sec, secretLen, seed)
+	}
+	if n > 8 {
+		return len9to16_128(in, n, sec, seed)
+	}
+	if n >= 4 {
+		return len4to8_128(in, n, sec, seed)
+	}
+	if n > 0 {
+		return len1to3_128(in, n, sec, seed)
+	}
+	return Uint128{
+		Lo: avalanche64(seed ^ rd64(sec, 64) ^ rd64(sec, 72)),
+		Hi: avalanche64(seed ^ rd64(sec, 80) ^ rd64(sec, 88)),
+	}
+}
+
+func sum128Big(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed uint64) Uint128 {
+	if n <= 128 {
+		return len17to128_128(in, n, sec, seed)
+	}
+	if n <= midsizeMax {
+		return len129to240_128(in, n, sec, seed)
+	}
+	acc := initAcc
+	hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
+	return Uint128{
+		Lo: mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1),
+		Hi: mergeAccs(&acc, add(sec, uintptr(secretLen-8*accNB-secretMergeAccsStart)),
+			^(uint64(n) * prime64_2)),
+	}
+}
+
+func sum128Seeded(in unsafe.Pointer, n uintptr, seed uint64) Uint128 {
+	if n <= midsizeMax || seed == 0 {
+		return sum128(in, n, unsafe.Pointer(&kSecret), secretDefaultSize, seed)
+	}
+	var secret [secretDefaultSize]byte
+	deriveSecret(&secret, seed)
+	return sum128(in, n, unsafe.Pointer(&secret), secretDefaultSize, 0)
+}

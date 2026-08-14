@@ -1,0 +1,157 @@
+// Package bench compares xxhaste with the fastest XXH3 and XXH64
+// implementations available for Go.
+//
+// zeebo/xxh3 is the reference point: it is the established fast XXH3 port,
+// with hand-written AVX2 and SSE2 kernels on amd64 and pure Go elsewhere.
+// cespare/xxhash is XXH64 rather than XXH3, included because it is what most
+// Go code actually calls today.
+package bench
+
+import (
+	"fmt"
+	"testing"
+
+	"github.com/JohanLindvall/xxhaste"
+	cespare "github.com/cespare/xxhash/v2"
+	"github.com/zeebo/xxh3"
+)
+
+var sizes = []int{4, 8, 16, 32, 64, 128, 240, 256, 512, 1024, 4096, 16384, 65536, 1 << 20}
+
+func buffer(n int) []byte {
+	b := make([]byte, n)
+	g := uint64(2654435761)
+	for i := range b {
+		b[i] = byte(g >> 56)
+		g *= 11400714785074694797
+	}
+	return b
+}
+
+var (
+	sink64  uint64
+	sink128 xxhaste.Uint128
+)
+
+// TestSameAsZeebo is a cross-implementation check: two independent ports of
+// XXH3 must agree byte for byte, at every length where either changes path.
+func TestSameAsZeebo(t *testing.T) {
+	buf := buffer(1 << 16)
+	for _, n := range []int{0, 1, 3, 4, 8, 9, 16, 17, 32, 64, 128, 129, 240, 241,
+		256, 512, 1024, 1025, 4096, 65535, 65536} {
+		in := buf[:n]
+		if got, want := xxhaste.Sum64(in), xxh3.Hash(in); got != want {
+			t.Errorf("len=%d: Sum64 %#016x != zeebo %#016x", n, got, want)
+		}
+		if got, want := xxhaste.Sum64Seed(in, 42), xxh3.HashSeed(in, 42); got != want {
+			t.Errorf("len=%d: Sum64Seed %#016x != zeebo %#016x", n, got, want)
+		}
+		got, want := xxhaste.Sum128(in), xxh3.Hash128(in)
+		if got.Lo != want.Lo || got.Hi != want.Hi {
+			t.Errorf("len=%d: Sum128 {%#x,%#x} != zeebo {%#x,%#x}", n, got.Lo, got.Hi, want.Lo, want.Hi)
+		}
+		g2, w2 := xxhaste.Sum128Seed(in, 42), xxh3.Hash128Seed(in, 42)
+		if g2.Lo != w2.Lo || g2.Hi != w2.Hi {
+			t.Errorf("len=%d: Sum128Seed {%#x,%#x} != zeebo {%#x,%#x}", n, g2.Lo, g2.Hi, w2.Lo, w2.Hi)
+		}
+	}
+}
+
+func BenchmarkCompare64(b *testing.B) {
+	for _, n := range sizes {
+		buf := buffer(n)
+		b.Run(fmt.Sprintf("%d/xxhaste", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = xxhaste.Sum64(buf)
+			}
+		})
+		b.Run(fmt.Sprintf("%d/zeebo", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = xxh3.Hash(buf)
+			}
+		})
+		b.Run(fmt.Sprintf("%d/cespare-xxh64", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = cespare.Sum64(buf)
+			}
+		})
+	}
+}
+
+func BenchmarkCompare128(b *testing.B) {
+	for _, n := range sizes {
+		buf := buffer(n)
+		b.Run(fmt.Sprintf("%d/xxhaste", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink128 = xxhaste.Sum128(buf)
+			}
+		})
+		b.Run(fmt.Sprintf("%d/zeebo", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				h := xxh3.Hash128(buf)
+				sink128 = xxhaste.Uint128{Lo: h.Lo, Hi: h.Hi}
+			}
+		})
+	}
+}
+
+func BenchmarkCompareSeed(b *testing.B) {
+	for _, n := range []int{8, 64, 1024, 65536} {
+		buf := buffer(n)
+		b.Run(fmt.Sprintf("%d/xxhaste", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = xxhaste.Sum64Seed(buf, 42)
+			}
+		})
+		b.Run(fmt.Sprintf("%d/zeebo", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = xxh3.HashSeed(buf, 42)
+			}
+		})
+	}
+}
+
+func BenchmarkCompareStream(b *testing.B) {
+	const n = 1 << 20
+	buf := buffer(n)
+	b.Run("xxhaste", func(b *testing.B) {
+		b.SetBytes(n)
+		d := xxhaste.New()
+		for i := 0; i < b.N; i++ {
+			d.Reset()
+			for off := 0; off < n; off += 4096 {
+				d.Write(buf[off : off+4096])
+			}
+			sink64 = d.Sum64()
+		}
+	})
+	b.Run("zeebo", func(b *testing.B) {
+		b.SetBytes(n)
+		d := xxh3.New()
+		for i := 0; i < b.N; i++ {
+			d.Reset()
+			for off := 0; off < n; off += 4096 {
+				d.Write(buf[off : off+4096])
+			}
+			sink64 = d.Sum64()
+		}
+	})
+	b.Run("cespare-xxh64", func(b *testing.B) {
+		b.SetBytes(n)
+		d := cespare.New()
+		for i := 0; i < b.N; i++ {
+			d.Reset()
+			for off := 0; off < n; off += 4096 {
+				d.Write(buf[off : off+4096])
+			}
+			sink64 = d.Sum64()
+		}
+	})
+}
