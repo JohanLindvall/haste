@@ -60,6 +60,10 @@ func (b *Builder) Text() string {
 	return sb.String()
 }
 
+// Standalone is the stripe index for a stripe emitted outside any unrolled
+// group: the remainder loop, and the final stripe of a long input.
+const Standalone = -1
+
 // Cond is a branch condition. Comparisons are signed, matching the Go int
 // arguments the kernels take.
 type Cond int
@@ -147,8 +151,14 @@ type Arch interface {
 	LoadAcc(p GPR)
 	StoreAcc(p GPR)
 
+	// GroupBegin runs once before an unrolled group's loop body, with the
+	// secret pointer as it stands there. A backend may use it to hoist state
+	// the body then maintains across iterations.
+	GroupBegin(sec GPR)
+
 	// Stripe absorbs one 64-byte stripe. k is the index within an unrolled
-	// group, so a backend can rotate its scratch registers.
+	// group, so a backend can rotate its scratch registers; Standalone means
+	// the stripe is on its own, with no group state to rely on.
 	Stripe(k int, in GPR, inOff int, sec GPR, secOff int)
 
 	// Materialize folds the data accumulator into the product accumulator,

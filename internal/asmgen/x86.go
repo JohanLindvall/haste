@@ -442,8 +442,15 @@ func (x *x86) StoreAcc(p GPR) {
 // its raw input to accB. The lane swap the algorithm applies to the raw input
 // is deferred to Materialize, which is what keeps this to five vector
 // operations per register instead of six.
+// GroupBegin has nothing to hoist here: the secret is read straight out of
+// memory by the xor that consumes it.
+func (x *x86) GroupBegin(GPR) {}
+
 func (x *x86) Stripe(k int, in GPR, inOff int, sec GPR, secOff int) {
 	w := x.mode / 8
+	if k < 0 {
+		k = 0
+	}
 	for j := 0; j < x.nvec; j++ {
 		t := x.tmp[3*((k*x.nvec+j)%(len(x.tmp)/3)):]
 		d, key, h := t[0], t[1], t[2]

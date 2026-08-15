@@ -105,7 +105,7 @@ func emitHashLong(a Arch) {
 	a.MovRR(tmp, sec)
 	a.AddRR(tmp, lim)
 	a.SubRI(tmp, secretLastAccStart)
-	a.Stripe(0, end, 0, tmp, 0)
+	a.Stripe(Standalone, end, 0, tmp, 0)
 
 	a.Materialize(true)
 	a.StoreAcc(acc)
@@ -203,6 +203,7 @@ func emitStripeLoop(a Arch, in, s, cnt GPR) {
 	unrolled, single, done := b.NewLabel("unroll"), b.NewLabel("one"), b.NewLabel("done")
 
 	a.BranchI(cnt, int64(u), LT, single)
+	a.GroupBegin(s)
 	b.Label(unrolled)
 	for k := 0; k < u; k++ {
 		if a.SecretImm() {
@@ -223,7 +224,7 @@ func emitStripeLoop(a Arch, in, s, cnt GPR) {
 	a.BranchI(cnt, 0, LE, done)
 	loop := b.NewLabel("onebody")
 	b.Label(loop)
-	a.Stripe(0, in, 0, s, 0)
+	a.Stripe(Standalone, in, 0, s, 0)
 	a.AddRI(in, stripeLen)
 	a.AddRI(s, secretConsumeRate)
 	a.SubRI(cnt, 1)

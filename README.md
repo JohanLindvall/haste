@@ -39,24 +39,24 @@ algorithm, included for scale). Nanoseconds per hash, lower is better:
 
 | size | xxhaste | zeebo/xxh3 | cespare (XXH64) |
 |-----:|--------:|-----------:|----------------:|
-| 4 | 3.02 | 2.99 | 3.28 |
-| 8 | 3.03 | 2.98 | 3.50 |
-| 16 | **3.24** | 3.26 | 4.24 |
-| 32 | 4.76 | 4.66 | 7.66 |
-| 64 | **6.80** | 7.25 | 9.07 |
-| 128 | **10.59** | 12.78 | 12.49 |
-| 240 | **22.64** | 23.22 | 19.71 |
-| 256 | **24.25** | 26.20 | 18.80 |
-| 512 | **33.4** | 44.9 | 30.1 |
-| 1 Ki | **51.9** | 82.2 | 49.4 |
-| 4 Ki | **173** | 326 | 163 |
-| 64 Ki | **2622** | 5221 | 2447 |
-| 1 Mi | **45672** | 84864 | 45361 |
+| 4 | 3.00 | 2.92 | 3.20 |
+| 8 | 3.00 | 2.93 | 3.50 |
+| 16 | 3.27 | 3.19 | 4.24 |
+| 32 | 4.77 | 4.65 | 7.65 |
+| 64 | **6.80** | 7.26 | 9.07 |
+| 128 | **10.60** | 12.71 | 12.55 |
+| 240 | **22.65** | 23.23 | 19.66 |
+| 256 | **22.82** | 26.17 | 18.73 |
+| 512 | **31.4** | 44.8 | 29.9 |
+| 1 Ki | **47.3** | 82.2 | 49.5 |
+| 4 Ki | **156** | 330 | 163 |
+| 64 Ki | **2336** | 5222 | 2443 |
+| 1 Mi | **40615** | 85376 | 43218 |
 
-That is **25.0 GB/s** sustained against 12.6, a 2.0x speedup on long inputs,
-and a tie inside 2% below 32 bytes, where more than half the cost is Go's call
-overhead rather than hashing. It also runs level with cespare's XXH64 - a
-structurally cheaper algorithm - from 1 KiB up.
+That is **28.1 GB/s** sustained against 12.6, a 2.2x speedup on long inputs,
+and a tie inside 3% below 32 bytes, where more than half the cost is Go's call
+overhead rather than hashing. From 1 KiB up it is also faster than cespare's
+XXH64 — a structurally cheaper algorithm — on the same machine.
 
 The 128-bit hash tracks the same shape: level below 32 bytes, ahead from 64
 bytes up, 2.0x at 64 KiB.
@@ -86,8 +86,10 @@ on Skylake-AVX512 and 22% on Zen 4.
 The second applies only to cores whose vector pipes are scarce next to their
 integer pipes, which is why it is gated on identifying the core: half of each
 stripe moves into general-purpose registers, where the lane swap costs nothing
-at all, because the neighbouring lane is just a different register name. On a
-Neoverse N2 that is a further 24%.
+at all, because the neighbouring lane is just a different register name. That
+half also stops reloading the secret — it advances one 64-bit word per stripe,
+so all but one of the words a stripe needs are already in registers. On a
+Neoverse N2 the split kernel is a further 40%.
 
 **amd64 numbers are not listed** because this was developed on arm64. The
 kernels are correct there - see below - but unbenchmarked, so no timing claims

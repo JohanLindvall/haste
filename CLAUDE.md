@@ -136,7 +136,22 @@ comments in the `.s` files are the audit trail.
 
 ## Performance notes
 
-Measured on Neoverse N2 (2 vector pipes, 3.4 GHz):
+Measured on Neoverse N2 (2 vector pipes, 3.4 GHz). The kernel obeys
+
+	cycles/stripe = max(vector_ops / 1.5, instructions / 4)
+
+which accounts for every variant measured on this core: the vector-only kernel
+at 16 vector operations (10.7 predicted, 10.85 measured), a two-lane split at
+13 (8.7 against 8.72), and the shipped four-lane split, which is instead
+limited by instruction issue (30.5/4 = 7.6 against 7.73). Both constants were
+measured, the second by padding the loop with `mov` instructions and watching
+the slope: 0.246 cycles each, so 4.06 instructions per cycle.
+
+Two consequences. Instruction count is the currency for the split kernel --
+each one removed per stripe is worth 3.2% -- and moving lanes back to the
+vector side loses even though it removes instructions, because 1.5 vector
+operations per cycle is the harder limit. Four scalar lanes is the optimum of
+the three splits that the register file and the pairing of `uzp` allow.
 
 - NEON runs at ~10.9 cycles per 64-byte stripe. Marginal cost is ~0.53 cycles
   per vector operation (≈1.9 ops/cycle) plus ~2.4 cycles fixed.
@@ -182,6 +197,10 @@ Measured on Neoverse N2 (2 vector pipes, 3.4 GHz):
   prologue and epilogue, and a stripe is ~2.5ns. Use those numbers before
   restructuring anything on the streaming path.
 - Still on the table for streaming, both measured and rejected for now:
+  0. The one-shot path for 1 KiB spends 46.9ns: 37.6 in the kernel, 6.6 in
+     mergeAccs and 2.2 copying initAcc. The merge is a dependency chain --
+     four folds, then avalanche -- so moving it into the kernel would save the
+     call, not the latency.
   1. `absorb` makes two kernel calls whenever anything is staged, and the
      second cannot be folded into the first without a seventh argument naming
      the straddling stripe. On arm64 the hybrid kernel has no register left

@@ -35,10 +35,18 @@ type arm64 struct {
 	scalarLanes int
 
 	accA, accB []VReg
-	sccA, sccB []GPR
-	tmp        []VReg
-	stmp       []GPR
-	kprime     VReg
+	// scc holds the scalar lanes' accumulators. There is no second set: the
+	// deferred lane swap exists to avoid a vector shuffle, and in registers
+	// the neighbouring lane is just a different register name, so those lanes
+	// use the algorithm's own form and are always materialized.
+	scc []GPR
+	// ssec holds the scalar lanes' secret words across an unrolled group.
+	// The secret advances one 64-bit word per stripe, so all but one of them
+	// are already in registers; only the word entering the window is loaded.
+	ssec   []GPR
+	tmp    []VReg
+	stmp   []GPR
+	kprime VReg
 }
 
 // newNEON builds the NEON kernel, which is the arm64 baseline.
@@ -52,15 +60,22 @@ type arm64 struct {
 func newNEON(unroll int) *arm64 { return newARM("neon", false, 16, unroll) }
 
 // newNEONHybrid splits the stripe between the vector and integer units.
-func newNEONHybrid(unroll int) *arm64 {
+// newNEONHybrid builds the split kernel. scalarLanes is fixed at four by
+// measurement, not by structure: two leaves thirteen vector operations per
+// stripe, and this core sustains about 1.5 of those per cycle, which costs
+// more than the two instructions it saves. See CLAUDE.md.
+func newNEONHybrid(unroll, scalarLanes int) *arm64 {
+	if scalarLanes%2 != 0 || (accNB-scalarLanes)%4 != 0 {
+		panic("asmgen: scalar lanes must leave an even number of vector registers")
+	}
 	a := newARM("neonhybrid", false, 16, unroll)
-	a.scalarLanes = 4
+	a.scalarLanes = scalarLanes
 	a.nvec = (accNB - a.scalarLanes) / a.lanes
 	a.accA, a.accB = a.accA[:a.nvec], a.accB[:a.nvec]
 	// Everything the kernel skeleton does not touch: it holds arguments in
 	// x0-x5, its own temporaries in x6-x11 and the scramble constant in x12.
-	a.sccA = []GPR{17, 19, 20, 21}
-	a.sccB = []GPR{22, 23, 24, 25}
+	a.scc = []GPR{17, 19, 20, 21}[:scalarLanes]
+	a.ssec = []GPR{22, 23, 24, 25}[:scalarLanes]
 	a.stmp = []GPR{13, 14, 15, 16}
 	return a
 }
@@ -195,6 +210,23 @@ func (a *arm64) vload(dst VReg, r GPR, off int) {
 		return
 	}
 	a.b.emit(sim, "ldur %s, [%s, #%d]", a.q(dst), a.GPRName(r), off)
+}
+
+// vloadPair loads two adjacent vector registers. LDP moves 32 bytes in one
+// instruction, which matters once a kernel is limited by how many
+// instructions the core can issue rather than by its vector pipes; it needs a
+// 16-byte-aligned offset, which the input always has and the secret, stepping
+// 8 bytes per stripe, has only half the time.
+func (a *arm64) vloadPair(d0, d1 VReg, r GPR, off int) {
+	if a.sve || off%16 != 0 || off < -1024 || off > 1008 || int(d1) != int(d0)+1 {
+		a.vload(d0, r, off)
+		a.vload(d1, r, off+16)
+		return
+	}
+	a.b.emit(func(m *Machine) {
+		m.V[d0] = m.LoadVec(m.R[r]+uint64(off), a.lanes)
+		m.V[d1] = m.LoadVec(m.R[r]+uint64(off)+16, a.lanes)
+	}, "ldp %s, %s, [%s, #%d]", a.q(d0), a.q(d1), a.GPRName(r), off)
 }
 
 func (a *arm64) vstore(src VReg, r GPR, off int) {
@@ -371,11 +403,12 @@ func (a *arm64) lsr3(dst, src GPR, sh uint) {
 		"lsr %s, %s, #%d", a.GPRName(dst), a.GPRName(src), sh)
 }
 
-// umull multiplies the low halves of two registers, widening to 64 bits.
-func (a *arm64) umull(dst, x, y GPR) {
+// umaddl accumulates the widening product of two low halves: the integer
+// side's answer to NEON's umlal, and one instruction rather than two.
+func (a *arm64) umaddl(acc, x, y GPR) {
 	a.b.emit(func(m *Machine) {
-		m.R[dst] = uint64(uint32(m.R[x])) * uint64(uint32(m.R[y]))
-	}, "umull %s, w%d, w%d", a.GPRName(dst), int(x), int(y))
+		m.R[acc] += uint64(uint32(m.R[x])) * uint64(uint32(m.R[y]))
+	}, "umaddl %s, w%d, w%d, %s", a.GPRName(acc), int(x), int(y), a.GPRName(acc))
 }
 
 func (a *arm64) add3(dst, x, y GPR) {
@@ -392,10 +425,51 @@ func (a *arm64) zeroGPR(dst GPR) {
 	a.b.emit(func(m *Machine) { m.R[dst] = 0 }, "mov %s, xzr", a.GPRName(dst))
 }
 
-// stripeScalar absorbs the lanes held in general-purpose registers. The pair
-// is loaded together, the raw values go to the data accumulators before their
-// registers are reused for the shift, and the keyed product lands in the
-// product accumulators.
+// GroupBegin loads the scalar lanes' secret window. Everything after this
+// rotates through it: at stripe k, lane 4+j reads ssec[(k+j) mod 4], and the
+// register lane 4 has just finished with takes the word stripe k+4 will need.
+// After four stripes the pointer has advanced four words and the mapping is
+// back where it started, so the loop body maintains its own invariant.
+func (a *arm64) GroupBegin(sec GPR) {
+	if a.scalarLanes == 0 {
+		return
+	}
+	base := 8 * (accNB - a.scalarLanes)
+	for i := 0; i < a.scalarLanes; i += 2 {
+		a.ldp(a.ssec[i], a.ssec[i+1], sec, base+8*i)
+	}
+}
+
+// stripeScalarGroup is stripeScalar inside an unrolled group: the secret comes
+// from the rotating window rather than memory, which is three of the four
+// loads a stripe would otherwise make on this side.
+func (a *arm64) stripeScalarGroup(k int, in GPR, inOff int, sec GPR, secOff int) {
+	n := a.scalarLanes
+	d0, d1, k0, k1 := a.stmp[0], a.stmp[1], a.stmp[2], a.stmp[3]
+	for i := 0; i < n; i += 2 {
+		off := 8 * (accNB - n + i)
+		s0, s1 := a.ssec[(k+i)%n], a.ssec[(k+i+1)%n]
+		a.ldp(d0, d1, in, inOff+off)
+		a.eor3(k0, d0, s0)
+		a.eor3(k1, d1, s1)
+		a.add3(a.scc[i], a.scc[i], d1)
+		a.add3(a.scc[i+1], a.scc[i+1], d0)
+		if i == 0 {
+			// s0 is free now, and takes the word this lane will read four
+			// stripes from here.
+			a.ldr(s0, sec, secOff+8*accNB)
+		}
+		a.lsr3(d0, k0, 32)
+		a.lsr3(d1, k1, 32)
+		a.umaddl(a.scc[i], k0, d0)
+		a.umaddl(a.scc[i+1], k1, d1)
+	}
+}
+
+// stripeScalar absorbs the lanes held in general-purpose registers, in the
+// algorithm's own form: each lane takes its own keyed product and its
+// neighbour's raw value. The pair is loaded together, and each data register
+// is freed by the neighbour's add before being reused for the shift.
 func (a *arm64) stripeScalar(in GPR, inOff int, sec GPR, secOff int) {
 	for i := 0; i < a.scalarLanes; i += 2 {
 		off := 8 * (accNB - a.scalarLanes + i)
@@ -404,14 +478,12 @@ func (a *arm64) stripeScalar(in GPR, inOff int, sec GPR, secOff int) {
 		a.ldp(k0, k1, sec, secOff+off)
 		a.eor3(k0, d0, k0)
 		a.eor3(k1, d1, k1)
-		a.add3(a.sccB[i], a.sccB[i], d0)
-		a.add3(a.sccB[i+1], a.sccB[i+1], d1)
+		a.add3(a.scc[i], a.scc[i], d1)
+		a.add3(a.scc[i+1], a.scc[i+1], d0)
 		a.lsr3(d0, k0, 32)
 		a.lsr3(d1, k1, 32)
-		a.umull(d0, k0, d0)
-		a.umull(d1, k1, d1)
-		a.add3(a.sccA[i], a.sccA[i], d0)
-		a.add3(a.sccA[i+1], a.sccA[i+1], d1)
+		a.umaddl(a.scc[i], k0, d0)
+		a.umaddl(a.scc[i+1], k1, d1)
 	}
 }
 
@@ -494,9 +566,7 @@ func (a *arm64) LoadAcc(p GPR) {
 		a.vzero(a.accB[i])
 	}
 	for i := 0; i < a.scalarLanes; i += 2 {
-		a.ldp(a.sccA[i], a.sccA[i+1], p, 8*(accNB-a.scalarLanes+i))
-		a.zeroGPR(a.sccB[i])
-		a.zeroGPR(a.sccB[i+1])
+		a.ldp(a.scc[i], a.scc[i+1], p, 8*(accNB-a.scalarLanes+i))
 	}
 }
 
@@ -505,18 +575,28 @@ func (a *arm64) StoreAcc(p GPR) {
 		a.vstore(a.accA[i], p, a.vl*i)
 	}
 	for i := 0; i < a.scalarLanes; i += 2 {
-		a.stp(a.sccA[i], a.sccA[i+1], p, 8*(accNB-a.scalarLanes+i))
+		a.stp(a.scc[i], a.scc[i+1], p, 8*(accNB-a.scalarLanes+i))
 	}
 }
 
-// Stripe absorbs 64 bytes.
+// Stripe absorbs 64 bytes. Only the scalar side cares whether it is part of an
+// unrolled group; the vector side just wants an index to rotate scratch
+// registers by, and a standalone stripe can use the first set.
 func (a *arm64) Stripe(k int, in GPR, inOff int, sec GPR, secOff int) {
+	grouped := k >= 0
+	if !grouped {
+		k = 0
+	}
 	if a.sve {
 		a.stripeSVE(k, in, inOff, sec, secOff)
 		return
 	}
 	a.stripeNEON(k, in, inOff, sec, secOff)
-	if a.scalarLanes > 0 {
+	switch {
+	case a.scalarLanes == 0:
+	case grouped:
+		a.stripeScalarGroup(k, in, inOff, sec, secOff)
+	default:
 		a.stripeScalar(in, inOff, sec, secOff)
 	}
 }
@@ -527,10 +607,8 @@ func (a *arm64) stripeNEON(k int, in GPR, inOff int, sec GPR, secOff int) {
 	for j := 0; j < a.nvec; j += 2 {
 		t := a.tmp[6*((k*a.nvec/2+j/2)%(len(a.tmp)/6)):]
 		d0, d1, s0, s1, lo, hi := t[0], t[1], t[2], t[3], t[4], t[5]
-		a.vload(d0, in, inOff+16*j)
-		a.vload(d1, in, inOff+16*j+16)
-		a.vload(s0, sec, secOff+16*j)
-		a.vload(s1, sec, secOff+16*j+16)
+		a.vloadPair(d0, d1, in, inOff+16*j)
+		a.vloadPair(s0, s1, sec, secOff+16*j)
 		a.vxor(s0, d0, s0)
 		a.vxor(s1, d1, s1)
 		a.uzp(lo, s0, s1, false)
@@ -564,16 +642,7 @@ func (a *arm64) Materialize(final bool) {
 			a.vzero(a.accB[j])
 		}
 	}
-	// In registers the lane swap costs nothing at all: the neighbour is just
-	// a different register name.
-	for i := 0; i < a.scalarLanes; i += 2 {
-		a.add3(a.sccA[i], a.sccA[i], a.sccB[i+1])
-		a.add3(a.sccA[i+1], a.sccA[i+1], a.sccB[i])
-		if !final {
-			a.zeroGPR(a.sccB[i])
-			a.zeroGPR(a.sccB[i+1])
-		}
-	}
+	// The scalar lanes need nothing here: they were never split.
 }
 
 // Scramble applies acc = (xorshift(acc,47) ^ secret) * PRIME32_1. SVE2 has a
@@ -582,7 +651,7 @@ func (a *arm64) Materialize(final bool) {
 // 64-bit multiply, so it needs four instructions per lane against nine.
 func (a *arm64) Scramble(sec GPR, secOff int) {
 	for i := 0; i < a.scalarLanes; i++ {
-		acc, t := a.sccA[i], a.stmp[0]
+		acc, t := a.scc[i], a.stmp[0]
 		off := secOff + 8*(accNB-a.scalarLanes+i)
 		a.eorShr(acc, acc, acc, 47)
 		a.ldr(t, sec, off)
