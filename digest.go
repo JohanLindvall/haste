@@ -288,9 +288,11 @@ const (
 	marshaledSize = len(magic) + 8*accNB + stripeLen + internalBufferSize + 8 + 4 + 4
 )
 
-// MarshalBinary implements encoding.BinaryMarshaler. The state of a Digest
-// built with NewSecret cannot be encoded, because the secret is not owned by
-// the Digest; unmarshalling into such a Digest is still allowed.
+// MarshalBinary implements encoding.BinaryMarshaler. What it encodes is the
+// accumulator and buffer state; neither the seed nor the secret is part of it,
+// the secret because it is the caller's and not owned by the Digest. A state
+// is therefore only meaningful when restored into a Digest built the same way,
+// which is the contract UnmarshalBinary states.
 func (d *Digest) MarshalBinary() ([]byte, error) {
 	b := make([]byte, 0, marshaledSize)
 	b = append(b, magic...)
@@ -309,22 +311,43 @@ var errBadState = errors.New("xxhaste: invalid hash state")
 // UnmarshalBinary implements encoding.BinaryUnmarshaler. It restores the
 // accumulator and buffer state; the seed or secret comes from the Digest being
 // unmarshalled into, which must match the one that produced the state.
+//
+// A state that does not describe a reachable Digest is rejected rather than
+// restored, and d is left as it was. The counters are checked before anything
+// is written, and as unsigned: bufUsed indexes buf, and a value that wrapped
+// negative on a 32-bit int would index it out of range.
 func (d *Digest) UnmarshalBinary(b []byte) error {
 	if len(b) != marshaledSize || string(b[:len(magic)]) != magic {
 		return errBadState
 	}
-	b = b[len(magic):]
-	for i := range d.acc {
-		d.acc[i] = binary.LittleEndian.Uint64(b[8*i:])
-	}
-	b = b[8*accNB:]
-	copy(d.buf[:], b)
-	b = b[stripeLen+internalBufferSize:]
-	d.totalLen = binary.LittleEndian.Uint64(b)
-	d.bufUsed = int(binary.LittleEndian.Uint32(b[8:]))
-	d.nbStripesSoFar = int(binary.LittleEndian.Uint32(b[12:]))
-	if d.bufUsed > internalBufferSize || d.nbStripesSoFar > d.nbStripesPerBlock {
+	body := b[len(magic):]
+	// The three counters are the last 16 bytes of the body, whatever the
+	// buffer in front of them is sized at; deriving the offsets from
+	// marshaledSize keeps them right when it changes.
+	const (
+		lenOff     = marshaledSize - len(magic) - 16
+		bufUsedOff = lenOff + 8
+		soFarOff   = lenOff + 12
+	)
+	totalLen := binary.LittleEndian.Uint64(body[lenOff:])
+	bufUsed := binary.LittleEndian.Uint32(body[bufUsedOff:])
+	soFar := binary.LittleEndian.Uint32(body[soFarOff:])
+
+	// absorb stages at most internalBufferSize bytes and wraps the stripe
+	// position strictly below nbStripesPerBlock, and no Digest stages more
+	// than it has been given. A zero-value Digest has no block length at all,
+	// so a state is rejected rather than wrapped against it.
+	if bufUsed > internalBufferSize || uint64(bufUsed) > totalLen ||
+		d.nbStripesPerBlock <= 0 || soFar >= uint32(d.nbStripesPerBlock) {
 		return errBadState
 	}
+
+	for i := range d.acc {
+		d.acc[i] = binary.LittleEndian.Uint64(body[8*i:])
+	}
+	copy(d.buf[:], body[8*accNB:])
+	d.totalLen = totalLen
+	d.bufUsed = int(bufUsed)
+	d.nbStripesSoFar = int(soFar)
 	return nil
 }
