@@ -161,6 +161,19 @@ type Arch interface {
 	// the stripe is on its own, with no group state to rely on.
 	Stripe(k int, in GPR, inOff int, sec GPR, secOff int)
 
+	// FastBlockStripes is the block length, in stripes, that this backend can
+	// run with the whole secret schedule held in registers, or 0 if it cannot.
+	// A backend that returns n handles exactly the block a secretLimit of
+	// n*secretConsumeRate produces, which is the default secret's; anything
+	// else falls back to Stripe.
+	FastBlockStripes() int
+
+	// LoadSecretRegs fills those registers from the secret at [sec].
+	LoadSecretRegs(sec GPR)
+
+	// FastStripe absorbs stripe k of a block whose secret is in registers.
+	FastStripe(k int, in GPR, inOff int)
+
 	// Materialize folds the data accumulator into the product accumulator,
 	// leaving the true XXH3 accumulator state in the latter. Unless final, it
 	// also clears the data accumulator so absorption can continue; the last

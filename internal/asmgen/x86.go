@@ -58,6 +58,9 @@ type x86 struct {
 	accA, accB []VReg
 	tmp        []VReg // scratch pool, used in groups of three
 	kprime     VReg
+	// secretRegs holds one whole block's secret schedule, when the register
+	// file is big enough for it. See FastStripe.
+	secretRegs []VReg
 }
 
 func newX86(name string, mode, unroll int) *x86 {
@@ -71,9 +74,7 @@ func newX86(name string, mode, unroll int) *x86 {
 		x.accA = append(x.accA, VReg(i))
 		x.accB = append(x.accB, VReg(x.nvec+i))
 	}
-	// The scratch pool is whatever is left below xmm15, in groups of three;
-	// AVX-512's upper sixteen registers have no ABI meaning at all, so that
-	// is where its pool goes.
+	// The scratch pool is whatever is left below xmm15, in groups of three.
 	base, nTmp := 2*x.nvec, 0
 	switch mode {
 	case modeSSE2:
@@ -81,12 +82,20 @@ func newX86(name string, mode, unroll int) *x86 {
 	case modeAVX2:
 		nTmp = 9
 	default:
-		base, nTmp = 16, 12
+		nTmp = 12
 	}
 	for i := 0; i < nTmp; i++ {
 		x.tmp = append(x.tmp, VReg(base+i))
 	}
 	x.kprime = VReg(14)
+	// AVX-512's upper sixteen registers have no ABI meaning at all, and a
+	// stripe costs one register there, so a whole standard block's secret
+	// schedule fits in them exactly.
+	if mode == modeAVX {
+		for i := 0; i < stdBlockStripes; i++ {
+			x.secretRegs = append(x.secretRegs, VReg(16+i))
+		}
+	}
 	return x
 }
 
@@ -307,6 +316,34 @@ func (x *x86) vxorMem(dst, a VReg, r GPR, off int) {
 	}
 }
 
+// vxor3Mem computes dst = dst ^ b ^ [r+off] in one instruction. AVX-512's
+// ternary logic takes any three-input bitwise function as a truth table; 0x96
+// is the one whose output bit is set where an odd number of inputs are.
+func (x *x86) vxor3Mem(dst, b VReg, r GPR, off int) {
+	if x.mode != modeAVX {
+		panic("asmgen: vxor3Mem needs AVX-512")
+	}
+	x.b.emit(func(m *Machine) {
+		v := m.LoadVec(m.R[r]+uint64(off), x.lanes)
+		for i := 0; i < x.lanes; i++ {
+			m.V[dst][i] ^= m.V[b][i] ^ v[i]
+		}
+	}, "vpternlogq $0x96, %s, %s, %s", x.mem(r, off), x.vec(b), x.vec(dst))
+}
+
+// vmul64 is the full 64-bit lane multiply AVX-512DQ adds. Below it the
+// scramble has to assemble the product from two 32x32 halves; see Scramble.
+func (x *x86) vmul64(dst, a, b VReg) {
+	if x.mode != modeAVX {
+		panic("asmgen: vmul64 needs AVX-512DQ")
+	}
+	x.b.emit(func(m *Machine) {
+		for i := 0; i < x.lanes; i++ {
+			m.V[dst][i] = m.V[a][i] * m.V[b][i]
+		}
+	}, "vpmullq %s, %s, %s", x.vec(b), x.vec(a), x.vec(dst))
+}
+
 func (x *x86) vshr(dst, src VReg, imm uint) {
 	sim := func(m *Machine) {
 		for i := 0; i < x.lanes; i++ {
@@ -387,6 +424,10 @@ func (x *x86) hi32(dst, src VReg) {
 // Setup broadcasts PRIME32_1 for the scramble step, and does nothing at all
 // for a kernel that cannot reach one. It clobbers rAX, which the kernel has
 // nothing live in at that point.
+//
+// The two narrower backends want the constant in every 32-bit element, because
+// they build the 64-bit product from two 32x32 multiplies; the AVX-512 one has
+// a real 64-bit multiply and wants it in every lane.
 func (x *x86) Setup(scramble bool) {
 	if !scramble {
 		return
@@ -397,7 +438,7 @@ func (x *x86) Setup(scramble bool) {
 	// build even though no kernel here runs there.
 	const prime32_1 uint32 = 0x9E3779B1
 	x.b.emit(func(m *Machine) { m.R[rAX] = uint64(prime32_1) }, "movl $%d, %%eax", prime32_1)
-	bcast := func(m *Machine) {
+	bcast32 := func(m *Machine) {
 		c := uint64(uint32(m.R[rAX]))
 		for i := 0; i < x.lanes; i++ {
 			m.V[x.kprime][i] = c | c<<32
@@ -406,12 +447,16 @@ func (x *x86) Setup(scramble bool) {
 	switch x.mode {
 	case modeSSE2:
 		x.b.emit(func(m *Machine) {}, "movd %%eax, %%xmm%d", int(x.kprime))
-		x.b.emit(bcast, "pshufd $0, %s, %s", x.vec(x.kprime), x.vec(x.kprime))
+		x.b.emit(bcast32, "pshufd $0, %s, %s", x.vec(x.kprime), x.vec(x.kprime))
 	case modeAVX2:
 		x.b.emit(func(m *Machine) {}, "vmovd %%eax, %%xmm%d", int(x.kprime))
-		x.b.emit(bcast, "vpbroadcastd %%xmm%d, %s", int(x.kprime), x.vec(x.kprime))
+		x.b.emit(bcast32, "vpbroadcastd %%xmm%d, %s", int(x.kprime), x.vec(x.kprime))
 	default:
-		x.b.emit(bcast, "vpbroadcastd %%eax, %s", x.vec(x.kprime))
+		x.b.emit(func(m *Machine) {
+			for i := 0; i < x.lanes; i++ {
+				m.V[x.kprime][i] = m.R[rAX]
+			}
+		}, "vpbroadcastq %%rax, %s", x.vec(x.kprime))
 	}
 }
 
@@ -423,18 +468,71 @@ func (x *x86) Finish() {
 	}
 }
 
+// LoadAcc reads the accumulators in 128-bit pieces rather than in one go.
+//
+// They arrive from Go, and the two places they come from -- a copy of initAcc
+// on the long path, a Digest field on the streaming one -- are both written by
+// the compiler as 16-byte moves, because that is all the amd64 baseline has. A
+// 32- or 64-byte load spanning several of those stores cannot take its data
+// from the store queue: it waits for them to reach the cache. Loading in the
+// width they were written in forwards instead, and is worth 26% of a 256-byte
+// hash and 15% of a 1 KiB one on a Zen 4.
 func (x *x86) LoadAcc(p GPR) {
 	w := x.mode / 8
 	for i := 0; i < x.nvec; i++ {
-		x.vload(x.accA[i], p, w*i)
+		x.vloadPieces(x.accA[i], p, w*i)
 		x.vzero(x.accB[i])
+	}
+}
+
+func (x *x86) vloadPieces(dst VReg, r GPR, off int) {
+	if x.mode == modeSSE2 {
+		x.vload(dst, r, off)
+		return
+	}
+	x.b.emit(func(m *Machine) {
+		var v [8]uint64
+		v[0] = m.Load64(m.R[r] + uint64(off))
+		v[1] = m.Load64(m.R[r] + uint64(off+8))
+		m.V[dst] = v
+	}, "vmovdqu %s, %%xmm%d", x.mem(r, off), int(dst))
+	mn := "vinserti128"
+	if x.mode == modeAVX {
+		mn = "vinserti64x2"
+	}
+	for i := 1; i < x.lanes/2; i++ {
+		i := i
+		x.b.emit(func(m *Machine) {
+			m.V[dst][2*i] = m.Load64(m.R[r] + uint64(off+16*i))
+			m.V[dst][2*i+1] = m.Load64(m.R[r] + uint64(off+16*i+8))
+		}, "%s $%d, %s, %s, %s", mn, i, x.mem(r, off+16*i), x.vec(dst), x.vec(dst))
 	}
 }
 
 func (x *x86) StoreAcc(p GPR) {
 	w := x.mode / 8
 	for i := 0; i < x.nvec; i++ {
-		x.vstore(x.accA[i], p, w*i)
+		x.vstorePieces(x.accA[i], p, w*i)
+	}
+}
+
+func (x *x86) vstorePieces(src VReg, r GPR, off int) {
+	if x.mode == modeSSE2 {
+		x.vstore(src, r, off)
+		return
+	}
+	x.b.emit(func(m *Machine) { m.StoreVec(m.R[r]+uint64(off), m.V[src], 2) },
+		"vmovdqu %%xmm%d, %s", int(src), x.mem(r, off))
+	mn := "vextracti128"
+	if x.mode == modeAVX {
+		mn = "vextracti64x2"
+	}
+	for i := 1; i < x.lanes/2; i++ {
+		i := i
+		x.b.emit(func(m *Machine) {
+			m.Store64(m.R[r]+uint64(off+16*i), m.V[src][2*i])
+			m.Store64(m.R[r]+uint64(off+16*i+8), m.V[src][2*i+1])
+		}, "%s $%d, %s, %s", mn, i, x.vec(src), x.mem(r, off+16*i))
 	}
 }
 
@@ -463,6 +561,43 @@ func (x *x86) Stripe(k int, in GPR, inOff int, sec GPR, secOff int) {
 	}
 }
 
+func (x *x86) FastBlockStripes() int { return len(x.secretRegs) }
+
+func (x *x86) LoadSecretRegs(sec GPR) {
+	for k, r := range x.secretRegs {
+		x.vload(r, sec, secretConsumeRate*k)
+	}
+}
+
+// FastStripe is Stripe with the stripe's secret already in a register. The
+// arithmetic is unchanged; what it saves is the secret's load.
+//
+// A stripe touches two memory operands, the input and the secret, and needs
+// the input twice: once keyed, once raw. So one of the two has to be loaded
+// into a register and only the other can be folded into an operation. Holding
+// the secret makes that one free.
+//
+// It is tempting to go further and fold the input into both operations
+// instead, which removes the load instruction altogether and leaves five
+// instructions per stripe rather than six. That measured 1.9% *slower* on a
+// Zen 4: an AMD core cracks a folded memory operand into a load and an
+// operation regardless, so nothing is saved, and the two dependent operations
+// sit in the floating-point scheduler until their loads return -- the
+// scheduler-full stall went from nil to 17% of cycles.
+func (x *x86) FastStripe(k int, in GPR, inOff int) {
+	if x.nvec != 1 {
+		panic("asmgen: FastStripe assumes one register per stripe")
+	}
+	t := x.tmp[3*(k%(len(x.tmp)/3)):]
+	d, key, h := t[0], t[1], t[2]
+	x.vload(d, in, inOff)
+	x.vxor(key, d, x.secretRegs[k])
+	x.hi32(h, key)
+	x.vmul32(key, key, h)
+	x.vadd(x.accA[0], x.accA[0], key)
+	x.vadd(x.accB[0], x.accB[0], d)
+}
+
 // Materialize folds the deferred lane swap in: acc = accA + swap(accB).
 func (x *x86) Materialize(final bool) {
 	t := x.tmp[0]
@@ -478,12 +613,23 @@ func (x *x86) Materialize(final bool) {
 // Scramble applies acc = (xorshift(acc,47) ^ secret) * PRIME32_1. Below
 // AVX-512DQ there is no 64-bit vector multiply, so the product is assembled
 // from the two 32x32 halves.
+//
+// This runs once per block against a single register, so it is a bare
+// dependency chain with no other work of its own to hide the latency: what
+// each link costs is what it costs. AVX-512 spends three -- shift, a ternary
+// xor that folds both the xorshift and the secret into one instruction, and
+// the multiply -- against the six the narrower backends need.
 func (x *x86) Scramble(sec GPR, secOff int) {
 	w := x.mode / 8
 	for j := 0; j < x.nvec; j++ {
 		a := x.accA[j]
 		t, hi, lo := x.tmp[0], x.tmp[1], x.tmp[2]
 		x.vshr(t, a, 47)
+		if x.mode == modeAVX {
+			x.vxor3Mem(a, t, sec, secOff+w*j)
+			x.vmul64(a, a, x.kprime)
+			continue
+		}
 		x.vxor(a, a, t)
 		x.vxorMem(t, a, sec, secOff+w*j)
 		x.hi32(hi, t)

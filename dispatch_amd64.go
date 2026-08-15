@@ -51,10 +51,15 @@ func pickBackend() backendID {
 	}
 	_, ebx7, _, _ := cpuid(7, 0)
 	const (
-		featAVX2    = 1 << 5
-		featAVX512F = 1 << 16
+		featAVX2     = 1 << 5
+		featAVX512F  = 1 << 16
+		featAVX512DQ = 1 << 17
+		// The scramble's 64-bit lane multiply is VPMULLQ, which is DQ rather
+		// than F. Everything since Skylake-X has both; Knights Landing has
+		// only F, and lands on AVX2 here.
+		featAVX512 = featAVX512F | featAVX512DQ
 	)
-	if ebx7&featAVX512F != 0 && xcr0&(opmask|zmmHi256|hi16ZMM) == opmask|zmmHi256|hi16ZMM {
+	if ebx7&featAVX512 == featAVX512 && xcr0&(opmask|zmmHi256|hi16ZMM) == opmask|zmmHi256|hi16ZMM {
 		return backendAVX512
 	}
 	if ebx7&featAVX2 != 0 {

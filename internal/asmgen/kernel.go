@@ -75,6 +75,29 @@ func emitHashLong(a Arch) {
 	a.SubRI(rem, 1)
 
 	blockLoop, afterBlocks := b.NewLabel("block"), b.NewLabel("tail")
+	if ns := a.FastBlockStripes(); ns > 0 {
+		// The standard secret's block is a fixed sixteen stripes, which is
+		// few enough to hold the whole schedule in registers. Any other
+		// secret length drops through to the loop below, and so does an input
+		// with too few blocks to pay for filling them.
+		fast, generic := b.NewLabel("fast"), b.NewLabel("gen")
+		a.BranchI(lim, int64(ns*secretConsumeRate), NE, generic)
+		a.BranchI(rem, int64(ns*stripeLen*minFastBlocks), LT, generic)
+		a.LoadSecretRegs(sec)
+		a.MovRR(tmp, sec)
+		a.AddRR(tmp, lim)
+		b.Label(fast)
+		for k := 0; k < ns; k++ {
+			a.FastStripe(k, in, stripeLen*k)
+		}
+		a.AddRI(in, int64(stripeLen*ns))
+		a.Materialize(false)
+		a.Scramble(tmp, 0)
+		a.SubRR(rem, blk)
+		a.BranchR(rem, blk, GE, fast)
+		a.Jmp(afterBlocks)
+		b.Label(generic)
+	}
 	b.Label(blockLoop)
 	a.BranchR(rem, blk, LT, afterBlocks)
 	{
@@ -159,6 +182,35 @@ func emitAccumBlocks(a Arch) {
 	loop, done := b.NewLabel("blocks"), b.NewLabel("bdone")
 	b.Label(loop)
 	a.BranchI(left, 0, LE, done)
+	if ns := a.FastBlockStripes(); ns > 0 {
+		// Whole blocks of the standard length run with the secret schedule in
+		// registers; see FastStripe. It covers only a position at a block
+		// boundary with enough blocks left to pay for filling them, so the
+		// registers are filled at most once per call and never for a caller
+		// writing a few stripes at a time. Once filled they are free, which is
+		// why the loop below carries on at one block rather than four.
+		//
+		// The block-count test comes first: a caller writing in small pieces
+		// fails it on every pass and never reaches the other two.
+		fast, slow := b.NewLabel("fast"), b.NewLabel("slow")
+		a.BranchI(left, int64(ns*minFastBlocks), LT, slow)
+		a.BranchI(lim, int64(ns*secretConsumeRate), NE, slow)
+		a.BranchR(k, nspb, NE, slow)
+		a.LoadSecretRegs(sec)
+		a.MovRR(tmp, sec)
+		a.AddRR(tmp, lim)
+		b.Label(fast)
+		for i := 0; i < ns; i++ {
+			a.FastStripe(i, in, stripeLen*i)
+		}
+		a.AddRI(in, int64(stripeLen*ns))
+		a.SubRI(left, int64(ns))
+		a.Materialize(false)
+		a.Scramble(tmp, 0)
+		a.BranchI(left, int64(ns), GE, fast)
+		a.Jmp(loop)
+		b.Label(slow)
+	}
 	{
 		// cnt = min(k, left)
 		a.MovRR(cnt, k)
@@ -238,4 +290,17 @@ const (
 	stripeLen          = 64
 	secretConsumeRate  = 8
 	secretLastAccStart = 7
+
+	// stdBlockStripes is the block length the default 192-byte secret gives:
+	// (192-64)/8. It is not wire format -- a custom secret of another length
+	// produces another block -- but it is the only one worth specializing.
+	stdBlockStripes = 16
+
+	// minFastBlocks is how many whole blocks an input needs before filling the
+	// secret registers pays for itself. Filling them costs sixteen loads and
+	// then holds sixteen registers for the rest of the call, which on a Zen 4
+	// is a real share of the rename pool. Measured there, the crossover sits
+	// between three blocks and seven: at 2 KiB the register-resident block is
+	// 8% slower, at 4 KiB 2% slower, at 8 KiB 2% faster and at 16 KiB 3%.
+	minFastBlocks = 4
 )

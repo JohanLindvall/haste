@@ -579,6 +579,14 @@ func (a *arm64) StoreAcc(p GPR) {
 	}
 }
 
+// No arm64 backend keeps the secret schedule in registers. NEON and the
+// shorter SVE lengths spend two or four registers per stripe, so a block's
+// worth does not fit; only SVE2 at a 512-bit vector length could, and that
+// cannot be measured on the hardware this was tuned on.
+func (a *arm64) FastBlockStripes() int    { return 0 }
+func (a *arm64) LoadSecretRegs(GPR)       { panic("asmgen: no arm64 fast block") }
+func (a *arm64) FastStripe(int, GPR, int) { panic("asmgen: no arm64 fast block") }
+
 // Stripe absorbs 64 bytes. Only the scalar side cares whether it is part of an
 // unrolled group; the vector side just wants an index to rotate scratch
 // registers by, and a standalone stripe can use the first set.
