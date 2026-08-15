@@ -272,7 +272,13 @@ an operation, so `op mem` and `load; op reg` do the same ALU work and differ
 only in instruction count. Emitting half the stripes in the five-instruction
 folded form and half in the six-instruction loaded form measured exactly
 neutral. AVX2 is the exception: at 12 instructions per stripe it runs out of
-floating-point dispatch slots before it runs out of ALU throughput.
+floating-point dispatch slots before it runs out of ALU throughput -- which is
+why it alone unrolls 8 rather than 4. At unroll 4 the loop's own four slots
+per iteration are 8% of the stripe work, and halving them measured 4-5%
+across every length; unroll 16 was neutral against 8, the loop-overhead
+saving cancelled by code size. SSE2 sits just on the ALU side of the same
+line (20 ALU ops against 28 instructions per stripe) and gains nothing from
+unrolling.
 
 - The AVX-512 kernel holds the **whole secret schedule in registers** for the
   default secret's sixteen-stripe block (`FastStripe`), gated on the input
@@ -294,6 +300,13 @@ floating-point dispatch slots before it runs out of ALU throughput.
 - Store-to-load forwarding on the accumulator array is worth more than any of
   the kernel work at short lengths; see the invariant above. It is why SSE2,
   whose kernel did not change, still moved.
+- The portable accumulator loop walks the stripe one pair at a time rather
+  than loading all eight words up front. The lane swap only couples d[i] with
+  d[i^1], so a pair is done with its data as soon as it is absorbed; loading
+  eight data words alongside eight accumulators spills the accumulators on
+  amd64, which has ~14 registers to give. Pair-wise halves the spills and is
+  worth 6% on the purego long path. It matters wherever the portable path is
+  what runs: purego builds and every architecture without a kernel.
 - **Measured and rejected**: a `prefetcht0` a block ahead in the fast loop
   (neutral at 64 KiB, slightly negative at 1 MiB); a second pair of accumulator
   chains (the loop is throughput-bound, not latency-bound); mixing the five-

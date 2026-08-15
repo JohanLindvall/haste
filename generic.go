@@ -401,16 +401,23 @@ func accumulateGeneric(acc *[accNB]uint64, in, sec unsafe.Pointer, nbStripes int
 	for ; nbStripes > 0; nbStripes-- {
 		// Each lane adds its own keyed product and its neighbour's raw data:
 		// acc[i] += mul32(data[i]^secret[i]), acc[i^1] += data[i].
+		//
+		// The stripe is walked one pair at a time, not loaded up front: the
+		// lane swap only ever couples d[i] with d[i^1], so a pair is done with
+		// its data as soon as it is absorbed. Loading all eight words first
+		// needs 8 data + 8 accumulator registers and spills the accumulators
+		// on amd64, which has ~14 to give; pair-wise, everything stays in
+		// registers.
 		d0, d1 := rd64(in, 0), rd64(in, 8)
-		d2, d3 := rd64(in, 16), rd64(in, 24)
-		d4, d5 := rd64(in, 32), rd64(in, 40)
-		d6, d7 := rd64(in, 48), rd64(in, 56)
 		a0 += d1 + mul32(d0^rd64(sec, 0))
 		a1 += d0 + mul32(d1^rd64(sec, 8))
+		d2, d3 := rd64(in, 16), rd64(in, 24)
 		a2 += d3 + mul32(d2^rd64(sec, 16))
 		a3 += d2 + mul32(d3^rd64(sec, 24))
+		d4, d5 := rd64(in, 32), rd64(in, 40)
 		a4 += d5 + mul32(d4^rd64(sec, 32))
 		a5 += d4 + mul32(d5^rd64(sec, 40))
+		d6, d7 := rd64(in, 48), rd64(in, 56)
 		a6 += d7 + mul32(d6^rd64(sec, 48))
 		a7 += d6 + mul32(d7^rd64(sec, 56))
 		in = add(in, stripeLen)

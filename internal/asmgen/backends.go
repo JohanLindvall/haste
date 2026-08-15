@@ -24,7 +24,7 @@ func Backends() []Backend {
 		{Name: "sse2", Suffix: "SSE2", GOARCH: "amd64",
 			New: func() Arch { return newX86("sse2", modeSSE2, 4) }},
 		{Name: "avx2", Suffix: "AVX2", GOARCH: "amd64",
-			New: func() Arch { return newX86("avx2", modeAVX2, 4) }},
+			New: func() Arch { return newX86("avx2", modeAVX2, 8) }},
 		{Name: "avx512", Suffix: "AVX512", GOARCH: "amd64",
 			New: func() Arch { return newX86("avx512", modeAVX, 4) }},
 		{Name: "neon", Suffix: "NEON", GOARCH: "arm64",
