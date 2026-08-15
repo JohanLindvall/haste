@@ -229,6 +229,12 @@ the three splits that the register file and the pairing of `uzp` allow.
   would otherwise push these over the budget. Cost 45-74 against 80, so keep
   an eye on `-gcflags=-m` when touching them; going one node over silently
   doubles their cost. TestBitflipConstants ties the constants back to kSecret.
+- Two more streaming ideas measured and dropped, both in the staging path:
+  replacing the short-write `copy` with inline word moves is worth nothing
+  (memmove was not the cost), and Write's fast path cannot be inlined at all.
+  A method call returning `(int, error)` costs 70 of the 80-node budget on its
+  own, so no branch and no copy fits beside one. That is why Write is a thin
+  wrapper around `write` rather than handling the common case itself.
 - Go's inliner budget (80) drives several structural choices: the public
   entry points are thin so they inline; the 0..16-byte cases live inside
   `sum64`/`sum128` rather than in their own functions; `mixHalf` takes its
