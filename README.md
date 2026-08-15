@@ -56,27 +56,28 @@ algorithm, included for scale). Nanoseconds per hash, lower is better:
 
 | size | xxhaste | zeebo/xxh3 | cespare (XXH64) |
 |-----:|--------:|-----------:|----------------:|
-| 4 | 3.00 | 2.92 | 3.20 |
-| 8 | 3.00 | 2.93 | 3.50 |
-| 16 | 3.27 | 3.19 | 4.24 |
-| 32 | 4.77 | 4.65 | 7.65 |
-| 64 | **6.80** | 7.26 | 9.07 |
-| 128 | **10.60** | 12.71 | 12.55 |
-| 240 | **22.65** | 23.23 | 19.66 |
-| 256 | **22.82** | 26.17 | 18.73 |
-| 512 | **31.4** | 44.8 | 29.9 |
-| 1 Ki | **47.3** | 82.2 | 49.5 |
-| 4 Ki | **156** | 330 | 163 |
-| 64 Ki | **2336** | 5222 | 2443 |
-| 1 Mi | **40615** | 85376 | 43218 |
+| 4 | 3.02 | 2.93 | 3.20 |
+| 8 | 3.02 | 2.93 | 3.49 |
+| 16 | 3.25 | 3.18 | 4.23 |
+| 32 | 4.77 | 4.67 | 7.66 |
+| 64 | **6.83** | 7.26 | 9.07 |
+| 128 | **10.58** | 12.71 | 12.49 |
+| 240 | **22.68** | 23.27 | 19.71 |
+| 256 | **20.90** | 26.26 | 18.69 |
+| 512 | **29.4** | 44.9 | 30.0 |
+| 1 Ki | **45.0** | 82.4 | 49.5 |
+| 4 Ki | **153** | 326 | 163 |
+| 64 Ki | **2330** | 5260 | 2443 |
+| 1 Mi | **40162** | 85293 | 43703 |
 
-That is **28.1 GB/s** sustained against 12.6, a 2.2x speedup on long inputs,
+That is **28.1 GB/s** sustained against 12.5, a 2.2x speedup on long inputs,
 and a tie inside 3% below 32 bytes, where more than half the cost is Go's call
-overhead rather than hashing. From 1 KiB up it is also faster than cespare's
-XXH64 — a structurally cheaper algorithm — on the same machine.
+overhead rather than hashing - which is what the fixed-size entry points above
+are for. From 512 bytes up it is also faster than cespare's XXH64, a
+structurally cheaper algorithm, on the same machine.
 
 The 128-bit hash tracks the same shape: level below 32 bytes, ahead from 64
-bytes up, 2.0x at 64 KiB.
+bytes up, 2.25x at 64 KiB.
 
 Streaming a mebibyte through `Digest.Write` is ahead of the other XXH3 port at
 every piece size: 6.8 GB/s at 64-byte writes against 5.5, 14.5 at 1 KiB
