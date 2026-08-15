@@ -127,7 +127,7 @@ implementations:
 | 4 | **2.13** | 2.32 | 2.45 |
 | 8 | 2.17 | 2.22 | 2.46 |
 | 16 | 1.99 | 2.00 | 3.12 |
-| 32 | 2.64 | 2.46 | 6.17 |
+| 32 | **2.34** | 2.41 | 6.11 |
 | 64 | 3.55 | 3.52 | 8.16 |
 | 128 | 5.53 | 5.47 | 11.6 |
 | 240 | **9.38** | 10.6 | 18.0 |
@@ -142,14 +142,17 @@ implementations:
 **102 GB/s** at 64 KiB against 87, and 94 GB/s at a mebibyte. Streaming one in
 4 KiB pieces: **63.8 GB/s** against 35.7 and 18.7.
 
-Below 256 bytes the two are now level or better everywhere except 32 bytes,
-where zeebo/xxh3 keeps 7%. What closed the rest was never one thing: seed-free
+Below 256 bytes the two are now level or better at every size. What closed
+the gap was never one thing: seed-free
 twins of every path for the unseeded entry points, calling the ladders without
 an intermediate function, and unrolling the 129..240 ladder's tail -- Go does
 not unroll loops, and the reference's tail loop was recomputing offsets and
 carrying its accumulator serially where the unrolled form runs every offset as
 an immediate. That last one is 27% of a 240-byte hash, and it is why the
 scalar ladder no longer loses to its own SIMD path at the 240/241 boundary.
+The final size to fall was 32 bytes, whose two-mix rung now sits inline in
+the dispatcher: at two and a half nanoseconds, the call to the ladder was
+the whole deficit.
 
 What the AVX-512 kernel does that the others do not: it holds the whole 1 KiB
 block's secret schedule in the upper sixteen registers, which have no ABI

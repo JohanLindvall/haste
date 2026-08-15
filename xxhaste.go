@@ -184,6 +184,17 @@ func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) ui
 			return mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1)
 		}
 		if n <= 128 {
+			// The 17..32 rung is spelled out here rather than called: it is
+			// two mixes, and at two and a half nanoseconds the call to the
+			// ladder was the 7% by which this size still trailed. The longer
+			// rungs keep the call -- the same overhead shrinks into
+			// insignificance against four or more mixes.
+			if n <= 32 {
+				acc := uint64(n) * prime64_1
+				acc += mix16BNS(in, sec)
+				acc += mix16BNS(add(in, n-16), add(sec, 16))
+				return avalanche(acc)
+			}
 			return len17to128_64NS(in, n, sec)
 		}
 		return len129to240_64NS(in, n, sec)
@@ -292,6 +303,14 @@ func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) U
 			}
 		}
 		if n <= 128 {
+			// The 17..32 rung inline, as in sum64NS.
+			if n <= 32 {
+				a, b := in, add(in, n-16)
+				ca, cb := cross16(a), cross16(b)
+				lo := mixHalfNS(uint64(n)*prime64_1, a, sec, cb)
+				hi := mixHalfNS(0, b, add(sec, 16), ca)
+				return finalize128(lo, hi, n, 0)
+			}
 			return len17to128_128NS(in, n, sec)
 		}
 		return len129to240_128NS(in, n, sec)

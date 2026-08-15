@@ -347,6 +347,11 @@ unrolling.
   terms are computed inside their rounds, not hoisted to the top: hoisting
   extends eight loads' live ranges across the whole prologue and measured
   6-7% slower.
+- The 17..32 rung of the seed-free ladders is inlined into `sum64NS` and
+  `sum128NS`: two mixes do not amortize a call the way four or more do, and
+  at that length the call was 7% -- the last size where zeebo/xxh3 was ahead.
+  The longer rungs keep the call; inlining them all was not measured to pay
+  and would bloat a nosplit function.
 - **Measured and rejected**: a `prefetcht0` a block ahead in the fast loop
   (neutral at 64 KiB, slightly negative at 1 MiB); a second pair of accumulator
   chains (the loop is throughput-bound, not latency-bound); mixing the five-
