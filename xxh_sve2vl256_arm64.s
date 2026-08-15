@@ -248,12 +248,10 @@ TEXT ·hashLongSVE2VL256(SB), NOSPLIT, $0-40
 	WORD $0x05e4709f // trn1 z31.d, z4.d, z4.d
 	WORD $0x05ff7210 // trn1 z16.d, z16.d, z31.d
 	WORD $0x04f00000 // add z0.d, z0.d, z16.d
-	WORD $0x25f8c004 // mov z4.d, #0
 	WORD $0x05e574b0 // trn2 z16.d, z5.d, z5.d
 	WORD $0x05e570bf // trn1 z31.d, z5.d, z5.d
 	WORD $0x05ff7210 // trn1 z16.d, z16.d, z31.d
 	WORD $0x04f00021 // add z1.d, z1.d, z16.d
-	WORD $0x25f8c005 // mov z5.d, #0
 	WORD $0xe5e0e000 // st1d {z0.d}, p0, [x0]
 	WORD $0xe5e1e001 // st1d {z1.d}, p0, [x0, #1, mul vl]
 	RET
@@ -406,12 +404,10 @@ TEXT ·accumBlocksSVE2VL256(SB), NOSPLIT, $0-48
 	WORD $0x05e4709f // trn1 z31.d, z4.d, z4.d
 	WORD $0x05ff7210 // trn1 z16.d, z16.d, z31.d
 	WORD $0x04f00000 // add z0.d, z0.d, z16.d
-	WORD $0x25f8c004 // mov z4.d, #0
 	WORD $0x05e574b0 // trn2 z16.d, z5.d, z5.d
 	WORD $0x05e570bf // trn1 z31.d, z5.d, z5.d
 	WORD $0x05ff7210 // trn1 z16.d, z16.d, z31.d
 	WORD $0x04f00021 // add z1.d, z1.d, z16.d
-	WORD $0x25f8c005 // mov z5.d, #0
 	WORD $0xe5e0e000 // st1d {z0.d}, p0, [x0]
 	WORD $0xe5e1e001 // st1d {z1.d}, p0, [x0, #1, mul vl]
 	RET
@@ -424,9 +420,6 @@ TEXT ·accumSVE2VL256(SB), NOSPLIT, $0-32
 	MOVD in+8(FP), R1
 	MOVD nbStripes+16(FP), R2
 	MOVD sec+24(FP), R3
-	WORD $0xd28f362c // mov x12, #0x79b1 // #31153
-	WORD $0xf2b3c6ec // movk x12, #0x9e37, lsl #16
-	WORD $0x05e0398f // mov z15.d, x12
 	WORD $0x25d8e3e0 // ptrue p0.d
 	WORD $0xa5e0a000 // ld1d {z0.d}, p0/z, [x0]
 	WORD $0x25f8c004 // mov z4.d, #0
@@ -434,7 +427,7 @@ TEXT ·accumSVE2VL256(SB), NOSPLIT, $0-32
 	WORD $0x25f8c005 // mov z5.d, #0
 	WORD $0xaa0303e6 // mov x6, x3
 	WORD $0xf100105f // cmp x2, #0x4
-	WORD $0x5400072b // b.lt 10c <kernel+0x10c> // b.tstop
+	WORD $0x5400072b // b.lt 100 <kernel+0x100> // b.tstop
 	// .Lunroll1:
 	WORD $0xa5e0a030 // ld1d {z16.d}, p0/z, [x1]
 	WORD $0xa5e0a0d1 // ld1d {z17.d}, p0/z, [x6]
@@ -491,10 +484,10 @@ TEXT ·accumSVE2VL256(SB), NOSPLIT, $0-32
 	WORD $0x91040021 // add x1, x1, #0x100
 	WORD $0xd1001042 // sub x2, x2, #0x4
 	WORD $0xf100105f // cmp x2, #0x4
-	WORD $0x54fff92a // b.ge 2c <kernel+0x2c> // b.tcont
+	WORD $0x54fff92a // b.ge 20 <kernel+0x20> // b.tcont
 	// .Lone2:
 	WORD $0xf100005f // cmp x2, #0x0
-	WORD $0x5400024d // b.le 158 <kernel+0x158>
+	WORD $0x5400024d // b.le 14c <kernel+0x14c>
 	// .Lonebody4:
 	WORD $0xa5e0a030 // ld1d {z16.d}, p0/z, [x1]
 	WORD $0xa5e0a0d1 // ld1d {z17.d}, p0/z, [x6]
@@ -512,18 +505,16 @@ TEXT ·accumSVE2VL256(SB), NOSPLIT, $0-32
 	WORD $0x910020c6 // add x6, x6, #0x8
 	WORD $0xd1000442 // sub x2, x2, #0x1
 	WORD $0xf100005f // cmp x2, #0x0
-	WORD $0x54fffe0c // b.gt 114 <kernel+0x114>
+	WORD $0x54fffe0c // b.gt 108 <kernel+0x108>
 	// .Ldone3:
 	WORD $0x05e47490 // trn2 z16.d, z4.d, z4.d
 	WORD $0x05e4709f // trn1 z31.d, z4.d, z4.d
 	WORD $0x05ff7210 // trn1 z16.d, z16.d, z31.d
 	WORD $0x04f00000 // add z0.d, z0.d, z16.d
-	WORD $0x25f8c004 // mov z4.d, #0
 	WORD $0x05e574b0 // trn2 z16.d, z5.d, z5.d
 	WORD $0x05e570bf // trn1 z31.d, z5.d, z5.d
 	WORD $0x05ff7210 // trn1 z16.d, z16.d, z31.d
 	WORD $0x04f00021 // add z1.d, z1.d, z16.d
-	WORD $0x25f8c005 // mov z5.d, #0
 	WORD $0xe5e0e000 // st1d {z0.d}, p0, [x0]
 	WORD $0xe5e1e001 // st1d {z1.d}, p0, [x0, #1, mul vl]
 	RET

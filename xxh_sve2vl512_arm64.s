@@ -170,7 +170,6 @@ TEXT ·hashLongSVE2VL512(SB), NOSPLIT, $0-40
 	WORD $0x05e4709f // trn1 z31.d, z4.d, z4.d
 	WORD $0x05ff7210 // trn1 z16.d, z16.d, z31.d
 	WORD $0x04f00000 // add z0.d, z0.d, z16.d
-	WORD $0x25f8c004 // mov z4.d, #0
 	WORD $0xe5e0e000 // st1d {z0.d}, p0, [x0]
 	RET
 
@@ -280,7 +279,6 @@ TEXT ·accumBlocksSVE2VL512(SB), NOSPLIT, $0-48
 	WORD $0x05e4709f // trn1 z31.d, z4.d, z4.d
 	WORD $0x05ff7210 // trn1 z16.d, z16.d, z31.d
 	WORD $0x04f00000 // add z0.d, z0.d, z16.d
-	WORD $0x25f8c004 // mov z4.d, #0
 	WORD $0xe5e0e000 // st1d {z0.d}, p0, [x0]
 	RET
 
@@ -292,15 +290,12 @@ TEXT ·accumSVE2VL512(SB), NOSPLIT, $0-32
 	MOVD in+8(FP), R1
 	MOVD nbStripes+16(FP), R2
 	MOVD sec+24(FP), R3
-	WORD $0xd28f362c // mov x12, #0x79b1 // #31153
-	WORD $0xf2b3c6ec // movk x12, #0x9e37, lsl #16
-	WORD $0x05e0398f // mov z15.d, x12
 	WORD $0x25d8e3e0 // ptrue p0.d
 	WORD $0xa5e0a000 // ld1d {z0.d}, p0/z, [x0]
 	WORD $0x25f8c004 // mov z4.d, #0
 	WORD $0xaa0303e6 // mov x6, x3
 	WORD $0xf100105f // cmp x2, #0x4
-	WORD $0x5400042b // b.lt a4 <kernel+0xa4> // b.tstop
+	WORD $0x5400042b // b.lt 98 <kernel+0x98> // b.tstop
 	// .Lunroll1:
 	WORD $0xa5e0a030 // ld1d {z16.d}, p0/z, [x1]
 	WORD $0xa5e0a0d1 // ld1d {z17.d}, p0/z, [x6]
@@ -333,10 +328,10 @@ TEXT ·accumSVE2VL512(SB), NOSPLIT, $0-32
 	WORD $0x91040021 // add x1, x1, #0x100
 	WORD $0xd1001042 // sub x2, x2, #0x4
 	WORD $0xf100105f // cmp x2, #0x4
-	WORD $0x54fffc2a // b.ge 24 <kernel+0x24> // b.tcont
+	WORD $0x54fffc2a // b.ge 18 <kernel+0x18> // b.tcont
 	// .Lone2:
 	WORD $0xf100005f // cmp x2, #0x0
-	WORD $0x5400018d // b.le d8 <kernel+0xd8>
+	WORD $0x5400018d // b.le cc <kernel+0xcc>
 	// .Lonebody4:
 	WORD $0xa5e0a030 // ld1d {z16.d}, p0/z, [x1]
 	WORD $0xa5e0a0d1 // ld1d {z17.d}, p0/z, [x6]
@@ -348,12 +343,11 @@ TEXT ·accumSVE2VL512(SB), NOSPLIT, $0-32
 	WORD $0x910020c6 // add x6, x6, #0x8
 	WORD $0xd1000442 // sub x2, x2, #0x1
 	WORD $0xf100005f // cmp x2, #0x0
-	WORD $0x54fffecc // b.gt ac <kernel+0xac>
+	WORD $0x54fffecc // b.gt a0 <kernel+0xa0>
 	// .Ldone3:
 	WORD $0x05e47490 // trn2 z16.d, z4.d, z4.d
 	WORD $0x05e4709f // trn1 z31.d, z4.d, z4.d
 	WORD $0x05ff7210 // trn1 z16.d, z16.d, z31.d
 	WORD $0x04f00000 // add z0.d, z0.d, z16.d
-	WORD $0x25f8c004 // mov z4.d, #0
 	WORD $0xe5e0e000 // st1d {z0.d}, p0, [x0]
 	RET

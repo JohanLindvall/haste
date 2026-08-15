@@ -135,9 +135,10 @@ type Arch interface {
 	BranchR(a, b GPR, c Cond, label string)
 	Jmp(label string)
 
-	// Setup materializes whatever the vector steps need (constants,
-	// predicates) and Finish undoes anything that must not outlive the call.
-	Setup()
+	// Setup prepares whatever the vector steps need. scramble says whether
+	// the kernel can reach a Scramble: a kernel that cannot does not need the
+	// multiplier materialized, though it may still need predicates.
+	Setup(scramble bool)
 	Finish()
 
 	// LoadAcc reads the eight accumulators from [p] into the product
@@ -151,9 +152,10 @@ type Arch interface {
 	Stripe(k int, in GPR, inOff int, sec GPR, secOff int)
 
 	// Materialize folds the data accumulator into the product accumulator,
-	// leaving the true XXH3 accumulator state in the latter, and zeroes the
-	// former so accumulation can continue.
-	Materialize()
+	// leaving the true XXH3 accumulator state in the latter. Unless final, it
+	// also clears the data accumulator so absorption can continue; the last
+	// one before a store does not, because nothing reads it again.
+	Materialize(final bool)
 
 	// Scramble applies the between-blocks scramble to the accumulators, which
 	// must be materialized.

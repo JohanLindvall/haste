@@ -328,12 +328,21 @@ func len129to240_128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint
 	// Four fixed 32-byte rounds, written out for the same reason as in
 	// len129to240_64. They are not split into partial sums: mix32B feeds each
 	// half with the other's input, so the two halves are already interleaved.
-	for i := uintptr(0); i < 4; i++ {
-		a, b := add(in, 32*i), add(in, 32*i+16)
-		ca, cb := cross16(a), cross16(b)
-		lo = mixHalf(lo, a, add(sec, 32*i), seed, cb)
-		hi = mixHalf(hi, b, add(sec, 32*i+16), seed, ca)
-	}
+	// Written out rather than looped: every offset is then a constant, and
+	// mixHalf inlines, so the four rounds become straight-line code with
+	// eight independent multiplies in flight.
+	c0, c1 := cross16(in), cross16(add(in, 16))
+	c2, c3 := cross16(add(in, 32)), cross16(add(in, 48))
+	c4, c5 := cross16(add(in, 64)), cross16(add(in, 80))
+	c6, c7 := cross16(add(in, 96)), cross16(add(in, 112))
+	lo = mixHalf(lo, in, sec, seed, c1)
+	hi = mixHalf(hi, add(in, 16), add(sec, 16), seed, c0)
+	lo = mixHalf(lo, add(in, 32), add(sec, 32), seed, c3)
+	hi = mixHalf(hi, add(in, 48), add(sec, 48), seed, c2)
+	lo = mixHalf(lo, add(in, 64), add(sec, 64), seed, c5)
+	hi = mixHalf(hi, add(in, 80), add(sec, 80), seed, c4)
+	lo = mixHalf(lo, add(in, 96), add(sec, 96), seed, c7)
+	hi = mixHalf(hi, add(in, 112), add(sec, 112), seed, c6)
 	lo = avalanche(lo)
 	hi = avalanche(hi)
 

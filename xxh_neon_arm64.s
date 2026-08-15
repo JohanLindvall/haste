@@ -407,16 +407,12 @@ TEXT ·hashLongNEON(SB), NOSPLIT, $0-40
 	WORD $0x4ef784e7 // add v7.2d, v7.2d, v23.2d
 	WORD $0x6e044090 // ext v16.16b, v4.16b, v4.16b, #8
 	WORD $0x4ef08400 // add v0.2d, v0.2d, v16.2d
-	WORD $0x6f00e404 // movi v4.2d, #0x0
 	WORD $0x6e0540b0 // ext v16.16b, v5.16b, v5.16b, #8
 	WORD $0x4ef08421 // add v1.2d, v1.2d, v16.2d
-	WORD $0x6f00e405 // movi v5.2d, #0x0
 	WORD $0x6e0640d0 // ext v16.16b, v6.16b, v6.16b, #8
 	WORD $0x4ef08442 // add v2.2d, v2.2d, v16.2d
-	WORD $0x6f00e406 // movi v6.2d, #0x0
 	WORD $0x6e0740f0 // ext v16.16b, v7.16b, v7.16b, #8
 	WORD $0x4ef08463 // add v3.2d, v3.2d, v16.2d
-	WORD $0x6f00e407 // movi v7.2d, #0x0
 	WORD $0x3c800000 // stur q0, [x0]
 	WORD $0x3c810001 // stur q1, [x0, #16]
 	WORD $0x3c820002 // stur q2, [x0, #32]
@@ -661,16 +657,12 @@ TEXT ·accumBlocksNEON(SB), NOSPLIT, $0-48
 	// .Lbdone2:
 	WORD $0x6e044090 // ext v16.16b, v4.16b, v4.16b, #8
 	WORD $0x4ef08400 // add v0.2d, v0.2d, v16.2d
-	WORD $0x6f00e404 // movi v4.2d, #0x0
 	WORD $0x6e0540b0 // ext v16.16b, v5.16b, v5.16b, #8
 	WORD $0x4ef08421 // add v1.2d, v1.2d, v16.2d
-	WORD $0x6f00e405 // movi v5.2d, #0x0
 	WORD $0x6e0640d0 // ext v16.16b, v6.16b, v6.16b, #8
 	WORD $0x4ef08442 // add v2.2d, v2.2d, v16.2d
-	WORD $0x6f00e406 // movi v6.2d, #0x0
 	WORD $0x6e0740f0 // ext v16.16b, v7.16b, v7.16b, #8
 	WORD $0x4ef08463 // add v3.2d, v3.2d, v16.2d
-	WORD $0x6f00e407 // movi v7.2d, #0x0
 	WORD $0x3c800000 // stur q0, [x0]
 	WORD $0x3c810001 // stur q1, [x0, #16]
 	WORD $0x3c820002 // stur q2, [x0, #32]
@@ -685,9 +677,6 @@ TEXT ·accumNEON(SB), NOSPLIT, $0-32
 	MOVD in+8(FP), R1
 	MOVD nbStripes+16(FP), R2
 	MOVD sec+24(FP), R3
-	WORD $0xd28f362c // mov x12, #0x79b1 // #31153
-	WORD $0xf2b3c6ec // movk x12, #0x9e37, lsl #16
-	WORD $0x4e040d8f // dup v15.4s, w12
 	WORD $0x3cc00000 // ldur q0, [x0]
 	WORD $0x6f00e404 // movi v4.2d, #0x0
 	WORD $0x3cc10001 // ldur q1, [x0, #16]
@@ -698,7 +687,7 @@ TEXT ·accumNEON(SB), NOSPLIT, $0-32
 	WORD $0x6f00e407 // movi v7.2d, #0x0
 	WORD $0xaa0303e6 // mov x6, x3
 	WORD $0xf100105f // cmp x2, #0x4
-	WORD $0x54000ccb // b.lt 1cc <kernel+0x1cc> // b.tstop
+	WORD $0x54000ccb // b.lt 1c0 <kernel+0x1c0> // b.tstop
 	// .Lunroll1:
 	WORD $0x3cc00030 // ldur q16, [x1]
 	WORD $0x3cc10031 // ldur q17, [x1, #16]
@@ -800,10 +789,10 @@ TEXT ·accumNEON(SB), NOSPLIT, $0-32
 	WORD $0x910080c6 // add x6, x6, #0x20
 	WORD $0xd1001042 // sub x2, x2, #0x4
 	WORD $0xf100105f // cmp x2, #0x4
-	WORD $0x54fff38a // b.ge 38 <kernel+0x38> // b.tcont
+	WORD $0x54fff38a // b.ge 2c <kernel+0x2c> // b.tcont
 	// .Lone2:
 	WORD $0xf100005f // cmp x2, #0x0
-	WORD $0x540003cd // b.le 248 <kernel+0x248>
+	WORD $0x540003cd // b.le 23c <kernel+0x23c>
 	// .Lonebody4:
 	WORD $0x3cc00030 // ldur q16, [x1]
 	WORD $0x3cc10031 // ldur q17, [x1, #16]
@@ -833,20 +822,16 @@ TEXT ·accumNEON(SB), NOSPLIT, $0-32
 	WORD $0x910020c6 // add x6, x6, #0x8
 	WORD $0xd1000442 // sub x2, x2, #0x1
 	WORD $0xf100005f // cmp x2, #0x0
-	WORD $0x54fffc8c // b.gt 1d4 <kernel+0x1d4>
+	WORD $0x54fffc8c // b.gt 1c8 <kernel+0x1c8>
 	// .Ldone3:
 	WORD $0x6e044090 // ext v16.16b, v4.16b, v4.16b, #8
 	WORD $0x4ef08400 // add v0.2d, v0.2d, v16.2d
-	WORD $0x6f00e404 // movi v4.2d, #0x0
 	WORD $0x6e0540b0 // ext v16.16b, v5.16b, v5.16b, #8
 	WORD $0x4ef08421 // add v1.2d, v1.2d, v16.2d
-	WORD $0x6f00e405 // movi v5.2d, #0x0
 	WORD $0x6e0640d0 // ext v16.16b, v6.16b, v6.16b, #8
 	WORD $0x4ef08442 // add v2.2d, v2.2d, v16.2d
-	WORD $0x6f00e406 // movi v6.2d, #0x0
 	WORD $0x6e0740f0 // ext v16.16b, v7.16b, v7.16b, #8
 	WORD $0x4ef08463 // add v3.2d, v3.2d, v16.2d
-	WORD $0x6f00e407 // movi v7.2d, #0x0
 	WORD $0x3c800000 // stur q0, [x0]
 	WORD $0x3c810001 // stur q1, [x0, #16]
 	WORD $0x3c820002 // stur q2, [x0, #32]

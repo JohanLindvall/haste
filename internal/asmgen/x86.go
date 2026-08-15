@@ -386,7 +386,10 @@ func (x *x86) hi32(dst, src VReg) {
 
 // Setup broadcasts PRIME32_1 for the scramble step. It clobbers rAX, which the
 // kernel has nothing live in at that point.
-func (x *x86) Setup() {
+func (x *x86) Setup(scramble bool) {
+	if !scramble {
+		return
+	}
 	// Typed, not untyped: emit takes ...any, which would give an untyped
 	// constant its default type of int -- and this one does not fit in an int
 	// on a 32-bit host, where the generator and the test suite still have to
@@ -453,12 +456,14 @@ func (x *x86) Stripe(k int, in GPR, inOff int, sec GPR, secOff int) {
 }
 
 // Materialize folds the deferred lane swap in: acc = accA + swap(accB).
-func (x *x86) Materialize() {
+func (x *x86) Materialize(final bool) {
 	t := x.tmp[0]
 	for j := 0; j < x.nvec; j++ {
 		x.vshuf32(t, x.accB[j], 0x4e)
 		x.vadd(x.accA[j], x.accA[j], t)
-		x.vzero(x.accB[j])
+		if !final {
+			x.vzero(x.accB[j])
+		}
 	}
 }
 

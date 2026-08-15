@@ -454,7 +454,14 @@ func (a *arm64) swap64(dst, src VReg) {
 	}, "trn1 %s, %s, %s", a.z(dst, "d"), a.z(dst, "d"), a.z(t, "d"))
 }
 
-func (a *arm64) Setup() {
+func (a *arm64) Setup(scramble bool) {
+	if !scramble {
+		// SVE still needs its governing predicate, whatever else it skips.
+		if a.sve {
+			a.b.emit(func(m *Machine) {}, "ptrue p0.d")
+		}
+		return
+	}
 	const prime32_1 = 0x9E3779B1
 	r := a.GPRName(armConstGPR)
 	a.b.emit(func(m *Machine) { m.R[armConstGPR] = prime32_1 & 0xffff },
@@ -548,20 +555,24 @@ func (a *arm64) stripeSVE(k int, in GPR, inOff int, sec GPR, secOff int) {
 	}
 }
 
-func (a *arm64) Materialize() {
+func (a *arm64) Materialize(final bool) {
 	t := a.tmp[0]
 	for j := 0; j < a.nvec; j++ {
 		a.swap64(t, a.accB[j])
 		a.vadd(a.accA[j], a.accA[j], t)
-		a.vzero(a.accB[j])
+		if !final {
+			a.vzero(a.accB[j])
+		}
 	}
 	// In registers the lane swap costs nothing at all: the neighbour is just
 	// a different register name.
 	for i := 0; i < a.scalarLanes; i += 2 {
 		a.add3(a.sccA[i], a.sccA[i], a.sccB[i+1])
 		a.add3(a.sccA[i+1], a.sccA[i+1], a.sccB[i])
-		a.zeroGPR(a.sccB[i])
-		a.zeroGPR(a.sccB[i+1])
+		if !final {
+			a.zeroGPR(a.sccB[i])
+			a.zeroGPR(a.sccB[i+1])
+		}
 	}
 }
 

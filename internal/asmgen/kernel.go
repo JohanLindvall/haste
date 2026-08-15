@@ -58,7 +58,7 @@ func emitHashLong(a Arch) {
 	acc, in, n, sec, lim := a.ArgGPR(0), a.ArgGPR(1), a.ArgGPR(2), a.ArgGPR(3), a.ArgGPR(4)
 	blk, rem, cnt, s, end, tmp := a.TmpGPR(0), a.TmpGPR(1), a.TmpGPR(2), a.TmpGPR(3), a.TmpGPR(4), a.TmpGPR(5)
 
-	a.Setup()
+	a.Setup(true)
 	a.LoadAcc(acc)
 
 	// end = in + n - 64, the address of the final stripe.
@@ -83,7 +83,7 @@ func emitHashLong(a Arch) {
 		a.MovRR(s, sec)
 		emitStripeLoop(a, in, s, cnt)
 
-		a.Materialize()
+		a.Materialize(false)
 		a.MovRR(tmp, sec)
 		a.AddRR(tmp, lim)
 		a.Scramble(tmp, 0)
@@ -107,7 +107,7 @@ func emitHashLong(a Arch) {
 	a.SubRI(tmp, secretLastAccStart)
 	a.Stripe(0, end, 0, tmp, 0)
 
-	a.Materialize()
+	a.Materialize(true)
 	a.StoreAcc(acc)
 	a.Finish()
 }
@@ -118,11 +118,12 @@ func emitAccum(a Arch) {
 	acc, in, cnt, sec := a.ArgGPR(0), a.ArgGPR(1), a.ArgGPR(2), a.ArgGPR(3)
 	s := a.TmpGPR(0)
 
-	a.Setup()
+	// This kernel never scrambles, so it needs no multiplier.
+	a.Setup(false)
 	a.LoadAcc(acc)
 	a.MovRR(s, sec)
 	emitStripeLoop(a, in, s, cnt)
-	a.Materialize()
+	a.Materialize(true)
 	a.StoreAcc(acc)
 	a.Finish()
 }
@@ -141,7 +142,7 @@ func emitAccumBlocks(a Arch) {
 	lim, soFar := a.ArgGPR(4), a.ArgGPR(5)
 	nspb, s, k, cnt, tmp := a.TmpGPR(0), a.TmpGPR(1), a.TmpGPR(2), a.TmpGPR(3), a.TmpGPR(4)
 
-	a.Setup()
+	a.Setup(true)
 	a.LoadAcc(acc)
 
 	a.MovRR(nspb, lim)
@@ -173,7 +174,7 @@ func emitAccumBlocks(a Arch) {
 		// Anything short of the whole run means the input ran out first.
 		a.BranchR(tmp, k, NE, done)
 
-		a.Materialize()
+		a.Materialize(false)
 		a.MovRR(tmp, sec)
 		a.AddRR(tmp, lim)
 		a.Scramble(tmp, 0)
@@ -184,7 +185,7 @@ func emitAccumBlocks(a Arch) {
 	}
 	b.Label(done)
 
-	a.Materialize()
+	a.Materialize(true)
 	a.StoreAcc(acc)
 	a.Finish()
 }
