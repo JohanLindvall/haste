@@ -110,7 +110,15 @@ func checkSecret(secret []byte) {
 //go:nosplit
 func sum64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed uint64) uint64 {
 	if n > 16 {
-		return sum64Big(in, n, sec, secretLen, seed)
+		if n > midsizeMax {
+			// The accumulator path is spelled out here rather than behind two
+			// more calls: at this length the calls are a measurable share of
+			// the cost, and 256 bytes is only four stripes of work.
+			acc := initAcc
+			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
+			return mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1)
+		}
+		return sum64Mid(in, n, sec, seed)
 	}
 	if n > 8 {
 		// 9..16 bytes: the two overlapping halves are folded through the
@@ -145,18 +153,12 @@ func sum64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed
 	return avalanche64(seed ^ rd64(sec, 56) ^ rd64(sec, 64))
 }
 
-// sum64Big handles everything above 16 bytes: two mid-size ladders and then
-// the accumulator loop.
-func sum64Big(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed uint64) uint64 {
+// sum64Mid handles 17..240 bytes, the two fixed ladders.
+func sum64Mid(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint64) uint64 {
 	if n <= 128 {
 		return len17to128_64(in, n, sec, seed)
 	}
-	if n <= midsizeMax {
-		return len129to240_64(in, n, sec, seed)
-	}
-	acc := initAcc
-	hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
-	return mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1)
+	return len129to240_64(in, n, sec, seed)
 }
 
 // sum64Seeded applies a seed. Up to 240 bytes the seed enters the arithmetic
@@ -183,7 +185,18 @@ func sum64Seeded(in unsafe.Pointer, n uintptr, seed uint64) uint64 {
 //go:nosplit
 func sum128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed uint64) Uint128 {
 	if n > 16 {
-		return sum128Big(in, n, sec, secretLen, seed)
+		if n > midsizeMax {
+			// As in sum64, and worth more here: this path converges the
+			// accumulators twice.
+			acc := initAcc
+			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
+			return Uint128{
+				Lo: mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1),
+				Hi: mergeAccs(&acc, add(sec, uintptr(secretLen-8*accNB-secretMergeAccsStart)),
+					^(uint64(n) * prime64_2)),
+			}
+		}
+		return sum128Mid(in, n, sec, seed)
 	}
 	if n > 8 {
 		return len9to16_128(in, n, sec, seed)
@@ -200,20 +213,12 @@ func sum128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, see
 	}
 }
 
-func sum128Big(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed uint64) Uint128 {
+// sum128Mid handles 17..240 bytes.
+func sum128Mid(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint64) Uint128 {
 	if n <= 128 {
 		return len17to128_128(in, n, sec, seed)
 	}
-	if n <= midsizeMax {
-		return len129to240_128(in, n, sec, seed)
-	}
-	acc := initAcc
-	hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
-	return Uint128{
-		Lo: mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1),
-		Hi: mergeAccs(&acc, add(sec, uintptr(secretLen-8*accNB-secretMergeAccsStart)),
-			^(uint64(n) * prime64_2)),
-	}
+	return len129to240_128(in, n, sec, seed)
 }
 
 func sum128Seeded(in unsafe.Pointer, n uintptr, seed uint64) Uint128 {

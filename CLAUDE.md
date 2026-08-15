@@ -198,10 +198,15 @@ the three splits that the register file and the pairing of `uzp` allow.
   prologue and epilogue, and a stripe is ~2.5ns. Use those numbers before
   restructuring anything on the streaming path.
 - Still on the table for streaming, both measured and rejected for now:
-  0. The one-shot path for 1 KiB spends 46.9ns: 37.6 in the kernel, 6.6 in
-     mergeAccs and 2.2 copying initAcc. The merge is a dependency chain --
-     four folds, then avalanche -- so moving it into the kernel would save the
-     call, not the latency.
+  0. The one-shot path for 1 KiB spends about 45ns: 38 in the kernel, 4 in
+     mergeAccs, 2 copying initAcc. **Moving the merge into the kernel was
+     implemented and measured: it is neutral to 0.8% worse, and was reverted.**
+     The reason is visible in the generated code -- arm64 needs four
+     movz/movk to materialize each 64-bit constant, where Go's compiler loads
+     them from a read-only pool, and that cancels the call it saves. A kernel
+     emitted as a pure code blob has no constant pool to reach for. Do not
+     retry this without solving that; on x86, where movabsq is one
+     instruction, it may still be worth measuring.
   1. `absorb` makes two kernel calls whenever anything is staged, and the
      second cannot be folded into the first without a seventh argument naming
      the straddling stripe. On arm64 the hybrid kernel has no register left
