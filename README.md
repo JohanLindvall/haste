@@ -49,10 +49,13 @@ one seed? Use `NewSeed`, which derives it once.
 
 ## Speed
 
-Measured on an Azure Cobalt 100 (Neoverse N2, 3.4 GHz), Go 1.26, against
-[zeebo/xxh3](https://github.com/zeebo/xxh3) (the fastest existing Go XXH3) and
+Against [zeebo/xxh3](https://github.com/zeebo/xxh3) (the fastest existing Go XXH3) and
 [cespare/xxhash](https://github.com/cespare/xxhash) (XXH64 — a different, cheaper
-algorithm, included for scale). Nanoseconds per hash, lower is better:
+algorithm, included for scale). Nanoseconds per hash, lower is better.
+
+### arm64
+
+Azure Cobalt 100 (Neoverse N2, 3.4 GHz), Go 1.26:
 
 | size | xxhaste | zeebo/xxh3 | cespare (XXH64) |
 |-----:|--------:|-----------:|----------------:|
@@ -109,18 +112,60 @@ half also stops reloading the secret — it advances one 64-bit word per stripe,
 so all but one of the words a stripe needs are already in registers. On a
 Neoverse N2 the split kernel is a further 40%.
 
-**amd64 numbers are not listed** because this was developed on arm64. The
-kernels are correct there - see below - but unbenchmarked, so no timing claims
-are made. For scale, llvm-mca's port model puts the AVX-512 loop at 2.04
-cycles per 64-byte stripe on Skylake-AVX512 and Ice Lake, 2.28 on Zen 4, and
-the AVX2 loop at 3.37 and 2.55; against this machine's hardware the same model
-runs about 26% optimistic.
+### amd64
+
+Ryzen 7 8840HS (Zen 4), Go 1.26, AVX-512. Same benchmark, same three
+implementations:
+
+| size | xxhaste | zeebo/xxh3 | cespare (XXH64) |
+|-----:|--------:|-----------:|----------------:|
+| 4 | 2.35 | 2.14 | 2.29 |
+| 8 | 2.35 | 2.17 | 2.46 |
+| 16 | 2.17 | 1.97 | 3.02 |
+| 32 | 2.84 | 2.46 | 6.71 |
+| 64 | 3.98 | 3.57 | 8.44 |
+| 128 | 6.49 | 5.46 | 11.6 |
+| 240 | 13.5 | 10.6 | 18.0 |
+| 256 | **9.70** | 13.8 | 18.6 |
+| 512 | **11.5** | 16.4 | 32.0 |
+| 1 Ki | **16.1** | 21.6 | 57.9 |
+| 4 Ki | **47.2** | 53.1 | 222 |
+| 16 Ki | **163** | 191 | 873 |
+| 64 Ki | **645** | 756 | 3468 |
+| 1 Mi | **11144** | 12751 | 55008 |
+
+**102 GB/s** at 64 KiB against 87, and 94 GB/s at a mebibyte. Streaming one in
+4 KiB pieces: **63.8 GB/s** against 35.7 and 18.7.
+
+The crossover is at 256 bytes; below it zeebo/xxh3 is ahead by 9-27%. That gap
+is honestly not fully understood. At 128 bytes the two run within 1% of the
+same instruction count, so it is a difference in how densely those instructions
+issue rather than in how many there are. Two things are known to be in it —
+xxhaste reaches a mid-size ladder through one more call, and it carries a
+runtime seed where zeebo/xxh3 has a separate unseeded entry point, which costs
+two adds per 16-byte chunk — and neither is large enough to explain all of it.
+
+What the AVX-512 kernel does that the others do not: it holds the whole 1 KiB
+block's secret schedule in the upper sixteen registers, which have no ABI
+meaning on amd64, so each stripe's only memory reference is the input; and it
+collapses the between-block scramble to three dependent steps, using ternary
+logic to fold an xorshift and a secret xor into one instruction and a 64-bit
+lane multiply for the rest.
+
+Everything from 256 bytes up also gained from something duller. The
+accumulators travel between Go and the kernels through memory, Go writes them
+in 16-byte moves, and a 64-byte load spanning four of those stores has to wait
+for them to reach the cache instead of taking them from the store queue.
+Reading them back in the width they were written is worth a quarter of a
+256-byte hash — more than any of the kernel work at that length, and it is why
+even the untouched SSE2 kernel got faster.
+
 
 ## Backends
 
 | backend | selected when | verified by |
 |---|---|---|
-| AVX-512 | CPUID AVX512F + OS ZMM state | simulation |
+| AVX-512 | CPUID AVX512F + AVX512DQ + OS ZMM state | simulation |
 | AVX2 | CPUID AVX2 + OS YMM state | executed under qemu |
 | SSE2 | always available on amd64 | executed under qemu |
 | SVE2 | HWCAP2_SVE2, vector length 256 or 512 | simulation |

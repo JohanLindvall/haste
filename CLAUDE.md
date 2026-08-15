@@ -134,10 +134,24 @@ comments in the `.s` files are the audit trail.
   stack.
 - `sum64` and `sum128` are `//go:nosplit`. The linker verifies the budget at
   build time, so a violation is a build failure, not a runtime bug.
+- **Accumulator load width, amd64**: `LoadAcc` and `StoreAcc` read and write the
+  eight accumulators in 128-bit pieces, never in one 256- or 512-bit access.
+  The array they address comes from Go -- a copy of `initAcc`, or a `Digest`
+  field -- and the compiler builds it out of 16-byte moves, because that is all
+  the amd64 baseline has. A wider load spanning several of those stores cannot
+  be satisfied from the store queue: it waits for them to reach the cache.
+  Restoring the single wide access costs a quarter of a 256-byte hash. It is
+  not free -- three extra instructions on AVX-512 -- but it is paid once per
+  call and the stall it removes is not.
+- **AVX-512 requires DQ, not just F**: the scramble multiplies whole 64-bit
+  lanes with `VPMULLQ`, which is AVX512DQ. `pickBackend` checks for both. A
+  machine with F but not DQ (Knights Landing) must land on AVX2.
 
 ## Performance notes
 
-Measured on Neoverse N2 (2 vector pipes, 3.4 GHz). The kernel obeys
+### arm64, measured on Neoverse N2 (2 vector pipes, 3.4 GHz)
+
+The kernel obeys
 
 	cycles/stripe = max(vector_ops / 1.5, instructions / 4)
 
@@ -241,6 +255,60 @@ the three splits that the register file and the pairing of `uzp` allow.
   crossover term as a parameter purely to stay under the budget. Check with
   `go build -gcflags='-m=2'` before restructuring these — an accidental
   non-inlined call in the short path costs 5-15%.
+
+### amd64, measured on Zen 4 (Ryzen 7 8840HS)
+
+The core retires **four 256-bit vector ALU operations per cycle**, and an
+AVX-512 instruction on a 512-bit register counts as two of them. That single
+number predicts the loop to within a few percent: count the arithmetic per
+stripe, double for AVX-512, divide by four. AVX2 and AVX-512 were within 1% of
+each other before any of this, for exactly that reason -- the same ten 256-bit
+ALU operations per stripe either way, which is the algorithm's floor over 512
+bits of data: xor, shift, multiply, and two accumulates.
+
+**ALU operations, not instructions**, is the currency here, unlike on the
+Neoverse split kernel above. A folded memory operand is cracked into a load and
+an operation, so `op mem` and `load; op reg` do the same ALU work and differ
+only in instruction count. Emitting half the stripes in the five-instruction
+folded form and half in the six-instruction loaded form measured exactly
+neutral. AVX2 is the exception: at 12 instructions per stripe it runs out of
+floating-point dispatch slots before it runs out of ALU throughput.
+
+- The AVX-512 kernel holds the **whole secret schedule in registers** for the
+  default secret's sixteen-stripe block (`FastStripe`), gated on the input
+  having `minFastBlocks` blocks -- see that constant for the measured
+  crossover. The ALU work is identical either way; what it buys is one fewer
+  load per stripe.
+- The scramble is a bare dependency chain on one register with nothing to hide
+  its latency behind, so its links cost what they cost. AVX-512 spends three:
+  a shift, a `VPTERNLOGQ` folding the xorshift and the secret into one
+  instruction, and `VPMULLQ`. Down from the seven the 32x32 assembly needs,
+  which is about 8% of a 64 KiB hash.
+- Folding the input into *both* operations, for a five-instruction stripe,
+  measured 1.9% **slower**: nothing is saved in ALU terms, and the two
+  dependent operations sit in the floating-point scheduler until their loads
+  return -- the scheduler-full stall went from nil to 17% of cycles. Do not
+  "simplify" `FastStripe` back into that shape.
+- AVX2 gets no fast block and cannot: a block's secret is sixteen stripes at
+  two registers each against fifteen usable ymm registers in total.
+- Store-to-load forwarding on the accumulator array is worth more than any of
+  the kernel work at short lengths; see the invariant above. It is why SSE2,
+  whose kernel did not change, still moved.
+- **Measured and rejected**: a `prefetcht0` a block ahead in the fast loop
+  (neutral at 64 KiB, slightly negative at 1 MiB); a second pair of accumulator
+  chains (the loop is throughput-bound, not latency-bound); mixing the five-
+  and six-instruction stripe forms; an `and`-plus-`add` scramble on AVX2 that
+  trades one operation per block for a mask register materialized on every
+  call; a copy of both 64-bit ladders with the default secret compiled in as
+  immediates, worth 1-3% -- a 64-bit immediate costs about what an L1 load
+  costs, so this is far less than it looks.
+
+The remaining gap to zeebo/xxh3 below 256 bytes is not what it appears to be.
+At 128 bytes the two execute within 1% of the same number of instructions; the
+difference is entirely IPC, 4.7 against 5.5. Two things are known to be in it,
+one more call level and the two adds per chunk that a runtime seed costs.
+Between them they do not account for all of it, and the rest has not been
+found. Worth a fresh look, not another round of the hypotheses above.
 
 ## Reference vectors
 

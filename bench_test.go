@@ -8,7 +8,7 @@ import (
 // benchSizes covers the paths separately: the short ladders below 16 and 128
 // bytes, the mid-size ladder up to 240, then the accumulator loop from one
 // stripe's worth of trailing data up to sizes that no longer fit in cache.
-var benchSizes = []int{4, 8, 16, 32, 64, 128, 240, 256, 512, 1024, 4096, 16384, 65536, 1 << 20}
+var benchSizes = []int{4, 8, 16, 32, 64, 128, 240, 256, 512, 1024, 2048, 4096, 8192, 16384, 65536, 1 << 20}
 
 func BenchmarkSum64(b *testing.B) {
 	for _, n := range benchSizes {
