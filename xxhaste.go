@@ -271,14 +271,47 @@ func sum128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, see
 		}
 		return len129to240_128(in, n, sec, seed)
 	}
+	// Written out as in sum128NS; the seeded forms differ only in keying.
 	if n > 8 {
-		return len9to16_128(in, n, sec, seed)
+		bitflipl := (rd64(sec, 32) ^ rd64(sec, 40)) - seed
+		bitfliph := (rd64(sec, 48) ^ rd64(sec, 56)) + seed
+		inputLo := rd64(in, 0)
+		inputHi := rd64(in, n-8)
+		hi, lo := bits.Mul64(inputLo^inputHi^bitflipl, prime64_1)
+
+		lo += uint64(n-1) << 54
+		inputHi ^= bitfliph
+		hi += inputHi + uint64(uint32(inputHi))*(prime32_2-1)
+		lo ^= bits.ReverseBytes64(hi)
+
+		rhi, rlo := bits.Mul64(lo, prime64_2)
+		rhi += hi * prime64_2
+		return Uint128{Lo: avalanche(rlo), Hi: avalanche(rhi)}
 	}
 	if n >= 4 {
-		return len4to8_128(in, n, sec, seed)
+		seed ^= uint64(bits.ReverseBytes32(uint32(seed))) << 32
+		inputLo := rd32(in, 0)
+		inputHi := rd32(in, n-4)
+		keyed := (uint64(inputLo) + uint64(inputHi)<<32) ^ ((rd64(sec, 16) ^ rd64(sec, 24)) + seed)
+
+		hi, lo := bits.Mul64(keyed, prime64_1+uint64(n)<<2)
+		hi += lo << 1
+		lo ^= hi >> 3
+		lo = xorshift64(lo, 35)
+		lo *= 0x9FB21C651E98DF25
+		lo = xorshift64(lo, 28)
+		return Uint128{Lo: lo, Hi: avalanche(hi)}
 	}
 	if n > 0 {
-		return len1to3_128(in, n, sec, seed)
+		c1 := uint32(rdb(in, 0))
+		c2 := uint32(rdb(in, n>>1))
+		c3 := uint32(rdb(in, n-1))
+		combinedl := c1<<16 | c2<<24 | c3 | uint32(n)<<8
+		combinedh := bits.RotateLeft32(bits.ReverseBytes32(combinedl), 13)
+		return Uint128{
+			Lo: avalanche64(uint64(combinedl) ^ (uint64(rd32(sec, 0)^rd32(sec, 4)) + seed)),
+			Hi: avalanche64(uint64(combinedh) ^ (uint64(rd32(sec, 8)^rd32(sec, 12)) - seed)),
+		}
 	}
 	return Uint128{
 		Lo: avalanche64(seed ^ rd64(sec, 64) ^ rd64(sec, 72)),
@@ -315,14 +348,47 @@ func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) U
 		}
 		return len129to240_128NS(in, n, sec)
 	}
+	// The short cases are written out here, as in sum64NS: each is a single
+	// call's worth of work, so the call to reach an out-of-line version was
+	// the largest removable part of its cost.
 	if n > 8 {
-		return len9to16_128NS(in, n, sec)
+		bitfliph := rd64(sec, 48) ^ rd64(sec, 56)
+		inputLo := rd64(in, 0)
+		inputHi := rd64(in, n-8)
+		hi, lo := bits.Mul64(inputLo^inputHi^(rd64(sec, 32)^rd64(sec, 40)), prime64_1)
+
+		lo += uint64(n-1) << 54
+		inputHi ^= bitfliph
+		hi += inputHi + uint64(uint32(inputHi))*(prime32_2-1)
+		lo ^= bits.ReverseBytes64(hi)
+
+		rhi, rlo := bits.Mul64(lo, prime64_2)
+		rhi += hi * prime64_2
+		return Uint128{Lo: avalanche(rlo), Hi: avalanche(rhi)}
 	}
 	if n >= 4 {
-		return len4to8_128NS(in, n, sec)
+		inputLo := rd32(in, 0)
+		inputHi := rd32(in, n-4)
+		keyed := (uint64(inputLo) + uint64(inputHi)<<32) ^ (rd64(sec, 16) ^ rd64(sec, 24))
+
+		hi, lo := bits.Mul64(keyed, prime64_1+uint64(n)<<2)
+		hi += lo << 1
+		lo ^= hi >> 3
+		lo = xorshift64(lo, 35)
+		lo *= 0x9FB21C651E98DF25
+		lo = xorshift64(lo, 28)
+		return Uint128{Lo: lo, Hi: avalanche(hi)}
 	}
 	if n > 0 {
-		return len1to3_128NS(in, n, sec)
+		c1 := uint32(rdb(in, 0))
+		c2 := uint32(rdb(in, n>>1))
+		c3 := uint32(rdb(in, n-1))
+		combinedl := c1<<16 | c2<<24 | c3 | uint32(n)<<8
+		combinedh := bits.RotateLeft32(bits.ReverseBytes32(combinedl), 13)
+		return Uint128{
+			Lo: avalanche64(uint64(combinedl) ^ uint64(rd32(sec, 0)^rd32(sec, 4))),
+			Hi: avalanche64(uint64(combinedh) ^ uint64(rd32(sec, 8)^rd32(sec, 12))),
+		}
 	}
 	return Uint128{
 		Lo: avalanche64(rd64(sec, 64) ^ rd64(sec, 72)),
