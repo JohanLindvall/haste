@@ -29,6 +29,8 @@ func Backends() []Backend {
 			New: func() Arch { return newX86("avx512", modeAVX, 4) }},
 		{Name: "neon", Suffix: "NEON", GOARCH: "arm64",
 			New: func() Arch { return newNEON(4) }},
+		{Name: "neonhybrid", Suffix: "NEONHybrid", GOARCH: "arm64",
+			New: func() Arch { return newNEONHybrid(4) }},
 		{Name: "sve2vl128", Suffix: "SVE2VL128", GOARCH: "arm64", VL: 16,
 			New: func() Arch { return newSVE2(16, 2) }},
 		{Name: "sve2vl256", Suffix: "SVE2VL256", GOARCH: "arm64", VL: 32,

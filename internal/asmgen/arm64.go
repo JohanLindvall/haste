@@ -27,8 +27,17 @@ type arm64 struct {
 	lanes int // 64-bit lanes per vector register
 	nvec  int // vector registers per 64-byte stripe
 
+	// scalarLanes is how many of the stripe's eight lanes are absorbed in
+	// general-purpose registers rather than vector ones. On a core with two
+	// vector pipes the vector units are the bottleneck and the integer units
+	// are idle, so moving part of the stripe across shortens the critical
+	// resource; on a core with four they are not, and it does not.
+	scalarLanes int
+
 	accA, accB []VReg
+	sccA, sccB []GPR
 	tmp        []VReg
+	stmp       []GPR
 	kprime     VReg
 }
 
@@ -41,6 +50,20 @@ type arm64 struct {
 // which would make it a regression on four-pipe cores (Neoverse V-series,
 // Apple), so the kernel stays purely vector.
 func newNEON(unroll int) *arm64 { return newARM("neon", false, 16, unroll) }
+
+// newNEONHybrid splits the stripe between the vector and integer units.
+func newNEONHybrid(unroll int) *arm64 {
+	a := newARM("neonhybrid", false, 16, unroll)
+	a.scalarLanes = 4
+	a.nvec = (accNB - a.scalarLanes) / a.lanes
+	a.accA, a.accB = a.accA[:a.nvec], a.accB[:a.nvec]
+	// Everything the kernel skeleton does not touch: it holds arguments in
+	// x0-x5, its own temporaries in x6-x11 and the scramble constant in x12.
+	a.sccA = []GPR{17, 19, 20, 21}
+	a.sccB = []GPR{22, 23, 24, 25}
+	a.stmp = []GPR{13, 14, 15, 16}
+	return a
+}
 
 func newSVE2(vl, unroll int) *arm64 {
 	return newARM(fmt.Sprintf("sve2vl%d", vl*8), true, vl, unroll)
@@ -303,6 +326,95 @@ func (a *arm64) umlalbSVE(acc, x, y VReg) {
 	}, "umlalb %s, %s, %s", a.z(acc, "d"), a.z(x, "s"), a.z(y, "s"))
 }
 
+// ---------------------------------------------------------------------------
+// Integer-side stripe work
+//
+// These exist only for the hybrid kernel. Each is one instruction, and arm64's
+// shifted-register operands make several of the steps free that cost a whole
+// operation on the vector side.
+// ---------------------------------------------------------------------------
+
+// ldp loads a pair of adjacent 64-bit words.
+func (a *arm64) ldp(d0, d1 GPR, base GPR, off int) {
+	a.b.emit(func(m *Machine) {
+		m.R[d0] = m.Load64(m.R[base] + uint64(off))
+		m.R[d1] = m.Load64(m.R[base] + uint64(off) + 8)
+	}, "ldp %s, %s, [%s, #%d]", a.GPRName(d0), a.GPRName(d1), a.GPRName(base), off)
+}
+
+func (a *arm64) stp(s0, s1 GPR, base GPR, off int) {
+	a.b.emit(func(m *Machine) {
+		m.Store64(m.R[base]+uint64(off), m.R[s0])
+		m.Store64(m.R[base]+uint64(off)+8, m.R[s1])
+	}, "stp %s, %s, [%s, #%d]", a.GPRName(s0), a.GPRName(s1), a.GPRName(base), off)
+}
+
+func (a *arm64) ldr(d GPR, base GPR, off int) {
+	a.b.emit(func(m *Machine) { m.R[d] = m.Load64(m.R[base] + uint64(off)) },
+		"ldr %s, [%s, #%d]", a.GPRName(d), a.GPRName(base), off)
+}
+
+// eor3 computes dst = x ^ y.
+func (a *arm64) eor3(dst, x, y GPR) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[x] ^ m.R[y] },
+		"eor %s, %s, %s", a.GPRName(dst), a.GPRName(x), a.GPRName(y))
+}
+
+// eorShr computes dst = x ^ (y >> sh), the whole xorshift in one instruction.
+func (a *arm64) eorShr(dst, x, y GPR, sh uint) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[x] ^ (m.R[y] >> sh) },
+		"eor %s, %s, %s, lsr #%d", a.GPRName(dst), a.GPRName(x), a.GPRName(y), sh)
+}
+
+func (a *arm64) lsr3(dst, src GPR, sh uint) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[src] >> sh },
+		"lsr %s, %s, #%d", a.GPRName(dst), a.GPRName(src), sh)
+}
+
+// umull multiplies the low halves of two registers, widening to 64 bits.
+func (a *arm64) umull(dst, x, y GPR) {
+	a.b.emit(func(m *Machine) {
+		m.R[dst] = uint64(uint32(m.R[x])) * uint64(uint32(m.R[y]))
+	}, "umull %s, w%d, w%d", a.GPRName(dst), int(x), int(y))
+}
+
+func (a *arm64) add3(dst, x, y GPR) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[x] + m.R[y] },
+		"add %s, %s, %s", a.GPRName(dst), a.GPRName(x), a.GPRName(y))
+}
+
+func (a *arm64) mul3(dst, x, y GPR) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[x] * m.R[y] },
+		"mul %s, %s, %s", a.GPRName(dst), a.GPRName(x), a.GPRName(y))
+}
+
+func (a *arm64) zeroGPR(dst GPR) {
+	a.b.emit(func(m *Machine) { m.R[dst] = 0 }, "mov %s, xzr", a.GPRName(dst))
+}
+
+// stripeScalar absorbs the lanes held in general-purpose registers. The pair
+// is loaded together, the raw values go to the data accumulators before their
+// registers are reused for the shift, and the keyed product lands in the
+// product accumulators.
+func (a *arm64) stripeScalar(in GPR, inOff int, sec GPR, secOff int) {
+	for i := 0; i < a.scalarLanes; i += 2 {
+		off := 8 * (accNB - a.scalarLanes + i)
+		d0, d1, k0, k1 := a.stmp[0], a.stmp[1], a.stmp[2], a.stmp[3]
+		a.ldp(d0, d1, in, inOff+off)
+		a.ldp(k0, k1, sec, secOff+off)
+		a.eor3(k0, d0, k0)
+		a.eor3(k1, d1, k1)
+		a.add3(a.sccB[i], a.sccB[i], d0)
+		a.add3(a.sccB[i+1], a.sccB[i+1], d1)
+		a.lsr3(d0, k0, 32)
+		a.lsr3(d1, k1, 32)
+		a.umull(d0, k0, d0)
+		a.umull(d1, k1, d1)
+		a.add3(a.sccA[i], a.sccA[i], d0)
+		a.add3(a.sccA[i+1], a.sccA[i+1], d1)
+	}
+}
+
 // swap64 exchanges the two 64-bit halves of each 128-bit group. NEON has a
 // direct rotate; SVE has to build it from two transposes, but it happens once
 // per block rather than once per stripe.
@@ -374,11 +486,19 @@ func (a *arm64) LoadAcc(p GPR) {
 		a.vload(a.accA[i], p, a.vl*i)
 		a.vzero(a.accB[i])
 	}
+	for i := 0; i < a.scalarLanes; i += 2 {
+		a.ldp(a.sccA[i], a.sccA[i+1], p, 8*(accNB-a.scalarLanes+i))
+		a.zeroGPR(a.sccB[i])
+		a.zeroGPR(a.sccB[i+1])
+	}
 }
 
 func (a *arm64) StoreAcc(p GPR) {
 	for i := 0; i < a.nvec; i++ {
 		a.vstore(a.accA[i], p, a.vl*i)
+	}
+	for i := 0; i < a.scalarLanes; i += 2 {
+		a.stp(a.sccA[i], a.sccA[i+1], p, 8*(accNB-a.scalarLanes+i))
 	}
 }
 
@@ -389,6 +509,9 @@ func (a *arm64) Stripe(k int, in GPR, inOff int, sec GPR, secOff int) {
 		return
 	}
 	a.stripeNEON(k, in, inOff, sec, secOff)
+	if a.scalarLanes > 0 {
+		a.stripeScalar(in, inOff, sec, secOff)
+	}
 }
 
 // stripeNEON works on register pairs, because uzp1/uzp2 deinterleave two
@@ -432,12 +555,29 @@ func (a *arm64) Materialize() {
 		a.vadd(a.accA[j], a.accA[j], t)
 		a.vzero(a.accB[j])
 	}
+	// In registers the lane swap costs nothing at all: the neighbour is just
+	// a different register name.
+	for i := 0; i < a.scalarLanes; i += 2 {
+		a.add3(a.sccA[i], a.sccA[i], a.sccB[i+1])
+		a.add3(a.sccA[i+1], a.sccA[i+1], a.sccB[i])
+		a.zeroGPR(a.sccB[i])
+		a.zeroGPR(a.sccB[i+1])
+	}
 }
 
 // Scramble applies acc = (xorshift(acc,47) ^ secret) * PRIME32_1. SVE2 has a
 // 64-bit vector multiply; NEON does not, so it assembles the product from the
-// two 32x32 halves.
+// two 32x32 halves. The integer side has both a shifted-operand xor and a real
+// 64-bit multiply, so it needs four instructions per lane against nine.
 func (a *arm64) Scramble(sec GPR, secOff int) {
+	for i := 0; i < a.scalarLanes; i++ {
+		acc, t := a.sccA[i], a.stmp[0]
+		off := secOff + 8*(accNB-a.scalarLanes+i)
+		a.eorShr(acc, acc, acc, 47)
+		a.ldr(t, sec, off)
+		a.eor3(acc, acc, t)
+		a.mul3(acc, acc, armConstGPR)
+	}
 	for j := 0; j < a.nvec; j++ {
 		acc := a.accA[j]
 		t, u, w := a.tmp[0], a.tmp[1], a.tmp[2]

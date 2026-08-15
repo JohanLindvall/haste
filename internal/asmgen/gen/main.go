@@ -20,9 +20,22 @@ import (
 func main() {
 	out := flag.String("out", ".", "directory to write generated files to")
 	only := flag.String("only", "", "generate just this backend")
+	dump := flag.Int("dump", -1, "print the assembler source of kernel N (0 hashLong, 1 accumBlocks, 2 accum) instead of generating; use with -only")
 	flag.Parse()
 	log.SetFlags(0)
 	log.SetPrefix("asmgen: ")
+
+	// -dump prints one kernel as assembler source, which is what feeds
+	// llvm-mca when a backend has to be analysed rather than run.
+	if *dump >= 0 {
+		for _, b := range asmgen.Backends() {
+			if *only != "" && b.Name != *only {
+				continue
+			}
+			fmt.Print(asmgen.EmitAll(b.New)[*dump].Build().Text())
+		}
+		return
+	}
 
 	// The stubs always cover every backend of an architecture, even when only
 	// one was regenerated: they have to match what dispatch calls.

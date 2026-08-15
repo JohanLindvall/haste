@@ -20,21 +20,28 @@ type backendID uint8
 
 const (
 	backendNEON backendID = iota
+	backendNEONHybrid
 	backendSVE2VL128
 	backendSVE2VL256
 	backendSVE2VL512
 )
 
 var backendNames = map[backendID]string{
-	backendNEON:      "neon",
-	backendSVE2VL128: "sve2-vl128",
-	backendSVE2VL256: "sve2-vl256",
-	backendSVE2VL512: "sve2-vl512",
+	backendNEON:       "neon",
+	backendNEONHybrid: "neon-hybrid",
+	backendSVE2VL128:  "sve2-vl128",
+	backendSVE2VL256:  "sve2-vl256",
+	backendSVE2VL512:  "sve2-vl512",
 }
 
 var backend = pickBackend()
 
 func pickBackend() backendID {
+	if hybridCore {
+		// Splitting the stripe across the vector and integer pipes beats
+		// anything else on the cores this is enabled for; see cpu_linux_arm64.go.
+		return backendNEONHybrid
+	}
 	if !hasSVE2() {
 		return backendNEON
 	}
@@ -87,6 +94,8 @@ func hashLong(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, 
 		hashLongSVE2VL512(acc, in, n, sec, secretLimit)
 	case backendSVE2VL128:
 		hashLongSVE2VL128(acc, in, n, sec, secretLimit)
+	case backendNEONHybrid:
+		hashLongNEONHybrid(acc, in, n, sec, secretLimit)
 	default:
 		hashLongNEON(acc, in, n, sec, secretLimit)
 	}
@@ -100,6 +109,8 @@ func accumStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsa
 		accumSVE2VL512(acc, in, nbStripes, sec)
 	case backendSVE2VL128:
 		accumSVE2VL128(acc, in, nbStripes, sec)
+	case backendNEONHybrid:
+		accumNEONHybrid(acc, in, nbStripes, sec)
 	default:
 		accumNEON(acc, in, nbStripes, sec)
 	}
@@ -113,6 +124,8 @@ func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsaf
 		accumBlocksSVE2VL512(acc, in, nbStripes, sec, secretLimit, soFar)
 	case backendSVE2VL128:
 		accumBlocksSVE2VL128(acc, in, nbStripes, sec, secretLimit, soFar)
+	case backendNEONHybrid:
+		accumBlocksNEONHybrid(acc, in, nbStripes, sec, secretLimit, soFar)
 	default:
 		accumBlocksNEON(acc, in, nbStripes, sec, secretLimit, soFar)
 	}

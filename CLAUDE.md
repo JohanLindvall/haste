@@ -144,12 +144,24 @@ Measured on Neoverse N2 (2 vector pipes, 3.4 GHz):
   within noise of each other). Reducing vector operation count is what pays.
 - The deferred lane swap is worth ~17%: five vector ops per register per stripe
   instead of six, and two independent accumulator chains instead of one.
-- **Untaken optimization**: moving half a stripe onto the idle integer pipes
-  measured out at ~7 cycles/stripe here (≈+45%), but it costs instruction
-  bandwidth, and a 4-vector-pipe core (Neoverse V-series, Apple) would land at
-  ~4.5 cycles/stripe against ~4 for the current kernel — a regression that
-  cannot be measured on this hardware. Left out deliberately. Revisit with
-  access to a wide arm64 core.
+- The hybrid kernel (`neonhybrid`) moves half of each stripe onto the integer
+  pipes. Measured here: +24% at 64 KiB. It is gated on MIDR because the trade
+  is 8 vector operations for 20 scalar ones, which only pays where vector
+  pipes are scarcer than integer pipes by more than 2.5x. See
+  cpu_linux_arm64.go for the list and the evidence required to extend it.
+- llvm-mca is how the untestable backends get analysed. It models an
+  optimistic port bound -- it predicts 8.04 cycles/stripe for NEON on
+  neoverse-n2 where the hardware gives 10.85 -- so use it for comparing two
+  kernels on one core, not for absolute numbers. Extract a loop body with:
+
+      go run ./internal/asmgen/gen -only neon -dump 0 \
+        | awk '/^\.Lunroll/{inb=1;next} inb&&/b\.ge|jge/{exit} inb&&!/^\./{print}'
+      llvm-mca -mtriple=aarch64 -mcpu=neoverse-n2 -mattr=+sve2 -iterations=100 ...
+
+  Its per-core models are not equally trustworthy: the apple-m1 model charges
+  a scalar `add` two units of a two-slot resource, i.e. one integer op per
+  cycle on a core with six ALUs, so its hybrid numbers are meaningless. Check
+  the resource-pressure table before believing a result.
 - Streaming was profiled rather than guessed at, and the guess was wrong: for
   1 KiB writes, `runtime.memmove` was under 5% while the Go glue around the
   kernel (`consumeStripes`, the dispatch wrapper, the block-position modulo)

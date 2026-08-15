@@ -7,3 +7,7 @@ package xxhaste
 // used unconditionally.
 
 func hasSVE2() bool { return false }
+
+// hybridCore reports whether this core runs the hybrid kernel faster. Off
+// Linux the core cannot be identified without cgo, so it never does.
+const hybridCore = false

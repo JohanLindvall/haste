@@ -10,7 +10,7 @@ import (
 // this machine can run it.
 var allBackends = map[string][]string{
 	"amd64": {"sse2", "avx2", "avx512"},
-	"arm64": {"neon", "sve2-vl128", "sve2-vl256", "sve2-vl512"},
+	"arm64": {"neon", "neon-hybrid", "sve2-vl128", "sve2-vl256", "sve2-vl512"},
 }
 
 // candidateBackends is what this build could dispatch to. A purego build has
