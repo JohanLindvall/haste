@@ -343,7 +343,6 @@ func len9to16_128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint64)
 	return Uint128{Lo: avalanche(rlo), Hi: avalanche(rhi)}
 }
 
-
 // The seed-free twins of the three short 128-bit cases; see sum64NS for why
 // they exist. Each is its seeded original with the seed terms deleted and
 // nothing else changed.

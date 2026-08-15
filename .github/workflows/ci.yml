@@ -1,0 +1,228 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Pull requests supersede themselves; pushes to main do not, because the tag
+# job at the end of one must not be cancelled by the next.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: gofmt and vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files need gofmt:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+      - run: go vet ./...
+      - name: go vet (bench module)
+        run: cd bench && go vet ./...
+
+  test:
+    name: test ${{ matrix.arch }} go${{ matrix.go }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # amd64 on stable, and again on the minimum go.mod declares.
+          - { runner: ubuntu-latest, arch: amd64, go: stable }
+          - { runner: ubuntu-latest, arch: amd64, go: "1.21" }
+          # arm64 natively, which is the only way the NEON kernels get executed
+          # rather than simulated.
+          - { runner: ubuntu-24.04-arm, arch: arm64, go: stable }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      # Informational: which kernel this runner actually picked. Never fails
+      # the job on its own; the real run is the next step.
+      - name: which kernel this runner dispatched to
+        run: go test -run TestBackendsNative -v . 2>&1 | grep dispatched || true
+      - run: go test ./...
+      - name: purego
+        run: go test -tags purego ./...
+      - name: race
+        run: go test -race ./...
+      - name: race, purego
+        run: go test -race -tags purego ./...
+
+  cross:
+    name: cross-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      # endian_slow.go exists for the big-endian and unaligned-access
+      # architectures, and none of them can be run here. Building the test
+      # binary is the least that has to hold: internal/asmgen is imported by
+      # asmsim_test.go, so a generator-only mistake can take the whole suite
+      # down on an architecture nobody is watching.
+      - name: build the test binary for every supported architecture
+        run: |
+          set -e
+          for a in 386 arm mips mipsle s390x ppc64 ppc64le riscv64 loong64 arm64 amd64; do
+            echo "== linux/$a"
+            GOOS=linux GOARCH=$a go test -c -o /dev/null .
+          done
+          echo "== js/wasm"
+          GOOS=js GOARCH=wasm go build ./...
+
+  qemu:
+    name: forced SSE2 and AVX2 dispatch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+      - run: GOARCH=amd64 go test -c -o /tmp/xxhaste.test .
+      # Named CPUs rather than -cpu max: they pin which kernel dispatch has to
+      # pick, and neither advertises AVX-512, which qemu's TCG does not
+      # implement. -test.short skips the job that shells out to the assembler.
+      - name: AVX2 (Haswell)
+        run: qemu-x86_64-static -cpu Haswell /tmp/xxhaste.test -test.short
+      - name: SSE2 (Nehalem)
+        run: qemu-x86_64-static -cpu Nehalem /tmp/xxhaste.test -test.short
+
+  generate:
+    name: generated assembly is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: cross-assemblers for both targets
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils-x86-64-linux-gnu binutils-aarch64-linux-gnu
+      # The test skips a backend whose assembler is missing, so a passing run
+      # proves nothing on its own. Both toolchains are installed above; assert
+      # that nothing skipped, or this check silently stops checking.
+      - name: regenerate and diff against what is checked in
+        run: |
+          set -o pipefail
+          go test -run TestGeneratedFilesUpToDate -v . 2>&1 | tee /tmp/gen.log
+          if grep -q -- "--- SKIP" /tmp/gen.log; then
+            echo "::error::a backend skipped; its cross-assembler is missing, so the check did not run"
+            exit 1
+          fi
+
+  fuzz:
+    name: fuzz smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: one minute per target
+        run: |
+          set -e
+          for f in FuzzStreamingMatchesOneShot FuzzCustomSecret FuzzBackendsAgree FuzzUnmarshalBinary; do
+            echo "== $f"
+            go test -run "^$f$" -fuzz "^$f$" -fuzztime=60s .
+          done
+      - name: keep any input that failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: testdata/fuzz/
+          if-no-files-found: ignore
+
+  crosscheck:
+    name: cross-check against zeebo/xxh3
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: cd bench && go test ./...
+
+  tag:
+    name: tag
+    needs: [check, test, cross, qemu, generate, fuzz, crosscheck]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the whole history, and every tag, to find the latest
+      - name: cut the next patch version
+        env:
+          # Through the environment, not interpolated into the script: it is
+          # attacker-influenced in the general case and this is a shell.
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          # A re-run, or a release cut by hand, already has its tag.
+          if tag=$(git describe --exact-match --tags HEAD 2>/dev/null); then
+            echo "HEAD is already $tag; nothing to do."
+            exit 0
+          fi
+
+          # Only the module's own files warrant a version. A README or workflow
+          # edit is not something anyone can "go get".
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            changed=first-push
+          else
+            changed=$(git diff --name-only "$BEFORE" HEAD -- '*.go' '*.s' go.mod go.sum | head -n1)
+          fi
+          if [ -z "$changed" ]; then
+            echo "No Go, assembly or module files changed; not tagging."
+            exit 0
+          fi
+
+          latest=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)
+          if [ -z "$latest" ]; then
+            next=v0.1.0
+          else
+            v=${latest#v}
+            major=${v%%.*}
+            rest=${v#*.}
+            minor=${rest%%.*}
+            patch=${rest##*.}
+            next="v${major}.${minor}.$((patch + 1))"
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$next" >/dev/null 2>&1; then
+            echo "::error::$next already exists on the remote"
+            exit 1
+          fi
+
+          echo "latest=${latest:-none}, tagging $next"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$next" -m "$next"
+          git push origin "$next"
+          echo "### Tagged \`$next\`" >> "$GITHUB_STEP_SUMMARY"

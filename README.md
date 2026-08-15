@@ -1,5 +1,8 @@
 # xxhaste
 
+[![CI](https://github.com/JohanLindvall/xxhaste/actions/workflows/ci.yml/badge.svg)](https://github.com/JohanLindvall/xxhaste/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/JohanLindvall/xxhaste.svg)](https://pkg.go.dev/github.com/JohanLindvall/xxhaste)
+
 XXH3 for Go — the 64-bit and 128-bit hash from [xxHash](https://github.com/Cyan4973/xxHash)
 v0.8.3, with generated assembly kernels for **SSE2, AVX2, AVX-512, NEON and SVE2**.
 
@@ -210,6 +213,23 @@ unrecognised, so an unknown core simply keeps the kernel it had.
   state: `go test -fuzz FuzzStreamingMatchesOneShot`.
 - **Cross-implementation**: results are compared against zeebo/xxh3, an
   independent port, in `bench/`.
+
+All of it runs in CI on every push and pull request, on amd64 and on arm64
+hardware, against the current Go and the 1.21 that `go.mod` declares: the suite
+under four build configurations, the SSE2 and AVX2 kernels forced under qemu, a
+minute on each fuzz target, a test-binary build for eleven architectures, and a
+check that the committed assembly still matches what the generator emits.
+
+## Releases
+
+Versions are cut automatically: a push to `main` that touches `.go`, `.s` or
+`go.mod` tags the next patch version once the whole matrix above is green.
+Documentation-only pushes are not tagged.
+
+The module is `v0.x` while the API is still moving — `Sum64Uint64` and the
+other fixed-size entry points are recent — so a minor bump may break source
+compatibility. Bump the minor or major by hand (`git tag v0.2.0 && git push
+origin v0.2.0`) and the automation continues from there.
 
 ## Building the assembly
 
