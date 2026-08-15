@@ -429,37 +429,45 @@ func len129to240_128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint
 	return finalize128(lo, hi, n, seed)
 }
 
-// mixHalfNS is mixHalf without the seed; see mix16BNS.
-func mixHalfNS(acc uint64, in, sec unsafe.Pointer, cross uint64) uint64 {
-	return (acc + mix16BNS(in, sec)) ^ cross
-}
-
 // len17to128_128NS is len17to128_128 without the seed.
 func len17to128_128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) Uint128 {
 	lo := uint64(n) * prime64_1
 	hi := uint64(0)
+	// Each round loads its four input words once and uses them twice -- keyed
+	// in its own half's fold, raw as the other half's crossover. The mixHalf
+	// form reloads them through cross16 and mix16B, a shape the inliner budget
+	// forces on the seeded path; written out, the arithmetic is unchanged and
+	// four loads per round disappear.
 	if n > 32 {
 		if n > 64 {
 			if n > 96 {
-				a, b := add(in, 48), add(in, n-64)
-				ca, cb := cross16(a), cross16(b)
-				lo = mixHalfNS(lo, a, add(sec, 96), cb)
-				hi = mixHalfNS(hi, b, add(sec, 112), ca)
+				{
+					i0, i1 := rd64(add(in, 48), 0), rd64(add(in, 48), 8)
+					j0, j1 := rd64(add(in, n-64), 0), rd64(add(in, n-64), 8)
+					lo = (lo + mul128Fold64(i0^rd64(add(sec, 96), 0), i1^rd64(add(sec, 96), 8))) ^ (j0 + j1)
+					hi = (hi + mul128Fold64(j0^rd64(add(sec, 96+16), 0), j1^rd64(add(sec, 96+16), 8))) ^ (i0 + i1)
+				}
 			}
-			a, b := add(in, 32), add(in, n-48)
-			ca, cb := cross16(a), cross16(b)
-			lo = mixHalfNS(lo, a, add(sec, 64), cb)
-			hi = mixHalfNS(hi, b, add(sec, 80), ca)
+			{
+				i0, i1 := rd64(add(in, 32), 0), rd64(add(in, 32), 8)
+				j0, j1 := rd64(add(in, n-48), 0), rd64(add(in, n-48), 8)
+				lo = (lo + mul128Fold64(i0^rd64(add(sec, 64), 0), i1^rd64(add(sec, 64), 8))) ^ (j0 + j1)
+				hi = (hi + mul128Fold64(j0^rd64(add(sec, 64+16), 0), j1^rd64(add(sec, 64+16), 8))) ^ (i0 + i1)
+			}
 		}
-		a, b := add(in, 16), add(in, n-32)
-		ca, cb := cross16(a), cross16(b)
-		lo = mixHalfNS(lo, a, add(sec, 32), cb)
-		hi = mixHalfNS(hi, b, add(sec, 48), ca)
+		{
+			i0, i1 := rd64(add(in, 16), 0), rd64(add(in, 16), 8)
+			j0, j1 := rd64(add(in, n-32), 0), rd64(add(in, n-32), 8)
+			lo = (lo + mul128Fold64(i0^rd64(add(sec, 32), 0), i1^rd64(add(sec, 32), 8))) ^ (j0 + j1)
+			hi = (hi + mul128Fold64(j0^rd64(add(sec, 32+16), 0), j1^rd64(add(sec, 32+16), 8))) ^ (i0 + i1)
+		}
 	}
-	a, b := in, add(in, n-16)
-	ca, cb := cross16(a), cross16(b)
-	lo = mixHalfNS(lo, a, sec, cb)
-	hi = mixHalfNS(hi, b, add(sec, 16), ca)
+	{
+		i0, i1 := rd64(in, 0), rd64(in, 8)
+		j0, j1 := rd64(add(in, n-16), 0), rd64(add(in, n-16), 8)
+		lo = (lo + mul128Fold64(i0^rd64(sec, 0), i1^rd64(sec, 8))) ^ (j0 + j1)
+		hi = (hi + mul128Fold64(j0^rd64(add(sec, 16), 0), j1^rd64(add(sec, 16), 8))) ^ (i0 + i1)
+	}
 	return finalize128(lo, hi, n, 0)
 }
 
@@ -472,58 +480,59 @@ func len129to240_128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) Uint128
 	// unroll even a constant-count loop, and a round whose offsets are
 	// immediates issues measurably denser than one that computes them. The
 	// tail's length tests replicate the reference loop's bound in its order,
-	// so the hash cannot move; see len129to240_64NS.
+	// so the hash cannot move; see len129to240_64NS. Each round loads its
+	// input words once, as in len17to128_128NS.
 	{
-		a, b := in, add(in, 16)
-		ca, cb := cross16(a), cross16(b)
-		lo = mixHalfNS(lo, a, sec, cb)
-		hi = mixHalfNS(hi, b, add(sec, 16), ca)
+		i0, i1 := rd64(in, 0), rd64(in, 8)
+		j0, j1 := rd64(add(in, 16), 0), rd64(add(in, 16), 8)
+		lo = (lo + mul128Fold64(i0^rd64(sec, 0), i1^rd64(sec, 8))) ^ (j0 + j1)
+		hi = (hi + mul128Fold64(j0^rd64(add(sec, 16), 0), j1^rd64(add(sec, 16), 8))) ^ (i0 + i1)
 	}
 	{
-		a, b := add(in, 32), add(in, 48)
-		ca, cb := cross16(a), cross16(b)
-		lo = mixHalfNS(lo, a, add(sec, 32), cb)
-		hi = mixHalfNS(hi, b, add(sec, 48), ca)
+		i0, i1 := rd64(add(in, 32), 0), rd64(add(in, 32), 8)
+		j0, j1 := rd64(add(in, 48), 0), rd64(add(in, 48), 8)
+		lo = (lo + mul128Fold64(i0^rd64(add(sec, 32), 0), i1^rd64(add(sec, 32), 8))) ^ (j0 + j1)
+		hi = (hi + mul128Fold64(j0^rd64(add(sec, 48), 0), j1^rd64(add(sec, 48), 8))) ^ (i0 + i1)
 	}
 	{
-		a, b := add(in, 64), add(in, 80)
-		ca, cb := cross16(a), cross16(b)
-		lo = mixHalfNS(lo, a, add(sec, 64), cb)
-		hi = mixHalfNS(hi, b, add(sec, 80), ca)
+		i0, i1 := rd64(add(in, 64), 0), rd64(add(in, 64), 8)
+		j0, j1 := rd64(add(in, 80), 0), rd64(add(in, 80), 8)
+		lo = (lo + mul128Fold64(i0^rd64(add(sec, 64), 0), i1^rd64(add(sec, 64), 8))) ^ (j0 + j1)
+		hi = (hi + mul128Fold64(j0^rd64(add(sec, 80), 0), j1^rd64(add(sec, 80), 8))) ^ (i0 + i1)
 	}
 	{
-		a, b := add(in, 96), add(in, 112)
-		ca, cb := cross16(a), cross16(b)
-		lo = mixHalfNS(lo, a, add(sec, 96), cb)
-		hi = mixHalfNS(hi, b, add(sec, 112), ca)
+		i0, i1 := rd64(add(in, 96), 0), rd64(add(in, 96), 8)
+		j0, j1 := rd64(add(in, 112), 0), rd64(add(in, 112), 8)
+		lo = (lo + mul128Fold64(i0^rd64(add(sec, 96), 0), i1^rd64(add(sec, 96), 8))) ^ (j0 + j1)
+		hi = (hi + mul128Fold64(j0^rd64(add(sec, 112), 0), j1^rd64(add(sec, 112), 8))) ^ (i0 + i1)
 	}
 	lo = avalanche(lo)
 	hi = avalanche(hi)
 
 	if n >= 160 {
-		a, b := add(in, 128), add(in, 144)
-		ca, cb := cross16(a), cross16(b)
-		lo = mixHalfNS(lo, a, add(sec, midsizeStartOffset), cb)
-		hi = mixHalfNS(hi, b, add(sec, midsizeStartOffset+16), ca)
+		i0, i1 := rd64(add(in, 128), 0), rd64(add(in, 128), 8)
+		j0, j1 := rd64(add(in, 144), 0), rd64(add(in, 144), 8)
+		lo = (lo + mul128Fold64(i0^rd64(add(sec, midsizeStartOffset), 0), i1^rd64(add(sec, midsizeStartOffset), 8))) ^ (j0 + j1)
+		hi = (hi + mul128Fold64(j0^rd64(add(sec, midsizeStartOffset+16), 0), j1^rd64(add(sec, midsizeStartOffset+16), 8))) ^ (i0 + i1)
 		if n >= 192 {
-			a, b := add(in, 160), add(in, 176)
-			ca, cb := cross16(a), cross16(b)
-			lo = mixHalfNS(lo, a, add(sec, midsizeStartOffset+32), cb)
-			hi = mixHalfNS(hi, b, add(sec, midsizeStartOffset+48), ca)
+			i0, i1 := rd64(add(in, 160), 0), rd64(add(in, 160), 8)
+			j0, j1 := rd64(add(in, 176), 0), rd64(add(in, 176), 8)
+			lo = (lo + mul128Fold64(i0^rd64(add(sec, midsizeStartOffset+32), 0), i1^rd64(add(sec, midsizeStartOffset+32), 8))) ^ (j0 + j1)
+			hi = (hi + mul128Fold64(j0^rd64(add(sec, midsizeStartOffset+48), 0), j1^rd64(add(sec, midsizeStartOffset+48), 8))) ^ (i0 + i1)
 			if n >= 224 {
-				a, b := add(in, 192), add(in, 208)
-				ca, cb := cross16(a), cross16(b)
-				lo = mixHalfNS(lo, a, add(sec, midsizeStartOffset+64), cb)
-				hi = mixHalfNS(hi, b, add(sec, midsizeStartOffset+80), ca)
+				i0, i1 := rd64(add(in, 192), 0), rd64(add(in, 192), 8)
+				j0, j1 := rd64(add(in, 208), 0), rd64(add(in, 208), 8)
+				lo = (lo + mul128Fold64(i0^rd64(add(sec, midsizeStartOffset+64), 0), i1^rd64(add(sec, midsizeStartOffset+64), 8))) ^ (j0 + j1)
+				hi = (hi + mul128Fold64(j0^rd64(add(sec, midsizeStartOffset+80), 0), j1^rd64(add(sec, midsizeStartOffset+80), 8))) ^ (i0 + i1)
 			}
 		}
 	}
+	// The tail deliberately takes its two chunks in reverse order.
 	{
-		a, b := add(in, n-16), add(in, n-32)
-		ca, cb := cross16(a), cross16(b)
-		s := add(sec, secretSizeMin-midsizeLastOffset-16)
-		lo = mixHalfNS(lo, a, s, cb)
-		hi = mixHalfNS(hi, b, add(s, 16), ca)
+		i0, i1 := rd64(add(in, n-16), 0), rd64(add(in, n-16), 8)
+		j0, j1 := rd64(add(in, n-32), 0), rd64(add(in, n-32), 8)
+		lo = (lo + mul128Fold64(i0^rd64(add(sec, secretSizeMin-midsizeLastOffset-16), 0), i1^rd64(add(sec, secretSizeMin-midsizeLastOffset-16), 8))) ^ (j0 + j1)
+		hi = (hi + mul128Fold64(j0^rd64(add(sec, secretSizeMin-midsizeLastOffset), 0), j1^rd64(add(sec, secretSizeMin-midsizeLastOffset), 8))) ^ (i0 + i1)
 	}
 	return finalize128(lo, hi, n, 0)
 }

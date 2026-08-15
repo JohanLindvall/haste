@@ -336,12 +336,13 @@ func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) U
 			}
 		}
 		if n <= 128 {
-			// The 17..32 rung inline, as in sum64NS.
+			// The 17..32 rung inline, as in sum64NS, with each input word
+			// loaded once; see len17to128_128NS.
 			if n <= 32 {
-				a, b := in, add(in, n-16)
-				ca, cb := cross16(a), cross16(b)
-				lo := mixHalfNS(uint64(n)*prime64_1, a, sec, cb)
-				hi := mixHalfNS(0, b, add(sec, 16), ca)
+				i0, i1 := rd64(in, 0), rd64(in, 8)
+				j0, j1 := rd64(add(in, n-16), 0), rd64(add(in, n-16), 8)
+				lo := (uint64(n)*prime64_1 + mul128Fold64(i0^rd64(sec, 0), i1^rd64(sec, 8))) ^ (j0 + j1)
+				hi := mul128Fold64(j0^rd64(sec, 16), j1^rd64(sec, 24)) ^ (i0 + i1)
 				return finalize128(lo, hi, n, 0)
 			}
 			return len17to128_128NS(in, n, sec)
