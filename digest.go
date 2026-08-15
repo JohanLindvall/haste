@@ -17,9 +17,17 @@ type Digest struct {
 	// acc is the live accumulator state, updated one stripe at a time.
 	acc [accNB]uint64
 
-	// buf stages input until a full 256 bytes is available. It doubles as the
-	// holding area for the final partial stripe: see Sum64.
-	buf     [internalBufferSize]byte
+	// buf is a 64-byte window followed by the staging area:
+	//
+	//	buf[0:64]              the 64 message bytes immediately preceding the
+	//	                       staged ones, once anything has been absorbed
+	//	buf[64 : 64+bufUsed]   staged, not yet absorbed
+	//
+	// Keeping the window ahead of the staging area rather than parking it
+	// elsewhere is what makes the last 64 bytes of the message contiguous at
+	// buf[bufUsed:], whatever the stripe boundary does, so Sum64 never
+	// reassembles anything and Write re-establishes both halves with one copy.
+	buf     [stripeLen + internalBufferSize]byte
 	bufUsed int
 
 	totalLen uint64
@@ -29,6 +37,12 @@ type Digest struct {
 	nbStripesSoFar    int
 	nbStripesPerBlock int
 	secretLimit       int
+
+	// blockMask is nbStripesPerBlock-1 when that is a power of two, which it
+	// is for every secret of a standard size, and -1 otherwise. Wrapping the
+	// stripe position is on the path of every Write, and a division there is
+	// worth a branch to avoid.
+	blockMask int
 
 	seed    uint64
 	useSeed bool
@@ -49,6 +63,7 @@ func New() *Digest {
 	d.customSecret = kSecret
 	d.nbStripesPerBlock = (secretDefaultSize - stripeLen) / secretConsumeRate
 	d.secretLimit = secretDefaultSize - stripeLen
+	d.setBlockMask()
 	d.Reset()
 	return d
 }
@@ -73,8 +88,24 @@ func NewSecret(secret []byte) *Digest {
 	d.extSecret = secret
 	d.nbStripesPerBlock = (len(secret) - stripeLen) / secretConsumeRate
 	d.secretLimit = len(secret) - stripeLen
+	d.setBlockMask()
 	d.Reset()
 	return d
+}
+
+func (d *Digest) setBlockMask() {
+	d.blockMask = -1
+	if n := d.nbStripesPerBlock; n&(n-1) == 0 {
+		d.blockMask = n - 1
+	}
+}
+
+// wrap advances a stripe position within the block.
+func (d *Digest) wrap(n int) int {
+	if d.blockMask >= 0 {
+		return n & d.blockMask
+	}
+	return n % d.nbStripesPerBlock
 }
 
 // Reset restores d to its state just after construction, keeping the seed or
@@ -119,71 +150,91 @@ func (d *Digest) write(p []byte) {
 	}
 	d.totalLen += uint64(len(p))
 
-	// Common case: everything still fits in the staging buffer.
-	if len(p) <= internalBufferSize-d.bufUsed {
-		d.bufUsed += copy(d.buf[d.bufUsed:], p)
+	// Nothing is absorbed while everything still fits: a message this short
+	// may yet be hashed by the short-input path, which needs all of it, and
+	// batching small writes keeps them to one copy each.
+	if d.bufUsed+len(p) <= internalBufferSize {
+		d.bufUsed += copy(d.buf[stripeLen+d.bufUsed:], p)
 		return
 	}
+	d.absorb(p)
+}
 
-	// Top up and drain whatever is already staged.
-	if d.bufUsed > 0 {
-		p = p[copy(d.buf[d.bufUsed:], p):]
-		d.consumeStripes(&d.acc, unsafe.Pointer(&d.buf), internalBufferStripes, &d.nbStripesSoFar)
-		d.bufUsed = 0
+// absorb takes every stripe that is safe to take from the staged bytes
+// followed by p, and leaves the window re-established.
+//
+// A stripe is only safe once the message is known to continue past it: the
+// final stripe is absorbed by Sum64, from the end of the message, and must not
+// also be absorbed here. That is what the -1 holds back.
+func (d *Digest) absorb(p []byte) {
+	// The secret and the position within the block are lifted out and the
+	// backend is called directly: this runs twice per Write, and the wrapper
+	// layer around it showed up as 9% of a small-write benchmark.
+	sec := d.secretPtr()
+	soFar := d.nbStripesSoFar
+	nb := (d.bufUsed + len(p) - 1) / stripeLen
+
+	// Everything staged, plus enough of p to finish the stripe it ends in.
+	// Completing that stripe in place keeps this to one run rather than two,
+	// and copies at most 63 bytes instead of filling the staging area.
+	staged := d.bufUsed / stripeLen
+	pOff := 0
+	if rem := d.bufUsed - staged*stripeLen; rem > 0 && staged < nb {
+		pOff = stripeLen - rem
+		copy(d.buf[stripeLen+d.bufUsed:], p[:pOff])
+		d.bufUsed += pOff
+		staged++
+	}
+	if staged > 0 {
+		accumBlocks(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), staged, sec, d.secretLimit, soFar)
+		soFar = d.wrap(soFar + staged)
+		nb -= staged
 	}
 
-	// Then consume p in place, down to the last whole stripe but never all of
-	// it: one byte at minimum is always left for the buffer, which is what
-	// lets Sum64 assume it has something staged.
-	if len(p) > internalBufferSize {
-		nbStripes := (len(p) - 1) / stripeLen
-		d.consumeStripes(&d.acc, unsafe.Pointer(unsafe.SliceData(p)), nbStripes, &d.nbStripesSoFar)
-		consumed := p[:nbStripes*stripeLen]
-		p = p[len(consumed):]
-		// Sum64 may need the stripe that just went past, and the remainder of
-		// p is too short to contain it. Park it at the end of the buffer,
-		// beyond the reach of the copy below.
-		copy(d.buf[internalBufferSize-stripeLen:], consumed[len(consumed)-stripeLen:])
+	if nb > 0 {
+		// The rest comes straight out of p. The window and what is left over
+		// are adjacent at its end, so one copy re-establishes both.
+		accumBlocks(&d.acc, unsafe.Pointer(&p[pOff]), nb, sec, d.secretLimit, soFar)
+		d.nbStripesSoFar = d.wrap(soFar + nb)
+		pOff += nb * stripeLen
+		d.bufUsed = copy(d.buf[:], p[pOff-stripeLen:]) - stripeLen
+		return
 	}
+	d.nbStripesSoFar = soFar
 
-	d.bufUsed = copy(d.buf[:], p)
+	// Nothing came out of p, so the window is still inside the staging area.
+	// Slide it down with whatever it did not reach, then stage the rest.
+	src := stripeLen + staged*stripeLen
+	d.bufUsed = copy(d.buf[:], d.buf[src-stripeLen:stripeLen+d.bufUsed]) - stripeLen
+	d.bufUsed += copy(d.buf[stripeLen+d.bufUsed:], p[pOff:])
 }
 
 // consumeStripes runs nbStripes stripes through acc, scrambling at each block
-// boundary. acc and soFar are parameters rather than fields because Sum64 must
-// run this over a copy of both.
-//
-// The whole run is one call: the kernel walks the block boundaries itself, so
-// the accumulators stay in registers across them. Where they end up within the
-// block follows from the count, so nothing has to come back.
-func (d *Digest) consumeStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, soFar *int) {
-	if nbStripes == 0 {
-		return
-	}
-	accumBlocks(acc, in, nbStripes, d.secretPtr(), d.secretLimit, *soFar)
-	*soFar = (*soFar + nbStripes) % d.nbStripesPerBlock
+// boundary the run crosses, and returns the new position within the block.
+// Only Sum64 uses it: absorb calls the backend directly.
+func (d *Digest) consumeStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes, soFar int) int {
+	accumBlocks(acc, in, nbStripes, d.secretPtr(), d.secretLimit, soFar)
+	return d.wrap(soFar + nbStripes)
 }
 
 // digestLong finishes a long input on a copy of the accumulators, so that the
 // Digest stays usable afterwards.
 func (d *Digest) digestLong(acc *[accNB]uint64) {
 	*acc = d.acc
-	lastSec := add(d.secretPtr(), uintptr(d.secretLimit-secretLastAccStart))
 
-	if d.bufUsed >= stripeLen {
-		soFar := d.nbStripesSoFar
-		d.consumeStripes(acc, unsafe.Pointer(&d.buf), (d.bufUsed-1)/stripeLen, &soFar)
-		accumStripes(acc, add(unsafe.Pointer(&d.buf), uintptr(d.bufUsed-stripeLen)), 1, lastSec)
-	} else {
-		// Fewer than 64 bytes are staged, so the final stripe straddles the
-		// end of the previously consumed data and what is buffered now. The
-		// tail was parked at the end of buf by write.
-		var last [stripeLen]byte
-		catchup := stripeLen - d.bufUsed
-		copy(last[:catchup], d.buf[internalBufferSize-catchup:])
-		copy(last[catchup:], d.buf[:d.bufUsed])
-		accumStripes(acc, unsafe.Pointer(&last), 1, lastSec)
+	// Whole stripes can only still be staged for a message that never reached
+	// the staging capacity; past that, absorb leaves at most a partial one.
+	// Where they leave the block position does not matter: only the final
+	// stripe follows, and it is keyed from the end of the secret.
+	if nb := (d.bufUsed - 1) / stripeLen; nb > 0 {
+		d.consumeStripes(acc, unsafe.Pointer(&d.buf[stripeLen]), nb, d.nbStripesSoFar)
 	}
+
+	// The final stripe is the last 64 bytes of the message. The window sits
+	// directly in front of the staged bytes, so those 64 bytes are contiguous
+	// at buf[bufUsed:] wherever the boundary happens to fall.
+	accumStripes(acc, add(unsafe.Pointer(&d.buf), uintptr(d.bufUsed)), 1,
+		add(d.secretPtr(), uintptr(d.secretLimit-secretLastAccStart)))
 }
 
 // Sum64 returns the 64-bit hash of everything written so far.
@@ -194,10 +245,10 @@ func (d *Digest) Sum64() uint64 {
 		return mergeAccs(&acc, add(d.secretPtr(), secretMergeAccsStart), d.totalLen*prime64_1)
 	}
 	if d.useSeed {
-		return sum64(unsafe.Pointer(&d.buf), uintptr(d.totalLen),
+		return sum64(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
 			unsafe.Pointer(&kSecret), secretDefaultSize, d.seed)
 	}
-	return sum64(unsafe.Pointer(&d.buf), uintptr(d.totalLen),
+	return sum64(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
 		d.secretPtr(), d.secretLimit+stripeLen, 0)
 }
 
@@ -214,10 +265,10 @@ func (d *Digest) Sum128() Uint128 {
 		}
 	}
 	if d.useSeed {
-		return sum128(unsafe.Pointer(&d.buf), uintptr(d.totalLen),
+		return sum128(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
 			unsafe.Pointer(&kSecret), secretDefaultSize, d.seed)
 	}
-	return sum128(unsafe.Pointer(&d.buf), uintptr(d.totalLen),
+	return sum128(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
 		d.secretPtr(), d.secretLimit+stripeLen, 0)
 }
 
@@ -234,7 +285,7 @@ func (d *Digest) Sum(b []byte) []byte {
 
 const (
 	magic         = "xxh3v1"
-	marshaledSize = len(magic) + 8*accNB + internalBufferSize + 8 + 4 + 4
+	marshaledSize = len(magic) + 8*accNB + stripeLen + internalBufferSize + 8 + 4 + 4
 )
 
 // MarshalBinary implements encoding.BinaryMarshaler. The state of a Digest
@@ -268,7 +319,7 @@ func (d *Digest) UnmarshalBinary(b []byte) error {
 	}
 	b = b[8*accNB:]
 	copy(d.buf[:], b)
-	b = b[internalBufferSize:]
+	b = b[stripeLen+internalBufferSize:]
 	d.totalLen = binary.LittleEndian.Uint64(b)
 	d.bufUsed = int(binary.LittleEndian.Uint32(b[8:]))
 	d.nbStripesSoFar = int(binary.LittleEndian.Uint32(b[12:]))

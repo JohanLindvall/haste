@@ -68,10 +68,15 @@ const (
 	secretLastAccStart   = 7
 	secretMergeAccsStart = 11
 
-	// internalBufferSize is the streaming state's staging buffer: four stripes.
-	internalBufferSize = 256
-	// internalBufferStripes is that buffer measured in stripes.
-	internalBufferStripes = internalBufferSize / stripeLen
+	// internalBufferSize is how much the streaming state stages before it
+	// absorbs anything. It is a tuning parameter, not wire format: any value
+	// at or above midsizeMax rounded up to a stripe gives the same hash.
+	//
+	// Its job is to amortize the cost of entering the kernel over more than
+	// one write. Doubling it from the reference's 256 bytes was worth 17% on
+	// 64-byte writes and 19% on 256-byte ones; going further traded small
+	// writes against large ones and doubled the state again.
+	internalBufferSize = 512
 )
 
 // Uint128 is a 128-bit hash value. Lo and Hi are the low and high halves as

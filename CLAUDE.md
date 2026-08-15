@@ -9,7 +9,7 @@ this before changing anything under `internal/asmgen` or any `.s` file.
 |---|---|
 | `xxhaste.go` | public API; `sum64`/`sum128` hold the 0..16-byte cases inline |
 | `generic.go` | portable implementation: mid-size ladders, accumulator loop, convergence |
-| `digest.go` | streaming `Digest`, a transcription of `XXH3_update`/`XXH3_digest` |
+| `digest.go` | streaming `Digest`; same output as `XXH3_update`, different staging |
 | `dispatch_{amd64,arm64}.go` | CPU detection and backend selection |
 | `dispatch.go` | the same three entry points for purego / other architectures |
 | `stub_{amd64,arm64}.go` | **generated** Go declarations for the kernels |
@@ -124,12 +124,24 @@ Measured on Neoverse N2 (2 vector pipes, 3.4 GHz):
   ~4.5 cycles/stripe against ~4 for the current kernel — a regression that
   cannot be measured on this hardware. Left out deliberately. Revisit with
   access to a wide arm64 core.
-- Streaming with small writes is copy-bound, not kernel-bound: a 1 KiB Write
-  copies ~320 bytes (buffer top-up, parked final stripe, remainder) against
-  1024 bytes hashed. A design keeping a 64-byte rolling tail and a sub-stripe
-  carry instead of the reference's 256-byte staging buffer would cut that to
-  ~127, worth an estimated 5%. Not done; the buffer layout currently mirrors
-  the reference, which makes it easy to check against.
+- Streaming was profiled rather than guessed at, and the guess was wrong: for
+  1 KiB writes, `runtime.memmove` was under 5% while the Go glue around the
+  kernel (`consumeStripes`, the dispatch wrapper, the block-position modulo)
+  was over 20%. Three changes took 1 KiB writes from 12.5 to 14.5 GB/s and
+  256-byte writes from 7.7 to 9.5:
+  1. The buffer became a 64-byte window followed by the staging area, so the
+     last 64 bytes of the message are contiguous at `buf[bufUsed:]`. Write
+     re-establishes both with one copy instead of three, and Sum64 never
+     reassembles the final stripe.
+  2. `absorb` lifts the secret pointer and block position out and calls the
+     backend directly. The intermediate layer was ~9% on its own.
+  3. The staging size went from the reference's 256 bytes to 512. It is a
+     tuning parameter, not wire format.
+- Still on the table for streaming: `absorb` makes two kernel calls when
+  anything is staged (the completed stripe, then the bulk out of the caller's
+  slice), each paying ~14 cycles to load, fold and store the accumulators. A
+  two-region kernel, or keeping the accumulators in split form in the Digest
+  so no fold is needed per call, would each be worth roughly 5%.
 - Go's inliner budget (80) drives several structural choices: the public
   entry points are thin so they inline; the 0..16-byte cases live inside
   `sum64`/`sum128` rather than in their own functions; `mixHalf` takes its

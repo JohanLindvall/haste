@@ -71,19 +71,24 @@ func BenchmarkDigest(b *testing.B) {
 	}
 }
 
-// BenchmarkDigestChunked writes in 1 KiB pieces, the shape a file or network
-// reader produces.
+// BenchmarkDigestChunked hashes a mebibyte written in pieces, the shape a file
+// or network reader produces. The piece size is what decides how much of the
+// cost is staging rather than hashing.
 func BenchmarkDigestChunked(b *testing.B) {
 	const n = 1 << 20
 	buf := testBuffer(n)
-	b.SetBytes(n)
-	d := New()
-	for i := 0; i < b.N; i++ {
-		d.Reset()
-		for off := 0; off < n; off += 1024 {
-			d.Write(buf[off : off+1024])
-		}
-		sink64 = d.Sum64()
+	for _, chunk := range []int{16, 32, 64, 128, 256, 512, 1024, 4096, 65536} {
+		b.Run(fmt.Sprint(chunk), func(b *testing.B) {
+			b.SetBytes(n)
+			d := New()
+			for i := 0; i < b.N; i++ {
+				d.Reset()
+				for off := 0; off < n; off += chunk {
+					d.Write(buf[off : off+chunk])
+				}
+				sink64 = d.Sum64()
+			}
+		})
 	}
 }
 

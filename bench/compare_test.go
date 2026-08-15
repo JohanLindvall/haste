@@ -118,6 +118,48 @@ func BenchmarkCompareSeed(b *testing.B) {
 	}
 }
 
+// BenchmarkCompareStreamChunk sweeps the write size: below a stripe the cost
+// is all staging, above it the kernel takes over.
+func BenchmarkCompareStreamChunk(b *testing.B) {
+	const n = 1 << 20
+	buf := buffer(n)
+	for _, chunk := range []int{16, 64, 256, 1024, 4096} {
+		b.Run(fmt.Sprintf("%d/xxhaste", chunk), func(b *testing.B) {
+			b.SetBytes(n)
+			d := xxhaste.New()
+			for i := 0; i < b.N; i++ {
+				d.Reset()
+				for off := 0; off < n; off += chunk {
+					d.Write(buf[off : off+chunk])
+				}
+				sink64 = d.Sum64()
+			}
+		})
+		b.Run(fmt.Sprintf("%d/zeebo", chunk), func(b *testing.B) {
+			b.SetBytes(n)
+			d := xxh3.New()
+			for i := 0; i < b.N; i++ {
+				d.Reset()
+				for off := 0; off < n; off += chunk {
+					d.Write(buf[off : off+chunk])
+				}
+				sink64 = d.Sum64()
+			}
+		})
+		b.Run(fmt.Sprintf("%d/cespare", chunk), func(b *testing.B) {
+			b.SetBytes(n)
+			d := cespare.New()
+			for i := 0; i < b.N; i++ {
+				d.Reset()
+				for off := 0; off < n; off += chunk {
+					d.Write(buf[off : off+chunk])
+				}
+				sink64 = d.Sum64()
+			}
+		})
+	}
+}
+
 func BenchmarkCompareStream(b *testing.B) {
 	const n = 1 << 20
 	buf := buffer(n)

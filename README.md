@@ -56,11 +56,21 @@ That is **20.1 GB/s** sustained versus 12.6 GB/s, a 1.6× speedup on long
 inputs, and a small deficit (3–5%) below 32 bytes. The 128-bit hash tracks the
 same shape: 1.6× at 64 KiB, ahead from 64 bytes up, behind by 7% at 240.
 
-Streaming a mebibyte through `Digest.Write`, in 4 KiB pieces: **15.6 GB/s**,
-against 8.7 for zeebo/xxh3 and 18.4 for cespare's XXH64. One large `Write`
-reaches 19.6 GB/s, which is what the one-shot path does — the kernel walks
-block boundaries itself, so the accumulators never leave registers between
-them.
+Streaming a mebibyte through `Digest.Write`, by piece size:
+
+| write size | xxhaste | zeebo/xxh3 | cespare (XXH64) |
+|-----------:|--------:|-----------:|----------------:|
+| 16 B | **2.63 GB/s** | 2.50 | 2.30 |
+| 64 B | **6.61 GB/s** | 5.54 | 6.49 |
+| 256 B | **9.49 GB/s** | 7.39 | 13.38 |
+| 1 KiB | **14.51 GB/s** | 8.48 | 18.60 |
+| 4 KiB | **16.99 GB/s** | 8.74 | 20.15 |
+| one call | **19.6 GB/s** | 12.4 | 24.6 |
+
+Ahead of the other XXH3 port at every size, and at 4 KiB pieces it retains 88%
+of its own one-shot rate where cespare's XXH64 retains 76%. Tiny writes are
+memmove-bound for everyone: at 16 bytes all three implementations sit within
+13% of each other, because the cost is staging fragments, not hashing them.
 
 The gain on long inputs comes from restructuring the accumulator rather than
 from wider registers. XXH3 specifies
