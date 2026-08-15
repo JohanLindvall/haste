@@ -322,6 +322,16 @@ unrolling.
   and a subtract deriving the mix from a seed that is zero -- and the twins
   are worth 8-10% on Sum64 at 4-16 bytes on a dispatch-saturated core, which
   closes the last of the gap to zeebo/xxh3 there.
+- The 129..240 ladders' tails are unrolled into a chain of length tests, one
+  per round the reference's loop would have run, in the loop's own order --
+  Go does not unroll loops, so the loop form recomputed `16*i` per round and
+  read the bound each time. Worth 27% of a 240-byte hash, rising with length
+  from nothing at 144; it is what removed the inversion where 240 bytes cost
+  more than 256. The 128-bit ladders' fixed four-round prologues are written
+  out for the same reason. In the seed-free 128-bit prologue the eight cross
+  terms are computed inside their rounds, not hoisted to the top: hoisting
+  extends eight loads' live ranges across the whole prologue and measured
+  6-7% slower.
 - **Measured and rejected**: a `prefetcht0` a block ahead in the fast loop
   (neutral at 64 KiB, slightly negative at 1 MiB); a second pair of accumulator
   chains (the loop is throughput-bound, not latency-bound); mixing the five-

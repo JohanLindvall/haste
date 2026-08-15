@@ -124,13 +124,13 @@ implementations:
 
 | size | xxhaste | zeebo/xxh3 | cespare (XXH64) |
 |-----:|--------:|-----------:|----------------:|
-| 4 | 2.35 | 2.14 | 2.29 |
-| 8 | 2.35 | 2.17 | 2.46 |
-| 16 | 2.17 | 1.97 | 3.02 |
-| 32 | 2.84 | 2.46 | 6.71 |
-| 64 | 3.98 | 3.57 | 8.44 |
-| 128 | 6.49 | 5.46 | 11.6 |
-| 240 | 13.5 | 10.6 | 18.0 |
+| 4 | **2.13** | 2.32 | 2.45 |
+| 8 | 2.17 | 2.22 | 2.46 |
+| 16 | 1.99 | 2.00 | 3.12 |
+| 32 | 2.64 | 2.46 | 6.17 |
+| 64 | 3.55 | 3.52 | 8.16 |
+| 128 | 5.53 | 5.47 | 11.6 |
+| 240 | **9.38** | 10.6 | 18.0 |
 | 256 | **9.70** | 13.8 | 18.6 |
 | 512 | **11.5** | 16.4 | 32.0 |
 | 1 Ki | **16.1** | 21.6 | 57.9 |
@@ -142,13 +142,14 @@ implementations:
 **102 GB/s** at 64 KiB against 87, and 94 GB/s at a mebibyte. Streaming one in
 4 KiB pieces: **63.8 GB/s** against 35.7 and 18.7.
 
-The crossover is at 256 bytes; below it zeebo/xxh3 is ahead by 9-27%. That gap
-is honestly not fully understood. At 128 bytes the two run within 1% of the
-same instruction count, so it is a difference in how densely those instructions
-issue rather than in how many there are. Two things are known to be in it —
-xxhaste reaches a mid-size ladder through one more call, and it carries a
-runtime seed where zeebo/xxh3 has a separate unseeded entry point, which costs
-two adds per 16-byte chunk — and neither is large enough to explain all of it.
+Below 256 bytes the two are now level or better everywhere except 32 bytes,
+where zeebo/xxh3 keeps 7%. What closed the rest was never one thing: seed-free
+twins of every path for the unseeded entry points, calling the ladders without
+an intermediate function, and unrolling the 129..240 ladder's tail -- Go does
+not unroll loops, and the reference's tail loop was recomputing offsets and
+carrying its accumulator serially where the unrolled form runs every offset as
+an immediate. That last one is 27% of a 240-byte hash, and it is why the
+scalar ladder no longer loses to its own SIMD path at the 240/241 boundary.
 
 What the AVX-512 kernel does that the others do not: it holds the whole 1 KiB
 block's secret schedule in the upper sixteen registers, which have no ABI

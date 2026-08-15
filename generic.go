@@ -259,9 +259,27 @@ func len129to240_64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint6
 
 	// The tail walks whatever whole 16-byte chunks are left, against a secret
 	// offset by three bytes so it does not reuse the prologue's alignment.
-	nbRounds := n / 16
-	for i := uintptr(8); i < nbRounds; i++ {
-		acc += mix16B(add(in, 16*i), add(sec, 16*(i-8)+midsizeStartOffset), seed)
+	// Unrolled as in the seed-free twin; see the comment there.
+	if n >= 144 {
+		acc += mix16B(add(in, 128), add(sec, midsizeStartOffset), seed)
+		if n >= 160 {
+			acc += mix16B(add(in, 144), add(sec, midsizeStartOffset+16), seed)
+			if n >= 176 {
+				acc += mix16B(add(in, 160), add(sec, midsizeStartOffset+32), seed)
+				if n >= 192 {
+					acc += mix16B(add(in, 176), add(sec, midsizeStartOffset+48), seed)
+					if n >= 208 {
+						acc += mix16B(add(in, 192), add(sec, midsizeStartOffset+64), seed)
+						if n >= 224 {
+							acc += mix16B(add(in, 208), add(sec, midsizeStartOffset+80), seed)
+							if n >= 240 {
+								acc += mix16B(add(in, 224), add(sec, midsizeStartOffset+96), seed)
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 	acc += mix16B(add(in, n-16), add(sec, secretSizeMin-midsizeLastOffset), seed)
 	return avalanche(acc)
@@ -279,9 +297,32 @@ func len129to240_64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) uint64 {
 	acc3 += mix16BNS(add(in, 112), add(sec, 112))
 	acc := avalanche((acc0 + acc1) + (acc2 + acc3))
 
-	nbRounds := n / 16
-	for i := uintptr(8); i < nbRounds; i++ {
-		acc += mix16BNS(add(in, 16*i), add(sec, 16*(i-8)+midsizeStartOffset))
+	// The tail is the reference's loop unrolled: mix i of the loop ran while
+	// i < n/16, which is the chain of length tests below, in the same order
+	// and adding into the same accumulator, so the hash cannot move. What the
+	// loop paid per mix was its counter, its bound, and a multiply for the
+	// offset; here every offset is an immediate, which is what lets the tail
+	// issue as densely as the prologue above it.
+	if n >= 144 {
+		acc += mix16BNS(add(in, 128), add(sec, midsizeStartOffset))
+		if n >= 160 {
+			acc += mix16BNS(add(in, 144), add(sec, midsizeStartOffset+16))
+			if n >= 176 {
+				acc += mix16BNS(add(in, 160), add(sec, midsizeStartOffset+32))
+				if n >= 192 {
+					acc += mix16BNS(add(in, 176), add(sec, midsizeStartOffset+48))
+					if n >= 208 {
+						acc += mix16BNS(add(in, 192), add(sec, midsizeStartOffset+64))
+						if n >= 224 {
+							acc += mix16BNS(add(in, 208), add(sec, midsizeStartOffset+80))
+							if n >= 240 {
+								acc += mix16BNS(add(in, 224), add(sec, midsizeStartOffset+96))
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 	acc += mix16BNS(add(in, n-16), add(sec, secretSizeMin-midsizeLastOffset))
 	return avalanche(acc)
@@ -452,13 +493,25 @@ func len129to240_128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint
 	lo = avalanche(lo)
 	hi = avalanche(hi)
 
-	nbRounds := n / 32
-	for i := uintptr(4); i < nbRounds; i++ {
-		a, b := add(in, 32*i), add(in, 32*i+16)
+	// The tail rounds unrolled; see len129to240_64NS for why the length
+	// tests reproduce the loop's bound exactly.
+	if n >= 160 {
+		a, b := add(in, 128), add(in, 144)
 		ca, cb := cross16(a), cross16(b)
-		s := add(sec, midsizeStartOffset+32*(i-4))
-		lo = mixHalf(lo, a, s, seed, cb)
-		hi = mixHalf(hi, b, add(s, 16), seed, ca)
+		lo = mixHalf(lo, a, add(sec, midsizeStartOffset), seed, cb)
+		hi = mixHalf(hi, b, add(sec, midsizeStartOffset+16), seed, ca)
+		if n >= 192 {
+			a, b := add(in, 160), add(in, 176)
+			ca, cb := cross16(a), cross16(b)
+			lo = mixHalf(lo, a, add(sec, midsizeStartOffset+32), seed, cb)
+			hi = mixHalf(hi, b, add(sec, midsizeStartOffset+48), seed, ca)
+			if n >= 224 {
+				a, b := add(in, 192), add(in, 208)
+				ca, cb := cross16(a), cross16(b)
+				lo = mixHalf(lo, a, add(sec, midsizeStartOffset+64), seed, cb)
+				hi = mixHalf(hi, b, add(sec, midsizeStartOffset+80), seed, ca)
+			}
+		}
 	}
 	// The tail deliberately takes its two chunks in reverse order.
 	{
@@ -510,22 +563,55 @@ func len129to240_128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) Uint128
 	lo := uint64(n) * prime64_1
 	hi := uint64(0)
 
-	for i := uintptr(0); i < 4; i++ {
-		a, b := add(in, 32*i), add(in, 32*i+16)
+	// The four fixed rounds and the tail are both written out; Go does not
+	// unroll even a constant-count loop, and a round whose offsets are
+	// immediates issues measurably denser than one that computes them. The
+	// tail's length tests replicate the reference loop's bound in its order,
+	// so the hash cannot move; see len129to240_64NS.
+	{
+		a, b := in, add(in, 16)
 		ca, cb := cross16(a), cross16(b)
-		lo = mixHalfNS(lo, a, add(sec, 32*i), cb)
-		hi = mixHalfNS(hi, b, add(sec, 32*i+16), ca)
+		lo = mixHalfNS(lo, a, sec, cb)
+		hi = mixHalfNS(hi, b, add(sec, 16), ca)
+	}
+	{
+		a, b := add(in, 32), add(in, 48)
+		ca, cb := cross16(a), cross16(b)
+		lo = mixHalfNS(lo, a, add(sec, 32), cb)
+		hi = mixHalfNS(hi, b, add(sec, 48), ca)
+	}
+	{
+		a, b := add(in, 64), add(in, 80)
+		ca, cb := cross16(a), cross16(b)
+		lo = mixHalfNS(lo, a, add(sec, 64), cb)
+		hi = mixHalfNS(hi, b, add(sec, 80), ca)
+	}
+	{
+		a, b := add(in, 96), add(in, 112)
+		ca, cb := cross16(a), cross16(b)
+		lo = mixHalfNS(lo, a, add(sec, 96), cb)
+		hi = mixHalfNS(hi, b, add(sec, 112), ca)
 	}
 	lo = avalanche(lo)
 	hi = avalanche(hi)
 
-	nbRounds := n / 32
-	for i := uintptr(4); i < nbRounds; i++ {
-		a, b := add(in, 32*i), add(in, 32*i+16)
+	if n >= 160 {
+		a, b := add(in, 128), add(in, 144)
 		ca, cb := cross16(a), cross16(b)
-		s := add(sec, midsizeStartOffset+32*(i-4))
-		lo = mixHalfNS(lo, a, s, cb)
-		hi = mixHalfNS(hi, b, add(s, 16), ca)
+		lo = mixHalfNS(lo, a, add(sec, midsizeStartOffset), cb)
+		hi = mixHalfNS(hi, b, add(sec, midsizeStartOffset+16), ca)
+		if n >= 192 {
+			a, b := add(in, 160), add(in, 176)
+			ca, cb := cross16(a), cross16(b)
+			lo = mixHalfNS(lo, a, add(sec, midsizeStartOffset+32), cb)
+			hi = mixHalfNS(hi, b, add(sec, midsizeStartOffset+48), ca)
+			if n >= 224 {
+				a, b := add(in, 192), add(in, 208)
+				ca, cb := cross16(a), cross16(b)
+				lo = mixHalfNS(lo, a, add(sec, midsizeStartOffset+64), cb)
+				hi = mixHalfNS(hi, b, add(sec, midsizeStartOffset+80), ca)
+			}
+		}
 	}
 	{
 		a, b := add(in, n-16), add(in, n-32)
