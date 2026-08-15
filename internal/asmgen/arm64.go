@@ -220,7 +220,7 @@ func (a *arm64) vload(dst VReg, r GPR, off int) {
 func (a *arm64) vloadPair(d0, d1 VReg, r GPR, off int) {
 	if a.sve || off%16 != 0 || off < -1024 || off > 1008 || int(d1) != int(d0)+1 {
 		a.vload(d0, r, off)
-		a.vload(d1, r, off+16)
+		a.vload(d1, r, off+a.vl)
 		return
 	}
 	a.b.emit(func(m *Machine) {
