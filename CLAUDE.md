@@ -315,6 +315,13 @@ unrolling.
   amd64, which has ~14 registers to give. Pair-wise halves the spills and is
   worth 6% on the purego long path. It matters wherever the portable path is
   what runs: purego builds and every architecture without a kernel.
+- The seed-free twins extend below 17 bytes: `sum64NS`/`sum128NS` are full
+  transcriptions of the short cases with the seed terms deleted, and every
+  unseeded entry point routes there without ever testing a seed. The 4..8
+  case gains the most -- its seeded form spends a byte-reverse, a shift, a xor
+  and a subtract deriving the mix from a seed that is zero -- and the twins
+  are worth 8-10% on Sum64 at 4-16 bytes on a dispatch-saturated core, which
+  closes the last of the gap to zeebo/xxh3 there.
 - **Measured and rejected**: a `prefetcht0` a block ahead in the fast loop
   (neutral at 64 KiB, slightly negative at 1 MiB); a second pair of accumulator
   chains (the loop is throughput-bound, not latency-bound); mixing the five-

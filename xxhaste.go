@@ -12,14 +12,14 @@ import (
 
 // Sum64 returns the 64-bit XXH3 hash of b.
 func Sum64(b []byte) uint64 {
-	return sum64(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)),
-		unsafe.Pointer(&kSecret), secretDefaultSize, 0)
+	return sum64NS(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)),
+		unsafe.Pointer(&kSecret), secretDefaultSize)
 }
 
 // Sum64String returns the 64-bit XXH3 hash of s. It does not copy s.
 func Sum64String(s string) uint64 {
-	return sum64(unsafe.Pointer(unsafe.StringData(s)), uintptr(len(s)),
-		unsafe.Pointer(&kSecret), secretDefaultSize, 0)
+	return sum64NS(unsafe.Pointer(unsafe.StringData(s)), uintptr(len(s)),
+		unsafe.Pointer(&kSecret), secretDefaultSize)
 }
 
 // Sum64Seed returns the 64-bit XXH3 hash of b, keyed by seed.
@@ -45,20 +45,20 @@ func Sum64SeedString(s string, seed uint64) uint64 {
 // the hash. Sum64Secret panics if the secret is too short.
 func Sum64Secret(b, secret []byte) uint64 {
 	checkSecret(secret)
-	return sum64(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)),
-		unsafe.Pointer(unsafe.SliceData(secret)), len(secret), 0)
+	return sum64NS(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)),
+		unsafe.Pointer(unsafe.SliceData(secret)), len(secret))
 }
 
 // Sum128 returns the 128-bit XXH3 hash of b.
 func Sum128(b []byte) Uint128 {
-	return sum128(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)),
-		unsafe.Pointer(&kSecret), secretDefaultSize, 0)
+	return sum128NS(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)),
+		unsafe.Pointer(&kSecret), secretDefaultSize)
 }
 
 // Sum128String returns the 128-bit XXH3 hash of s. It does not copy s.
 func Sum128String(s string) Uint128 {
-	return sum128(unsafe.Pointer(unsafe.StringData(s)), uintptr(len(s)),
-		unsafe.Pointer(&kSecret), secretDefaultSize, 0)
+	return sum128NS(unsafe.Pointer(unsafe.StringData(s)), uintptr(len(s)),
+		unsafe.Pointer(&kSecret), secretDefaultSize)
 }
 
 // Sum128Seed returns the 128-bit XXH3 hash of b, keyed by seed. The note on
@@ -77,8 +77,8 @@ func Sum128SeedString(s string, seed uint64) Uint128 {
 // Sum64Secret for the constraints on secret.
 func Sum128Secret(b, secret []byte) Uint128 {
 	checkSecret(secret)
-	return sum128(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)),
-		unsafe.Pointer(unsafe.SliceData(secret)), len(secret), 0)
+	return sum128NS(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)),
+		unsafe.Pointer(unsafe.SliceData(secret)), len(secret))
 }
 
 // MinSecretSize is the shortest custom secret accepted by this package, and
@@ -167,16 +167,62 @@ func sum64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed
 	return avalanche64(seed ^ rd64(sec, 56) ^ rd64(sec, 64))
 }
 
+// sum64NS is sum64 with the seed arithmetic gone, for the unseeded entry
+// points. A seed enters each short case as one to four instructions -- the
+// 4..8 case spends a byte-reverse, a shift, a xor and a subtract deriving its
+// mix -- and on a core that is dispatch-saturated here, dead instructions are
+// the whole cost. The twins route straight to the seed-free ladders, so the
+// unseeded path never tests the seed at all. Held to the same vectors as
+// sum64: seed-zero cases go through here and must be bit-identical.
+//
+//go:nosplit
+func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) uint64 {
+	if n > 16 {
+		if n > midsizeMax {
+			acc := initAcc
+			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
+			return mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1)
+		}
+		if n <= 128 {
+			return len17to128_64NS(in, n, sec)
+		}
+		return len129to240_64NS(in, n, sec)
+	}
+	if n > 8 {
+		inputLo := rd64(in, 0) ^ (rd64(sec, 24) ^ rd64(sec, 32))
+		inputHi := rd64(in, n-8) ^ (rd64(sec, 40) ^ rd64(sec, 48))
+		acc := uint64(n) + bits.ReverseBytes64(inputLo) + inputHi + mul128Fold64(inputLo, inputHi)
+		return avalanche(acc)
+	}
+	if n >= 4 {
+		in1 := rd32(in, 0)
+		in2 := rd32(in, n-4)
+		bitflip := rd64(sec, 8) ^ rd64(sec, 16)
+		return rrmxmx(uint64(in2)+uint64(in1)<<32^bitflip, uint64(n))
+	}
+	if n > 0 {
+		c1 := uint32(rdb(in, 0))
+		c2 := uint32(rdb(in, n>>1))
+		c3 := uint32(rdb(in, n-1))
+		combined := c1<<16 | c2<<24 | c3 | uint32(n)<<8
+		return avalanche64(uint64(combined) ^ uint64(rd32(sec, 0)^rd32(sec, 4)))
+	}
+	return avalanche64(rd64(sec, 56) ^ rd64(sec, 64))
+}
+
 // sum64Seeded applies a seed. Up to 240 bytes the seed enters the arithmetic
 // directly; above that XXH3 defines the seeded hash as the unseeded hash under
 // a secret derived from the seed, which has to be built first.
 func sum64Seeded(in unsafe.Pointer, n uintptr, seed uint64) uint64 {
-	if n <= midsizeMax || seed == 0 {
+	if seed == 0 {
+		return sum64NS(in, n, unsafe.Pointer(&kSecret), secretDefaultSize)
+	}
+	if n <= midsizeMax {
 		return sum64(in, n, unsafe.Pointer(&kSecret), secretDefaultSize, seed)
 	}
 	var secret [secretDefaultSize]byte
 	deriveSecret(&secret, seed)
-	return sum64(in, n, unsafe.Pointer(&secret), secretDefaultSize, 0)
+	return sum64NS(in, n, unsafe.Pointer(&secret), secretDefaultSize)
 }
 
 // ---------------------------------------------------------------------------
@@ -229,11 +275,50 @@ func sum128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, see
 	}
 }
 
+// sum128NS is sum128 with the seed arithmetic gone; see sum64NS. The short
+// cases are spelled out here rather than calling the seeded functions with a
+// zero, because the zero still costs its instructions.
+//
+//go:nosplit
+func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) Uint128 {
+	if n > 16 {
+		if n > midsizeMax {
+			acc := initAcc
+			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
+			return Uint128{
+				Lo: mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1),
+				Hi: mergeAccs(&acc, add(sec, uintptr(secretLen-8*accNB-secretMergeAccsStart)),
+					^(uint64(n) * prime64_2)),
+			}
+		}
+		if n <= 128 {
+			return len17to128_128NS(in, n, sec)
+		}
+		return len129to240_128NS(in, n, sec)
+	}
+	if n > 8 {
+		return len9to16_128NS(in, n, sec)
+	}
+	if n >= 4 {
+		return len4to8_128NS(in, n, sec)
+	}
+	if n > 0 {
+		return len1to3_128NS(in, n, sec)
+	}
+	return Uint128{
+		Lo: avalanche64(rd64(sec, 64) ^ rd64(sec, 72)),
+		Hi: avalanche64(rd64(sec, 80) ^ rd64(sec, 88)),
+	}
+}
+
 func sum128Seeded(in unsafe.Pointer, n uintptr, seed uint64) Uint128 {
-	if n <= midsizeMax || seed == 0 {
+	if seed == 0 {
+		return sum128NS(in, n, unsafe.Pointer(&kSecret), secretDefaultSize)
+	}
+	if n <= midsizeMax {
 		return sum128(in, n, unsafe.Pointer(&kSecret), secretDefaultSize, seed)
 	}
 	var secret [secretDefaultSize]byte
 	deriveSecret(&secret, seed)
-	return sum128(in, n, unsafe.Pointer(&secret), secretDefaultSize, 0)
+	return sum128NS(in, n, unsafe.Pointer(&secret), secretDefaultSize)
 }

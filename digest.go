@@ -248,8 +248,8 @@ func (d *Digest) Sum64() uint64 {
 		return sum64(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
 			unsafe.Pointer(&kSecret), secretDefaultSize, d.seed)
 	}
-	return sum64(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
-		d.secretPtr(), d.secretLimit+stripeLen, 0)
+	return sum64NS(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
+		d.secretPtr(), d.secretLimit+stripeLen)
 }
 
 // Sum128 returns the 128-bit hash of everything written so far.
@@ -268,8 +268,8 @@ func (d *Digest) Sum128() Uint128 {
 		return sum128(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
 			unsafe.Pointer(&kSecret), secretDefaultSize, d.seed)
 	}
-	return sum128(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
-		d.secretPtr(), d.secretLimit+stripeLen, 0)
+	return sum128NS(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
+		d.secretPtr(), d.secretLimit+stripeLen)
 }
 
 // Sum appends the 64-bit hash to b in big-endian order, as hash.Hash requires.
