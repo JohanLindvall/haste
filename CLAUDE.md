@@ -251,6 +251,20 @@ worth nothing.
   would otherwise push these over the budget. Cost 45-74 against 80, so keep
   an eye on `-gcflags=-m` when touching them; going one node over silently
   doubles their cost. TestBitflipConstants ties the constants back to kSecret.
+- An exhaustive per-length sweep (bench/sweep, every length 0..255) found no
+  anomalies: within every size class up to 128 bytes the spread across lengths
+  is 1-2% -- no alignment or odd-length pathologies -- and 129..240 is a
+  smooth ~0.5ns-per-16-bytes ramp from the tail loop. The only lengths behind
+  zeebo/xxh3 are 0..16 (by 2-4%), which is the three extra arguments the
+  custom-secret signature carries; the fixed-size entries are the answer
+  there. Ahead at every one of the other 239 lengths, by 10% at 17 rising to
+  34% at 128.
+- Specializing the 0..16 paths on the default secret (compile-time bitflips,
+  guarded by seed==0 && sec==&kSecret) was measured and rejected: only empty
+  input won (+13%), 4..16 regressed 3-6%. The guarding compares sit on the
+  critical path, while the loads they remove are L1-hot kSecret words that
+  ran in parallel all along. The same constants pay in fixed.go because the
+  call disappears with them, not because the loads do.
 - Two more streaming ideas measured and dropped, both in the staging path:
   replacing the short-write `copy` with inline word moves is worth nothing
   (memmove was not the cost), and Write's fast path cannot be inlined at all.
