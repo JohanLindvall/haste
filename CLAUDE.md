@@ -168,6 +168,14 @@ vector side loses even though it removes instructions, because 1.5 vector
 operations per cycle is the harder limit. Four scalar lanes is the optimum of
 the three splits that the register file and the pairing of `uzp` allow.
 
+Hardware counters confirm it directly (perf works on this VM): the long path
+retires 4.48 instructions per cycle with 0.25% frontend and 0.68% backend
+stall cycles -- the 5-wide dispatch is saturated, nothing is waiting, and only
+removing instructions can help. The mid-size ladder runs at 4.25 IPC, same
+story, which is why the seed-free twins (two adds fewer per mix) were worth
+9-14% where tree-summing its accumulator chain (same adds, regrouped) was
+worth nothing.
+
 - NEON runs at ~10.9 cycles per 64-byte stripe. Marginal cost is ~0.53 cycles
   per vector operation (≈1.9 ops/cycle) plus ~2.4 cycles fixed.
 - The kernel is **not** load-bound (halving the loads made it slower, by

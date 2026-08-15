@@ -59,25 +59,27 @@ Azure Cobalt 100 (Neoverse N2, 3.4 GHz), Go 1.26:
 
 | size | xxhaste | zeebo/xxh3 | cespare (XXH64) |
 |-----:|--------:|-----------:|----------------:|
-| 4 | 3.02 | 2.93 | 3.20 |
-| 8 | 3.02 | 2.93 | 3.49 |
-| 16 | 3.25 | 3.18 | 4.23 |
-| 32 | 4.77 | 4.67 | 7.66 |
-| 64 | **6.83** | 7.26 | 9.07 |
-| 128 | **10.58** | 12.71 | 12.49 |
-| 240 | **22.68** | 23.27 | 19.71 |
-| 256 | **20.90** | 26.26 | 18.69 |
-| 512 | **29.4** | 44.9 | 30.0 |
-| 1 Ki | **45.0** | 82.4 | 49.5 |
-| 4 Ki | **153** | 326 | 163 |
-| 64 Ki | **2330** | 5260 | 2443 |
-| 1 Mi | **40162** | 85293 | 43703 |
+| 4 | 3.04 | 2.97 | 3.28 |
+| 8 | 3.04 | 2.97 | 3.50 |
+| 16 | **3.25** | 3.25 | 4.25 |
+| 32 | **4.02** | 4.66 | 7.65 |
+| 64 | **5.67** | 7.27 | 9.08 |
+| 128 | **8.94** | 12.74 | 12.49 |
+| 240 | 19.97 | 23.25 | 19.68 |
+| 256 | 20.15 | 26.31 | 18.76 |
+| 512 | **28.09** | 44.81 | 30.02 |
+| 1 Ki | **43.76** | 83.13 | 49.63 |
+| 4 Ki | **152** | 327 | 163 |
+| 16 Ki | **582** | 1308 | 620 |
+| 64 Ki | **2323** | 5236 | 2472 |
+| 1 Mi | **40153** | 84858 | 44856 |
 
-That is **28.1 GB/s** sustained against 12.5, a 2.2x speedup on long inputs,
-and a tie inside 3% below 32 bytes, where more than half the cost is Go's call
-overhead rather than hashing - which is what the fixed-size entry points above
-are for. From 512 bytes up it is also faster than cespare's XXH64, a
-structurally cheaper algorithm, on the same machine.
+That is **28 GB/s** sustained against 12.5, ahead of the other XXH3 port at
+every size from 32 bytes up — by 28% at 64 bytes and 43% at 128 — and ahead of
+cespare's XXH64, a structurally cheaper algorithm, everywhere except a narrow
+window around 240–256 bytes where it holds a few percent. Below 32 bytes it is
+a tie within 3%, where more than half the cost is Go's call overhead rather
+than hashing; that is what the fixed-size entry points above are for.
 
 The 128-bit hash tracks the same shape: level below 32 bytes, ahead from 64
 bytes up, 2.25x at 64 KiB.
