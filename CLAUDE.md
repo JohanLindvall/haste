@@ -15,6 +15,7 @@ this before changing anything under `internal/asmgen` or any `.s` file.
 | `stub_{amd64,arm64}.go` | **generated** Go declarations for the kernels |
 | `xxh_*_{amd64,arm64}.s` | **generated** kernels |
 | `internal/asmgen` | the generator |
+| `cpu_linux_arm64.go` | SVE2 detection, and the MIDR list gating the hybrid |
 | `bench/` | separate module; comparison against zeebo/xxh3 and cespare/xxhash |
 
 `bench/` is its own module on purpose: the library itself must keep importing
@@ -175,11 +176,23 @@ Measured on Neoverse N2 (2 vector pipes, 3.4 GHz):
      backend directly. The intermediate layer was ~9% on its own.
   3. The staging size went from the reference's 256 bytes to 512. It is a
      tuning parameter, not wire format.
-- Still on the table for streaming: `absorb` makes two kernel calls when
-  anything is staged (the completed stripe, then the bulk out of the caller's
-  slice), each paying ~14 cycles to load, fold and store the accumulators. A
-  two-region kernel, or keeping the accumulators in split form in the Digest
-  so no fold is needed per call, would each be worth roughly 5%.
+- Costs of entering a kernel, measured with sum64's signature on this machine:
+  an empty Go call is 1.77ns, `accumBlocks` with nbStripes=0 is 5.02ns, and
+  with one stripe 7.70ns. So a call is 1.77ns of Go plus 3.25ns of kernel
+  prologue and epilogue, and a stripe is ~2.5ns. Use those numbers before
+  restructuring anything on the streaming path.
+- Still on the table for streaming, both measured and rejected for now:
+  1. `absorb` makes two kernel calls whenever anything is staged, and the
+     second cannot be folded into the first without a seventh argument naming
+     the straddling stripe. On arm64 the hybrid kernel has no register left
+     for one: it already uses x0-x25 minus the reserved ones. Worth ~5.3ns per
+     Write, which is 19% at 256-byte writes and 7% at 1 KiB.
+  2. Absorbing that stripe in Go instead loses: `accumulate512Generic` is
+     9.2ns against the 7.7ns call it would replace.
+  3. Holding the accumulators in split form in the Digest, so no fold is
+     needed per call, is worth about 1.2ns of the 3.25ns prologue. It costs a
+     second Load/Store shape in the generator and a change to the marshalled
+     state.
 - Go's inliner budget (80) drives several structural choices: the public
   entry points are thin so they inline; the 0..16-byte cases live inside
   `sum64`/`sum128` rather than in their own functions; `mixHalf` takes its

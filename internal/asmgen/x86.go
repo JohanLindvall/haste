@@ -384,8 +384,9 @@ func (x *x86) hi32(dst, src VReg) {
 	x.vshr(dst, src, 32)
 }
 
-// Setup broadcasts PRIME32_1 for the scramble step. It clobbers rAX, which the
-// kernel has nothing live in at that point.
+// Setup broadcasts PRIME32_1 for the scramble step, and does nothing at all
+// for a kernel that cannot reach one. It clobbers rAX, which the kernel has
+// nothing live in at that point.
 func (x *x86) Setup(scramble bool) {
 	if !scramble {
 		return
