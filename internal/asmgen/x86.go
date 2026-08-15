@@ -387,8 +387,12 @@ func (x *x86) hi32(dst, src VReg) {
 // Setup broadcasts PRIME32_1 for the scramble step. It clobbers rAX, which the
 // kernel has nothing live in at that point.
 func (x *x86) Setup() {
-	const prime32_1 = 0x9E3779B1
-	x.b.emit(func(m *Machine) { m.R[rAX] = prime32_1 }, "movl $%d, %%eax", prime32_1)
+	// Typed, not untyped: emit takes ...any, which would give an untyped
+	// constant its default type of int -- and this one does not fit in an int
+	// on a 32-bit host, where the generator and the test suite still have to
+	// build even though no kernel here runs there.
+	const prime32_1 uint32 = 0x9E3779B1
+	x.b.emit(func(m *Machine) { m.R[rAX] = uint64(prime32_1) }, "movl $%d, %%eax", prime32_1)
 	bcast := func(m *Machine) {
 		c := uint64(uint32(m.R[rAX]))
 		for i := 0; i < x.lanes; i++ {
