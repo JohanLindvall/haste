@@ -65,12 +65,38 @@ loudly rather than silently misplacing labels.
 ```
 go test ./...                                        # native, assembly backends
 go test -tags purego ./...                           # portable path
+go test -race ./...                                  # no shared state after init
 GOARCH=amd64 go test -c -o /tmp/x.test . && qemu-x86_64-static -cpu max /tmp/x.test
 GOARCH=amd64 go test -c -o /tmp/x.test . && qemu-x86_64-static -cpu Nehalem /tmp/x.test   # forces SSE2 dispatch
+go test -fuzz FuzzStreamingMatchesOneShot -fuzztime=60s .   # one target at a time
+for a in 386 arm mips s390x ppc64 riscv64 arm64; do GOARCH=$a go test -c -o /dev/null .; done
 ```
+
+That last loop matters more than it looks. `endian_slow.go` exists for the
+big-endian and unaligned-access architectures, and none of them can be run
+here — the least that has to hold is that the suite still *compiles* for them.
+It did not, until recently: `internal/asmgen` is imported by `asmsim_test.go`,
+so a constant in the generator that did not fit a 32-bit `int` took the whole
+test binary down on 386, arm and mips.
 
 qemu's TCG implements AVX2 but **not** AVX-512; an AVX-512 binary SIGILLs
 there. That is why the simulator exists.
+
+Four things check the kernels, and they do not overlap as much as they look:
+
+| test | runs | oracle |
+|---|---|---|
+| `TestBackendsNative` | the linked `.s`, through the public API | C-derived vectors |
+| `TestKernelsMatchPortable` | the linked `.s`, called directly | `generic.go` |
+| `TestSimulatedBackends` | the generator's instruction stream | `generic.go` |
+| `TestGeneratedFilesUpToDate` | the generator | the checked-in `.s` |
+
+`TestKernelsMatchPortable` is the only one that reaches `accumBlocks` under a
+custom secret. The reference vectors are one-shot, so a custom secret in them
+enters through `hashLong` and the streaming walk is never keyed by it — which
+is exactly where the `secretLimit` trap above would hide. The fuzz targets in
+`fuzz_test.go` cover the same ground with the lengths and split points chosen
+adversarially rather than by hand.
 
 ### The simulator
 

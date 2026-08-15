@@ -287,13 +287,89 @@ func TestUint128Bytes(t *testing.T) {
 	}
 }
 
+// TestShortSecretPanics covers every entry point that takes a secret. Each has
+// to check it: a caller who gets the length wrong should find out at the call
+// rather than through a hash that is quietly keyed off the end of the slice.
 func TestShortSecretPanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Error("Sum64Secret accepted a short secret")
+	cases := []struct {
+		name string
+		fn   func(secret []byte)
+	}{
+		{"Sum64Secret", func(s []byte) { Sum64Secret([]byte("x"), s) }},
+		{"Sum128Secret", func(s []byte) { Sum128Secret([]byte("x"), s) }},
+		{"NewSecret", func(s []byte) { NewSecret(s) }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for _, n := range []int{0, 1, MinSecretSize - 1} {
+				func() {
+					defer func() {
+						if recover() == nil {
+							t.Errorf("accepted a secret of %d bytes", n)
+						}
+					}()
+					c.fn(make([]byte, n))
+				}()
+			}
+			// The shortest accepted secret must not panic.
+			c.fn(make([]byte, MinSecretSize))
+		})
+	}
+}
+
+// TestEmptyAndNilInput pins the zero-length cases together. A nil slice has a
+// nil data pointer, so this is also what says that nothing dereferences the
+// input before it has looked at the length.
+func TestEmptyAndNilInput(t *testing.T) {
+	empty := []byte{}
+	sec := testSecret(MinSecretSize)
+
+	if Sum64(nil) != Sum64(empty) || Sum64(nil) != Sum64String("") {
+		t.Error("Sum64: nil, empty slice and empty string disagree")
+	}
+	if Sum128(nil) != Sum128(empty) || Sum128(nil) != Sum128String("") {
+		t.Error("Sum128: nil, empty slice and empty string disagree")
+	}
+	if Sum64Seed(nil, 7) != Sum64Seed(empty, 7) || Sum64SeedString("", 7) != Sum64Seed(empty, 7) {
+		t.Error("Sum64Seed: nil, empty slice and empty string disagree")
+	}
+	if Sum128Seed(nil, 7) != Sum128Seed(empty, 7) || Sum128SeedString("", 7) != Sum128Seed(empty, 7) {
+		t.Error("Sum128Seed: nil, empty slice and empty string disagree")
+	}
+	if Sum64Secret(nil, sec) != Sum64Secret(empty, sec) {
+		t.Error("Sum64Secret: nil and empty disagree")
+	}
+	if Sum128Secret(nil, sec) != Sum128Secret(empty, sec) {
+		t.Error("Sum128Secret: nil and empty disagree")
+	}
+
+	// An unwritten Digest is the empty hash, and empty writes do not move it.
+	d := New()
+	if got, want := d.Sum64(), Sum64(nil); got != want {
+		t.Errorf("unwritten Digest: %#016x != %#016x", got, want)
+	}
+	for _, p := range [][]byte{nil, {}} {
+		if n, err := d.Write(p); n != 0 || err != nil {
+			t.Errorf("Write(%v) = %d, %v", p, n, err)
 		}
-	}()
-	Sum64Secret([]byte("x"), make([]byte, MinSecretSize-1))
+	}
+	if n, err := d.WriteString(""); n != 0 || err != nil {
+		t.Errorf(`WriteString("") = %d, %v`, n, err)
+	}
+	if got, want := d.Sum64(), Sum64(nil); got != want {
+		t.Errorf("after empty writes: %#016x != %#016x", got, want)
+	}
+
+	// An empty write in the middle of a stream must not disturb it either.
+	buf := testBuffer(500)
+	e := New()
+	e.Write(buf[:300])
+	e.Write(nil)
+	e.WriteString("")
+	e.Write(buf[300:])
+	if got, want := e.Sum64(), Sum64(buf); got != want {
+		t.Errorf("empty write mid-stream: %#016x != %#016x", got, want)
+	}
 }
 
 // TestNoAlloc guards the property that makes the one-shot entry points usable

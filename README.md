@@ -112,13 +112,23 @@ stripe, so NEON wins and is chosen.
 
 ## Correctness
 
-- **1512 reference vectors** generated from xxHash v0.8.3 C code cover every
-  length class, four seeds, and eight custom secret sizes including ones whose
+- **1512 reference vectors** generated from xxHash v0.8.3 C code: 328 input
+  lengths under four seeds, and ten custom secret sizes including ones whose
   length is not a multiple of the secret consume rate.
 - **Every backend** is checked against those vectors, not just the one this
-  machine dispatches to.
-- **Streaming equals one-shot** across 26 chunking patterns × 25 lengths, plus
-  randomized chunking.
+  machine dispatches to. The ones this machine cannot execute go through the
+  simulator instead.
+- **Kernels against portable Go**: the three entry points are called as they
+  are linked into the binary and compared with `generic.go` in the same
+  process, from every starting position within a block and at nine secret
+  sizes. This is the only check that reaches the streaming kernel under a
+  secret whose limit is not a multiple of the consume rate — the reference
+  vectors are one-shot, so a custom secret there never gets that far.
+- **Streaming equals one-shot** at every length up to 1300 across nine
+  chunkings — crossing the stripe, the staging area and the first block many
+  times over — at nine secret sizes, plus randomized chunking.
+- **Fuzzing** over input, seed, secret, chunk size, backend and marshalled
+  state: `go test -fuzz FuzzStreamingMatchesOneShot`.
 - **Cross-implementation**: results are compared against zeebo/xxh3, an
   independent port, in `bench/`.
 
