@@ -207,11 +207,15 @@ the three splits that the register file and the pairing of `uzp` allow.
      emitted as a pure code blob has no constant pool to reach for. Do not
      retry this without solving that; on x86, where movabsq is one
      instruction, it may still be worth measuring.
-  1. `absorb` makes two kernel calls whenever anything is staged, and the
-     second cannot be folded into the first without a seventh argument naming
-     the straddling stripe. On arm64 the hybrid kernel has no register left
-     for one: it already uses x0-x25 minus the reserved ones. Worth ~5.3ns per
-     Write, which is 19% at 256-byte writes and 7% at 1 KiB.
+  1. `absorb` makes two kernel calls whenever anything is staged. Folding the
+     second into the first through a seventh argument naming the straddling
+     stripe **was implemented and measured: +6.7% at 1 KiB writes, -5% at
+     64-byte ones, noise elsewhere, and it was reverted.** The regression is
+     the extra argument, which every call pays whether it has a prefix or not;
+     the gain only appears at write sizes large enough for one call to matter.
+     It also consumes the last spare arm64 register (x26), leaving the ABI
+     with no room. Skipping the call entirely -- wrong results, timing only --
+     bounds the whole idea at +13% for 1 KiB writes.
   2. Absorbing that stripe in Go instead loses: `accumulate512Generic` is
      9.2ns against the 7.7ns call it would replace.
   3. Holding the accumulators in split form in the Digest, so no fold is
