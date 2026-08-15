@@ -228,9 +228,12 @@ check that the committed assembly still matches what the generator emits.
 
 ## Releases
 
-Versions are cut automatically: a push to `main` that touches `.go`, `.s` or
-`go.mod` tags the next patch version once the whole matrix above is green.
-Documentation-only pushes are not tagged.
+Versions are cut automatically: once the whole matrix above is green on `main`,
+the next patch version is tagged if any `.go`, `.s` or `go.mod` file has
+changed since the last tag. Measuring from the tag rather than from the push is
+what makes it self-healing — rapid pushes supersede each other's queued CI
+runs, and a superseded run never tags, so its commit is picked up by the next
+release instead of being stranded. Documentation-only work is never tagged.
 
 The module is `v0.x` while the API is still moving — `Sum64Uint64` and the
 other fixed-size entry points are recent — so a minor bump may break source

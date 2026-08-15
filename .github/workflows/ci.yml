@@ -177,10 +177,6 @@ jobs:
         with:
           fetch-depth: 0 # the whole history, and every tag, to find the latest
       - name: cut the next patch version
-        env:
-          # Through the environment, not interpolated into the script: it is
-          # attacker-influenced in the general case and this is a shell.
-          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
 
@@ -190,23 +186,23 @@ jobs:
             exit 0
           fi
 
-          # Only the module's own files warrant a version. A README or workflow
-          # edit is not something anyone can "go get".
-          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
-             || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-            changed=first-push
-          else
-            changed=$(git diff --name-only "$BEFORE" HEAD -- '*.go' '*.s' go.mod go.sum | head -n1)
-          fi
-          if [ -z "$changed" ]; then
-            echo "No Go, assembly or module files changed; not tagging."
-            exit 0
-          fi
-
           latest=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)
           if [ -z "$latest" ]; then
             next=v0.1.0
           else
+            # Only the module's own files warrant a version: a README edit is
+            # not something anyone can "go get".
+            #
+            # Measured from the last tag rather than from this push. Rapid
+            # pushes supersede each other's queued runs, and such a run never
+            # tags; asking what *this push* changed then strands that commit's
+            # code behind the next documentation-only push, which is exactly
+            # what happened to b8003eb between v0.1.1 and v0.1.2. Asking what
+            # has not shipped yet is self-healing.
+            if [ -z "$(git diff --name-only "$latest" HEAD -- '*.go' '*.s' go.mod go.sum | head -n1)" ]; then
+              echo "Nothing under Go, assembly or the module files has changed since $latest; not tagging."
+              exit 0
+            fi
             v=${latest#v}
             major=${v%%.*}
             rest=${v#*.}
