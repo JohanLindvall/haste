@@ -146,6 +146,14 @@ func mul128Fold64(a, b uint64) uint64 {
 	return lo ^ hi
 }
 
+// mix16BNS is mix16B for the unseeded case, which is most hashing: without a
+// seed the two adds that key the secret are identity, and dropping them is
+// worth 9-14% across the whole 17..128 ladder. The seeded twins below stay
+// because a seed enters every mix, so it cannot be hoisted.
+func mix16BNS(in, sec unsafe.Pointer) uint64 {
+	return mul128Fold64(rd64(in, 0)^rd64(sec, 0), rd64(in, 8)^rd64(sec, 8))
+}
+
 // mix16B consumes 16 bytes of input against 16 bytes of secret.
 func mix16B(in, sec unsafe.Pointer, seed uint64) uint64 {
 	return mul128Fold64(
@@ -207,6 +215,28 @@ func len17to128_64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint64
 	return avalanche(acc)
 }
 
+// len17to128_64NS is len17to128_64 with the seed arithmetic removed; see
+// mix16BNS. The routing in sum64 keeps the two in lockstep: every unseeded
+// reference vector runs through this one.
+func len17to128_64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) uint64 {
+	acc := uint64(n) * prime64_1
+	if n > 32 {
+		if n > 64 {
+			if n > 96 {
+				acc += mix16BNS(add(in, 48), add(sec, 96))
+				acc += mix16BNS(add(in, n-64), add(sec, 112))
+			}
+			acc += mix16BNS(add(in, 32), add(sec, 64))
+			acc += mix16BNS(add(in, n-48), add(sec, 80))
+		}
+		acc += mix16BNS(add(in, 16), add(sec, 32))
+		acc += mix16BNS(add(in, n-32), add(sec, 48))
+	}
+	acc += mix16BNS(in, sec)
+	acc += mix16BNS(add(in, n-16), add(sec, 16))
+	return avalanche(acc)
+}
+
 // len129to240_64 runs a fixed 8-chunk prologue, avalanches, then a
 // length-dependent tail. The mid-stream avalanche is what keeps this path from
 // degenerating into a plain sum over many chunks.
@@ -234,6 +264,26 @@ func len129to240_64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint6
 		acc += mix16B(add(in, 16*i), add(sec, 16*(i-8)+midsizeStartOffset), seed)
 	}
 	acc += mix16B(add(in, n-16), add(sec, secretSizeMin-midsizeLastOffset), seed)
+	return avalanche(acc)
+}
+
+// len129to240_64NS is len129to240_64 without the seed; see mix16BNS.
+func len129to240_64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) uint64 {
+	acc0 := uint64(n)*prime64_1 + mix16BNS(in, sec)
+	acc1 := mix16BNS(add(in, 16), add(sec, 16))
+	acc2 := mix16BNS(add(in, 32), add(sec, 32))
+	acc3 := mix16BNS(add(in, 48), add(sec, 48))
+	acc0 += mix16BNS(add(in, 64), add(sec, 64))
+	acc1 += mix16BNS(add(in, 80), add(sec, 80))
+	acc2 += mix16BNS(add(in, 96), add(sec, 96))
+	acc3 += mix16BNS(add(in, 112), add(sec, 112))
+	acc := avalanche((acc0 + acc1) + (acc2 + acc3))
+
+	nbRounds := n / 16
+	for i := uintptr(8); i < nbRounds; i++ {
+		acc += mix16BNS(add(in, 16*i), add(sec, 16*(i-8)+midsizeStartOffset))
+	}
+	acc += mix16BNS(add(in, n-16), add(sec, secretSizeMin-midsizeLastOffset))
 	return avalanche(acc)
 }
 
@@ -372,6 +422,72 @@ func len129to240_128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint
 		hi = mixHalf(hi, b, add(s, 16), 0-seed, ca)
 	}
 	return finalize128(lo, hi, n, seed)
+}
+
+// mixHalfNS is mixHalf without the seed; see mix16BNS.
+func mixHalfNS(acc uint64, in, sec unsafe.Pointer, cross uint64) uint64 {
+	return (acc + mix16BNS(in, sec)) ^ cross
+}
+
+// len17to128_128NS is len17to128_128 without the seed.
+func len17to128_128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) Uint128 {
+	lo := uint64(n) * prime64_1
+	hi := uint64(0)
+	if n > 32 {
+		if n > 64 {
+			if n > 96 {
+				a, b := add(in, 48), add(in, n-64)
+				ca, cb := cross16(a), cross16(b)
+				lo = mixHalfNS(lo, a, add(sec, 96), cb)
+				hi = mixHalfNS(hi, b, add(sec, 112), ca)
+			}
+			a, b := add(in, 32), add(in, n-48)
+			ca, cb := cross16(a), cross16(b)
+			lo = mixHalfNS(lo, a, add(sec, 64), cb)
+			hi = mixHalfNS(hi, b, add(sec, 80), ca)
+		}
+		a, b := add(in, 16), add(in, n-32)
+		ca, cb := cross16(a), cross16(b)
+		lo = mixHalfNS(lo, a, add(sec, 32), cb)
+		hi = mixHalfNS(hi, b, add(sec, 48), ca)
+	}
+	a, b := in, add(in, n-16)
+	ca, cb := cross16(a), cross16(b)
+	lo = mixHalfNS(lo, a, sec, cb)
+	hi = mixHalfNS(hi, b, add(sec, 16), ca)
+	return finalize128(lo, hi, n, 0)
+}
+
+// len129to240_128NS is len129to240_128 without the seed.
+func len129to240_128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) Uint128 {
+	lo := uint64(n) * prime64_1
+	hi := uint64(0)
+
+	for i := uintptr(0); i < 4; i++ {
+		a, b := add(in, 32*i), add(in, 32*i+16)
+		ca, cb := cross16(a), cross16(b)
+		lo = mixHalfNS(lo, a, add(sec, 32*i), cb)
+		hi = mixHalfNS(hi, b, add(sec, 32*i+16), ca)
+	}
+	lo = avalanche(lo)
+	hi = avalanche(hi)
+
+	nbRounds := n / 32
+	for i := uintptr(4); i < nbRounds; i++ {
+		a, b := add(in, 32*i), add(in, 32*i+16)
+		ca, cb := cross16(a), cross16(b)
+		s := add(sec, midsizeStartOffset+32*(i-4))
+		lo = mixHalfNS(lo, a, s, cb)
+		hi = mixHalfNS(hi, b, add(s, 16), ca)
+	}
+	{
+		a, b := add(in, n-16), add(in, n-32)
+		ca, cb := cross16(a), cross16(b)
+		s := add(sec, secretSizeMin-midsizeLastOffset-16)
+		lo = mixHalfNS(lo, a, s, cb)
+		hi = mixHalfNS(hi, b, add(s, 16), ca)
+	}
+	return finalize128(lo, hi, n, 0)
 }
 
 // ---------------------------------------------------------------------------

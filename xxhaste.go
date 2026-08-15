@@ -120,9 +120,17 @@ func sum64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed
 		}
 		// The ladders are reached from here for the same reason. Neither is
 		// small enough to inline, so anything between them and sum64 is a real
-		// call -- worth 10% at 128 bytes and 19% at 32.
+		// call -- worth 10% at 128 bytes and 19% at 32. The unseeded twins
+		// exist because a seed costs two adds in every mix, and most hashing
+		// has none; the branch predicts perfectly either way.
 		if n <= 128 {
+			if seed == 0 {
+				return len17to128_64NS(in, n, sec)
+			}
 			return len17to128_64(in, n, sec, seed)
+		}
+		if seed == 0 {
+			return len129to240_64NS(in, n, sec)
 		}
 		return len129to240_64(in, n, sec, seed)
 	}
@@ -196,7 +204,13 @@ func sum128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, see
 		}
 		// And the ladders directly, as in sum64.
 		if n <= 128 {
+			if seed == 0 {
+				return len17to128_128NS(in, n, sec)
+			}
 			return len17to128_128(in, n, sec, seed)
+		}
+		if seed == 0 {
+			return len129to240_128NS(in, n, sec)
 		}
 		return len129to240_128(in, n, sec, seed)
 	}
