@@ -1,0 +1,9 @@
+# Test binaries from `go test -c`, which CLAUDE.md's qemu commands produce.
+*.test
+
+# Profiles and coverage.
+*.out
+*.prof
+
+# Fuzzing keeps its corpus in the build cache; only failing inputs land in
+# testdata/fuzz, and those are worth committing.
