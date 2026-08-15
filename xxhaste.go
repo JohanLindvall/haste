@@ -104,7 +104,7 @@ func checkSecret(secret []byte) {
 // classes can collide through the same bits.
 //
 // It is nosplit because the stack-growth check in the prologue is a
-// measurable share of a ten-cycle hash. The frame is 64 bytes, well inside
+// measurable share of a ten-cycle hash. The frame is 112 bytes, well inside
 // the nosplit budget, and the linker verifies that at build time.
 //
 //go:nosplit
@@ -118,7 +118,13 @@ func sum64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed
 			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
 			return mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1)
 		}
-		return sum64Mid(in, n, sec, seed)
+		// The ladders are reached from here for the same reason. Neither is
+		// small enough to inline, so anything between them and sum64 is a real
+		// call -- worth 10% at 128 bytes and 19% at 32.
+		if n <= 128 {
+			return len17to128_64(in, n, sec, seed)
+		}
+		return len129to240_64(in, n, sec, seed)
 	}
 	if n > 8 {
 		// 9..16 bytes: the two overlapping halves are folded through the
@@ -151,14 +157,6 @@ func sum64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed
 		return avalanche64(uint64(combined) ^ bitflip)
 	}
 	return avalanche64(seed ^ rd64(sec, 56) ^ rd64(sec, 64))
-}
-
-// sum64Mid handles 17..240 bytes, the two fixed ladders.
-func sum64Mid(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint64) uint64 {
-	if n <= 128 {
-		return len17to128_64(in, n, sec, seed)
-	}
-	return len129to240_64(in, n, sec, seed)
 }
 
 // sum64Seeded applies a seed. Up to 240 bytes the seed enters the arithmetic
@@ -196,7 +194,11 @@ func sum128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, see
 					^(uint64(n) * prime64_2)),
 			}
 		}
-		return sum128Mid(in, n, sec, seed)
+		// And the ladders directly, as in sum64.
+		if n <= 128 {
+			return len17to128_128(in, n, sec, seed)
+		}
+		return len129to240_128(in, n, sec, seed)
 	}
 	if n > 8 {
 		return len9to16_128(in, n, sec, seed)
@@ -211,14 +213,6 @@ func sum128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, see
 		Lo: avalanche64(seed ^ rd64(sec, 64) ^ rd64(sec, 72)),
 		Hi: avalanche64(seed ^ rd64(sec, 80) ^ rd64(sec, 88)),
 	}
-}
-
-// sum128Mid handles 17..240 bytes.
-func sum128Mid(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint64) Uint128 {
-	if n <= 128 {
-		return len17to128_128(in, n, sec, seed)
-	}
-	return len129to240_128(in, n, sec, seed)
 }
 
 func sum128Seeded(in unsafe.Pointer, n uintptr, seed uint64) Uint128 {

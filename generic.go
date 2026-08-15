@@ -179,6 +179,15 @@ func mixHalf(acc uint64, in, sec unsafe.Pointer, seed, cross uint64) uint64 {
 // len17to128_64 walks pairs of 16-byte chunks inward from both ends. The
 // unrolled ladder means an input of any length in range touches a fixed,
 // branch-predictable set of secret offsets.
+//
+// The single accumulator chain here is deliberate, and unlike the one in
+// mergeAccs it does not want splitting. Its terms do not become ready at the
+// same time -- each waits on its own pair of loads -- so a chain of adds
+// absorbs them as they arrive, and a second partial sum only adds a final
+// dependent add at the end. Measured on a Zen 4, splitting it cost 5% at 64
+// bytes and 8% at 128. Seeding the chain with the length term rather than
+// adding it at the end is worth another 4-7%, for the same reason: it gives
+// the chain something to start on while the first loads are still in flight.
 func len17to128_64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint64) uint64 {
 	acc := uint64(n) * prime64_1
 	if n > 32 {
