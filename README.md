@@ -142,8 +142,10 @@ implementations:
 **102 GB/s** at 64 KiB against 87, and 94 GB/s at a mebibyte. Streaming one in
 4 KiB pieces: **63.8 GB/s** against 35.7 and 18.7.
 
-Below 256 bytes the two are now level or better at every size. What closed
-the gap was never one thing: seed-free
+Below 256 bytes the two are now level or better at every length from 4 up --
+an exhaustive per-length sweep (bench/sweep) puts only 0..3 bytes more than
+3% behind, about 0.3ns of the signature cost that custom-secret support
+carries. What closed the gap was never one thing: seed-free
 twins of every path for the unseeded entry points, calling the ladders without
 an intermediate function, and unrolling the 129..240 ladder's tail -- Go does
 not unroll loops, and the reference's tail loop was recomputing offsets and
