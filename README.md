@@ -24,7 +24,24 @@ h := xxhaste.Sum64Secret(data, sec)   // keyed by a custom secret
 d := xxhaste.New()                    // streaming; implements hash.Hash64
 d.Write(chunk)
 h, c := d.Sum64(), d.Sum128()         // both widths from one pass
+
+h := xxhaste.Sum64Uint64(key)         // fixed-size keys: no call at all
+h := xxhaste.Sum64Uint64Seed(key, s)
 ```
+
+For a key whose size is known at compile time there is nothing to switch on
+and no secret to load, so `Sum64Uint32`, `Sum64Uint64` and `Sum64Uint128` fold
+into the caller entirely. They return exactly what `Sum64` returns for the same
+bytes in little-endian order, and cost about half as much:
+
+| | fixed-size | `Sum64` |
+|---|---:|---:|
+| 4 bytes | **1.89 ns** | 3.04 |
+| 8 bytes | **1.86 ns** | 3.01 |
+| 16 bytes | **2.42 ns** | 5.74 |
+
+Seeded forms cost two instructions more, which is cheap enough to key a hash
+table per instance rather than per program.
 
 `Sum64Seed` derives a 192-byte secret per call for inputs over 240 bytes, which
 is what XXH3 defines a seeded long hash to be. Hashing many long inputs under

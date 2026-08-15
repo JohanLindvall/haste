@@ -8,6 +8,7 @@ this before changing anything under `internal/asmgen` or any `.s` file.
 | path | what it is |
 |---|---|
 | `xxhaste.go` | public API; `sum64`/`sum128` hold the 0..16-byte cases inline |
+| `fixed.go` | call-free entry points for compile-time-known sizes |
 | `generic.go` | portable implementation: mid-size ladders, accumulator loop, convergence |
 | `digest.go` | streaming `Digest`; same output as `XXH3_update`, different staging |
 | `dispatch_{amd64,arm64}.go` | CPU detection and backend selection |
@@ -212,6 +213,13 @@ the three splits that the register file and the pairing of `uzp` allow.
      needed per call, is worth about 1.2ns of the 3.25ns prologue. It costs a
      second Load/Store shape in the generator and a change to the marshalled
      state.
+- `fixed.go` exists because half of a short hash is the call: an empty Go call
+  with sum64's signature is 1.77ns against 3.0ns for the whole thing. Taking
+  the input by value removes the length switch, and the default secret's
+  bitflips are constants, which removes the secret pointer -- the argument that
+  would otherwise push these over the budget. Cost 45-74 against 80, so keep
+  an eye on `-gcflags=-m` when touching them; going one node over silently
+  doubles their cost. TestBitflipConstants ties the constants back to kSecret.
 - Go's inliner budget (80) drives several structural choices: the public
   entry points are thin so they inline; the 0..16-byte cases live inside
   `sum64`/`sum128` rather than in their own functions; `mixHalf` takes its
