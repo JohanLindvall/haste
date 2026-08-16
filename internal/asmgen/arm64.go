@@ -47,6 +47,9 @@ type arm64 struct {
 	tmp    []VReg
 	stmp   []GPR
 	kprime VReg
+	// kprimeHi is kprime shifted into the high half of each 64-bit lane; only
+	// the NEON scramble uses it.
+	kprimeHi VReg
 }
 
 // newNEON builds the NEON kernel, which is the arm64 baseline.
@@ -96,6 +99,7 @@ func newARM(name string, sve bool, vl, unroll int) *arm64 {
 		a.tmp = append(a.tmp, VReg(i))
 	}
 	a.kprime = VReg(15)
+	a.kprimeHi = VReg(14)
 	return a
 }
 
@@ -556,6 +560,42 @@ func (a *arm64) Setup(scramble bool) {
 			m.V[a.kprime][i] = c | c<<32
 		}
 	}, "dup %s, w%d", a.v(a.kprime, "4s"), int(armConstGPR))
+	// kprimeHi is {0, PRIME32_1} in each 64-bit lane: what the scramble
+	// multiplies the accumulator's 32-bit halves by to get the high half of
+	// the product in place with the low half already zeroed. See Scramble.
+	a.vshl(a.kprimeHi, a.kprime, 32)
+}
+
+// vshl shifts each 64-bit lane left.
+func (a *arm64) vshl(dst, src VReg, sh uint) {
+	a.b.emit(func(m *Machine) {
+		for i := 0; i < a.lanes; i++ {
+			m.V[dst][i] = m.V[src][i] << sh
+		}
+	}, "shl %s, %s, #%d", a.v(dst, "2d"), a.v(src, "2d"), sh)
+}
+
+// xtn narrows the 64-bit lanes to their low 32 bits, packed into the low
+// half of dst.
+func (a *arm64) xtn(dst, src VReg) {
+	a.b.emit(func(m *Machine) {
+		var out [8]uint64
+		out[0] = uint64(uint32(m.V[src][0])) | uint64(uint32(m.V[src][1]))<<32
+		m.V[dst] = out
+	}, "xtn %s, %s", a.v(dst, "2s"), a.v(src, "2d"))
+}
+
+// mul4s multiplies 32-bit lanes, keeping the low 32 bits of each product.
+func (a *arm64) mul4s(dst, x, y VReg) {
+	a.b.emit(func(m *Machine) {
+		var out [8]uint64
+		for i := 0; i < a.lanes; i++ {
+			lo := uint32(m.V[x][i]) * uint32(m.V[y][i])
+			hi := uint32(m.V[x][i]>>32) * uint32(m.V[y][i]>>32)
+			out[i] = uint64(lo) | uint64(hi)<<32
+		}
+		m.V[dst] = out
+	}, "mul %s, %s, %s", a.v(dst, "4s"), a.v(x, "4s"), a.v(y, "4s"))
 }
 
 func (a *arm64) Finish() {}
@@ -656,7 +696,7 @@ func (a *arm64) Materialize(final bool) {
 // Scramble applies acc = (xorshift(acc,47) ^ secret) * PRIME32_1. SVE2 has a
 // 64-bit vector multiply; NEON does not, so it assembles the product from the
 // two 32x32 halves. The integer side has both a shifted-operand xor and a real
-// 64-bit multiply, so it needs four instructions per lane against nine.
+// 64-bit multiply, so it needs four instructions per lane against six.
 func (a *arm64) Scramble(sec GPR, secOff int) {
 	for i := 0; i < a.scalarLanes; i++ {
 		acc, t := a.scc[i], a.stmp[0]
@@ -668,7 +708,7 @@ func (a *arm64) Scramble(sec GPR, secOff int) {
 	}
 	for j := 0; j < a.nvec; j++ {
 		acc := a.accA[j]
-		t, u, w := a.tmp[0], a.tmp[1], a.tmp[2]
+		t := a.tmp[0]
 		a.vshr(t, acc, 47)
 		a.vxor(acc, acc, t)
 		a.vload(t, sec, secOff+a.vl*j)
@@ -681,37 +721,15 @@ func (a *arm64) Scramble(sec GPR, secOff int) {
 			}, "mul %s, %s, %s", a.z(acc, "d"), a.z(acc, "d"), a.z(a.kprime, "d"))
 			continue
 		}
-		// t = low halves, u = high halves, both as 2x32 in the low 64 bits.
-		a.b.emit(func(m *Machine) {
-			var out [8]uint64
-			out[0] = uint64(uint32(m.V[acc][0])) | uint64(uint32(m.V[acc][1]))<<32
-			m.V[t] = out
-		}, "xtn %s, %s", a.v(t, "2s"), a.v(acc, "2d"))
-		a.b.emit(func(m *Machine) {
-			var out [8]uint64
-			out[0] = uint64(uint32(m.V[acc][0]>>32)) | uint64(uint32(m.V[acc][1]>>32))<<32
-			m.V[u] = out
-		}, "shrn %s, %s, #32", a.v(u, "2s"), a.v(acc, "2d"))
-		a.umullNEON(w, t, a.kprime)
-		a.umullNEON(u, u, a.kprime)
-		a.b.emit(func(m *Machine) {
-			for i := 0; i < 2; i++ {
-				m.V[u][i] <<= 32
-			}
-		}, "shl %s, %s, #32", a.v(u, "2d"), a.v(u, "2d"))
-		a.vadd(acc, w, u)
+		// acc * P over 64 bits, with only a 32x32 multiplier: the product is
+		// lo(acc)*P in full plus hi(acc)*P shifted up 32, of which only the low
+		// 32 bits survive. A 32-bit lane multiply by {0, P} produces exactly
+		// that high part with the low lane already zero, so it can serve as
+		// the accumulator for the widening multiply-add of the low halves.
+		// Three operations against the six of doing it with two umull and a
+		// shift and add. It is the reference implementation's own NEON form.
+		a.xtn(t, acc)
+		a.mul4s(acc, acc, a.kprimeHi)
+		a.umlalNEON(acc, t, a.kprime, false)
 	}
-}
-
-// umullNEON computes dst = lo32 elements of x times those of y, widened.
-func (a *arm64) umullNEON(dst, x, y VReg) {
-	a.b.emit(func(m *Machine) {
-		var out [8]uint64
-		for i := 0; i < 2; i++ {
-			l := uint32(m.V[x][0] >> (32 * i))
-			r := uint32(m.V[y][0] >> (32 * i))
-			out[i] = uint64(l) * uint64(r)
-		}
-		m.V[dst] = out
-	}, "umull %s, %s, %s", a.v(dst, "2d"), a.v(x, "2s"), a.v(y, "2s"))
 }
