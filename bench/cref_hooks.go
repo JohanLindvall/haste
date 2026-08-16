@@ -17,4 +17,9 @@ var (
 	cXXH64       func(b []byte, seed uint64) uint64
 	cXXH3Stream  func(b []byte, chunk int) uint64
 	cXXH64Stream func(b []byte, chunk int) uint64
+
+	// rapidhash has no streaming form -- it reads its tail before finishing
+	// with its head -- so there is only the one-shot pair.
+	cRapid     func(b []byte) uint64
+	cRapidSeed func(b []byte, seed uint64) uint64
 )

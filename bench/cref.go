@@ -16,6 +16,7 @@ package bench
 #cgo amd64 CFLAGS: -march=native
 #define XXH_INLINE_ALL
 #include "xxhash.h"
+#include "rapidhash.h"
 
 static XXH3_state_t  *benchState3;
 static XXH64_state_t *benchState64;
@@ -81,5 +82,11 @@ func init() {
 	}
 	cXXH64Stream = func(b []byte, chunk int) uint64 {
 		return uint64(C.benchStream64((*C.char)(cptr(b)), C.size_t(len(b)), C.size_t(chunk)))
+	}
+	cRapid = func(b []byte) uint64 {
+		return uint64(C.rapidhash(cptr(b), C.size_t(len(b))))
+	}
+	cRapidSeed = func(b []byte, seed uint64) uint64 {
+		return uint64(C.rapidhash_withSeed(cptr(b), C.size_t(len(b)), C.uint64_t(seed)))
 	}
 }

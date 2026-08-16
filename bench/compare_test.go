@@ -5,9 +5,13 @@
 // port, with hand-written AVX2 and SSE2 kernels on amd64 and pure Go
 // elsewhere. cespare/xxhash is XXH64, included both because it is what most
 // Go code actually calls today and because xxhaste/xxh64 computes the same
-// hash. When a C compiler is present, the reference C implementation itself
-// joins both comparisons through cgo (see cref.go), pinned to v0.8.3, the
-// revision the test vectors came from.
+// hash. rapidhash is a third algorithm again -- no vector unit at all, just
+// folded 64x64 multiplies -- included because it is what the comparison is
+// for: knowing which shape of hash wins where.
+//
+// When a C compiler is present, the reference C implementations themselves
+// join the comparison through cgo (see cref.go): xxHash pinned to v0.8.3, the
+// revision the test vectors came from, and rapidhash as vendored beside it.
 package bench
 
 import (
@@ -15,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/JohanLindvall/xxhaste"
+	"github.com/JohanLindvall/xxhaste/rapidhash"
 	"github.com/JohanLindvall/xxhaste/xxh64"
 	cespare "github.com/cespare/xxhash/v2"
 	"github.com/zeebo/xxh3"
@@ -91,6 +96,33 @@ func TestSameAsCespare(t *testing.T) {
 	}
 }
 
+// TestRapidhashSameAsC holds the Go rapidhash to the C implementation it was
+// transcribed from, at every length where a path changes and a spread beyond.
+// The package's own vectors came from that C code too; this asks it directly,
+// in the same process, so a regenerated vector file cannot drift unnoticed.
+func TestRapidhashSameAsC(t *testing.T) {
+	if cRapid == nil {
+		t.Skip("no C compiler; the reference is not linked in")
+	}
+	buf := buffer(1 << 16)
+	lens := []int{}
+	for n := 0; n <= 240; n++ {
+		lens = append(lens, n)
+	}
+	lens = append(lens, 255, 256, 336, 448, 512, 1024, 4096, 65535, 65536)
+	for _, n := range lens {
+		in := buf[:n]
+		if got, want := rapidhash.Sum64(in), cRapid(in); got != want {
+			t.Fatalf("len=%d: Sum64 %#016x != C %#016x", n, got, want)
+		}
+		for _, seed := range []uint64{1, 42, 0x9e3779b185ebca87, ^uint64(0)} {
+			if got, want := rapidhash.Sum64Seed(in, seed), cRapidSeed(in, seed); got != want {
+				t.Fatalf("len=%d seed=%#x: Sum64Seed %#016x != C %#016x", n, seed, got, want)
+			}
+		}
+	}
+}
+
 func BenchmarkCompare64(b *testing.B) {
 	for _, n := range sizes {
 		buf := buffer(n)
@@ -118,6 +150,20 @@ func BenchmarkCompare64(b *testing.B) {
 				sink64 = cespare.Sum64(buf)
 			}
 		})
+		b.Run(fmt.Sprintf("%d/rapidhash", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = rapidhash.Sum64(buf)
+			}
+		})
+		if cRapid != nil {
+			b.Run(fmt.Sprintf("%d/c-rapidhash", n), func(b *testing.B) {
+				b.SetBytes(int64(n))
+				for i := 0; i < b.N; i++ {
+					sink64 = cRapid(buf)
+				}
+			})
+		}
 		if cXXH3 != nil {
 			b.Run(fmt.Sprintf("%d/c", n), func(b *testing.B) {
 				b.SetBytes(int64(n))
@@ -195,6 +241,20 @@ func BenchmarkCompareSeed(b *testing.B) {
 				sink64 = d.Sum64()
 			}
 		})
+		b.Run(fmt.Sprintf("%d/rapidhash", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = rapidhash.Sum64Seed(buf, 42)
+			}
+		})
+		if cRapidSeed != nil {
+			b.Run(fmt.Sprintf("%d/c-rapidhash", n), func(b *testing.B) {
+				b.SetBytes(int64(n))
+				for i := 0; i < b.N; i++ {
+					sink64 = cRapidSeed(buf, 42)
+				}
+			})
+		}
 		if cXXH3Seed != nil {
 			b.Run(fmt.Sprintf("%d/c", n), func(b *testing.B) {
 				b.SetBytes(int64(n))
