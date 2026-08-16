@@ -49,6 +49,31 @@ func BenchmarkSum64String(b *testing.B) {
 	}
 }
 
+// BenchmarkFixed times the entry points that take their input by value.
+// They are the answer to the one cost a short hash cannot avoid otherwise:
+// reaching the kernel. Compare each against BenchmarkSum64 at the same
+// length -- four, eight and sixteen bytes -- which pays for the call.
+func BenchmarkFixed(b *testing.B) {
+	b.Run("Uint32", func(b *testing.B) {
+		b.SetBytes(4)
+		for i := 0; i < b.N; i++ {
+			sink = Sum64Uint32(0x89abcdef)
+		}
+	})
+	b.Run("Uint64", func(b *testing.B) {
+		b.SetBytes(8)
+		for i := 0; i < b.N; i++ {
+			sink = Sum64Uint64(0x0123456789abcdef)
+		}
+	})
+	b.Run("Uint128", func(b *testing.B) {
+		b.SetBytes(16)
+		for i := 0; i < b.N; i++ {
+			sink = Sum64Uint128(0x0123456789abcdef, 0xfedcba9876543210)
+		}
+	})
+}
+
 // BenchmarkBackends times every kernel this machine can run, not just the one
 // dispatch picked, so a change can be judged against the alternative on the
 // same hardware in the same binary.

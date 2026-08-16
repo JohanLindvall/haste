@@ -91,7 +91,7 @@ type RapidArch interface {
 	// rounds of one 224-byte iteration -- in whatever shape the alternative
 	// form wants, which need not be the shared one. lane names the register
 	// lane i accumulates into. Only a DualMul backend implements it.
-	AltBlockBody(lane func(int) GPR)
+	AltBlockBody(lane func(int) GPR, at int)
 
 	// Short4to16 fills A and B for a 4..16-byte input and folds the length
 	// into the seed: the two reads overlap below 16 bytes, and are 32-bit
@@ -120,6 +120,20 @@ type RapidArch interface {
 	// AdvanceIn adds bytes to In, and SubI subtracts them from I.
 	AdvanceIn(bytes int)
 	SubI(bytes int)
+
+	// The block loop's own bookkeeping. A backend with a register to spare
+	// keeps the address the loop ends at, so an iteration tests the pointer
+	// it already advances instead of decrementing and comparing the length:
+	// three instructions where there were four, on a loop where an
+	// instruction measures 0.29 cycles. LoopBound reports whether it can.
+	//
+	// LoopEnter computes that address for a loop consuming bytes per
+	// iteration, LoopStep advances and branches, and LoopExit puts the
+	// remaining length back in I for the ladder below.
+	LoopBound() bool
+	LoopEnter(bytes int)
+	LoopStep(bytes int, label string)
+	LoopExit(bytes int)
 
 	BranchI(a GPR, imm int64, c Cond, label string)
 	Jmp(label string)
@@ -248,23 +262,63 @@ func emitRapidSum64(a RapidArch, seeded bool) {
 	// minimum iteration count. Removing the threshold looked right after the
 	// reorder and was measured as an improvement; it was not, and the next
 	// merge made that plain at 232..320 bytes. Change one at a time here.
-	emitLoop := func(loop string, alt bool) {
-		b.Label(loop)
+	// body emits one 224-byte pass at the given byte offset.
+	body := func(alt bool, at int) {
 		if alt {
 			// The alternative form reorders the iteration; see the backend.
 			// Every lane's two rounds stay in order and the lanes stay
 			// independent, so the result is the same bits either way.
-			a.AltBlockBody(lane)
-		} else {
-			for group := 0; group < 2; group++ {
-				for i := 0; i < 7; i++ {
-					a.Round(lane(i), group*112+i*16, i)
-				}
+			a.AltBlockBody(lane, at)
+			return
+		}
+		for group := 0; group < 2; group++ {
+			for i := 0; i < 7; i++ {
+				a.Round(lane(i), at+group*112+i*16, i)
 			}
 		}
+	}
+
+	// emitLoop emits the block loop, two passes to an iteration where the
+	// backend can keep the loop's end address: 448 bytes then leave the
+	// straggling one to the single-pass loop below it, which halves what the
+	// bookkeeping costs per pass again.
+	emitLoop := func(loop string, alt bool) {
+		if !a.LoopBound() {
+			b.Label(loop)
+			body(alt, 0)
+			a.AdvanceIn(224)
+			a.SubI(224)
+			a.BranchI(a.I(), 224, GT, loop)
+			return
+		}
+
+		// loop is the label the caller may branch to, so it names the entry
+		// rather than the top of an iteration: the bookkeeping below has to
+		// run whichever way this is reached.
+		b.Label(loop)
+		pair, single, one224, done := b.NewLabel("pair"), b.NewLabel("single"),
+			b.NewLabel("l224"), b.NewLabel("loopdone")
+
+		// Two passes to an iteration, which halves what the bookkeeping costs
+		// per pass, and the bound computed only on the side that runs the
+		// loop. After it at most one pass is left, so the tail needs no loop
+		// of its own -- and the loop falls straight into that tail rather
+		// than branching to it.
+		a.BranchI(a.I(), 448, LE, single)
+		a.LoopEnter(448)
+		b.Label(pair)
+		body(alt, 0)
+		body(alt, 224)
+		a.LoopStep(448, pair)
+		a.LoopExit(448)
+
+		b.Label(single)
+		a.BranchI(a.I(), 224, LE, done)
+		body(alt, 0)
 		a.AdvanceIn(224)
 		a.SubI(224)
-		a.BranchI(a.I(), 224, GT, loop)
+		b.Label(done)
+		_ = one224
 	}
 
 	a.BranchI(a.I(), 224, LE, one)
