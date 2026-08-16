@@ -22,6 +22,7 @@ import (
 	"github.com/JohanLindvall/haste/xxh3"
 	"github.com/JohanLindvall/haste/xxh64"
 	cespare "github.com/cespare/xxhash/v2"
+	vkudryk "github.com/vkudryk/rapidhash-go"
 	zeebo "github.com/zeebo/xxh3"
 )
 
@@ -123,6 +124,31 @@ func TestRapidhashSameAsC(t *testing.T) {
 	}
 }
 
+// TestRapidhashPortsDiffer records that the two Go rapidhash ports compute
+// different hashes, and which of them the reference C agrees with. It is a
+// test rather than a comment so that it cannot quietly stop being true -- if
+// vkudryk/rapidhash-go moves to the current algorithm, this fails and the
+// benchmark labels need changing with it.
+func TestRapidhashPortsDiffer(t *testing.T) {
+	buf := buffer(300)
+	for _, n := range []int{0, 1, 8, 17, 64, 113, 300} {
+		in := buf[:n]
+		if rapidhash.Sum64(in) == vkudryk.Hash(in) {
+			t.Errorf("len=%d: the two ports now agree; they are no longer different "+
+				"algorithm versions, so the v1 labels below are wrong", n)
+		}
+		if cRapid == nil {
+			continue
+		}
+		if got, want := rapidhash.Sum64(in), cRapid(in); got != want {
+			t.Errorf("len=%d: this port disagrees with the reference C: %#016x != %#016x", n, got, want)
+		}
+		if vkudryk.Hash(in) == cRapid(in) {
+			t.Errorf("len=%d: vkudryk now matches the reference C, which this test assumed it did not", n)
+		}
+	}
+}
+
 func BenchmarkCompare64(b *testing.B) {
 	for _, n := range sizes {
 		buf := buffer(n)
@@ -154,6 +180,12 @@ func BenchmarkCompare64(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
 				sink64 = rapidhash.Sum64(buf)
+			}
+		})
+		b.Run(fmt.Sprintf("%d/vkudryk-rapid-v1", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = vkudryk.Hash(buf)
 			}
 		})
 		if cRapid != nil {
@@ -245,6 +277,12 @@ func BenchmarkCompareSeed(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
 				sink64 = rapidhash.Sum64Seed(buf, 42)
+			}
+		})
+		b.Run(fmt.Sprintf("%d/vkudryk-rapid-v1", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = vkudryk.HashWithSeed(buf, 42)
 			}
 		})
 		if cRapidSeed != nil {
