@@ -274,7 +274,14 @@ func (x *x86Rapid) DualMul() bool { return true }
 // Reordering is safe: a lane's two rounds keep their order, and no lane
 // reads another. The bits are identical, which the simulator checks by
 // running every length through both forms.
-func (x *x86Rapid) AltBlockBody(lane func(int) GPR) {
+// LoopBound is off: this kernel holds seven lanes, the pointer, the length,
+// the table and two temporaries, and has nothing left for a loop bound.
+func (x *x86Rapid) LoopBound() bool      { return false }
+func (x *x86Rapid) LoopEnter(int)        {}
+func (x *x86Rapid) LoopStep(int, string) {}
+func (x *x86Rapid) LoopExit(int)         {}
+
+func (x *x86Rapid) AltBlockBody(lane func(int) GPR, at int) {
 	for i := 0; i < 7; i++ {
 		x.movSec(rAX, i)
 		x.roundHeldSecret(lane(i), i*16, rAX)

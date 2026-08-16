@@ -238,8 +238,43 @@ func (a *arm64Rapid) DualMul() bool { return false }
 
 // BranchNotAltMul and AltBlockBody are unreachable with DualMul off.
 func (a *arm64Rapid) BranchNotAltMul(string) { panic("asmgen: arm64 rapid has one multiply form") }
-func (a *arm64Rapid) AltBlockBody(func(int) GPR) {
+func (a *arm64Rapid) AltBlockBody(func(int) GPR, int) {
 	panic("asmgen: arm64 rapid has one block-loop form")
+}
+
+// loopEnd holds the address the block loop stops at. x22 is untouched by
+// everything else this kernel does, the held secret ending at x21.
+func (a *arm64Rapid) loopEnd() GPR { return 22 }
+
+// LoopBound is on: an iteration then tests the pointer it already advances
+// rather than decrementing the length and comparing that too.
+func (a *arm64Rapid) LoopBound() bool { return true }
+
+// LoopEnter computes the address at which an iteration of bytes would no
+// longer fit: end = in + i - bytes.
+func (a *arm64Rapid) LoopEnter(bytes int) {
+	a.b.emit(func(m *Machine) { m.R[a.loopEnd()] = m.R[a.In()] + m.R[a.I()] },
+		"add %s, %s, %s", a.GPRName(a.loopEnd()), a.GPRName(a.In()), a.GPRName(a.I()))
+	a.subImm(a.loopEnd(), int64(bytes))
+}
+
+// LoopStep advances past the iteration just emitted and goes round again
+// while the pointer is still below that address. The comparison is signed,
+// which these addresses are safe for: a Go heap pointer is nowhere near the
+// top of the range, and the simulator's address space is smaller still.
+func (a *arm64Rapid) LoopStep(bytes int, label string) {
+	a.addImm(a.In(), int64(bytes))
+	a.b.emit(func(m *Machine) { m.setCmp(m.R[a.In()], m.R[a.loopEnd()]) },
+		"cmp %s, %s", a.GPRName(a.In()), a.GPRName(a.loopEnd()))
+	a.branch(LT, label)
+}
+
+// LoopExit puts the remaining length back where the ladder reads it:
+// i = end + bytes - in, which inverts LoopEnter.
+func (a *arm64Rapid) LoopExit(bytes int) {
+	a.b.emit(func(m *Machine) { m.R[a.I()] = m.R[a.loopEnd()] - m.R[a.In()] },
+		"sub %s, %s, %s", a.GPRName(a.I()), a.GPRName(a.loopEnd()), a.GPRName(a.In()))
+	a.addImm(a.I(), int64(bytes))
 }
 
 func (a *arm64Rapid) SpreadLanes() {
