@@ -12,6 +12,12 @@ import "unsafe"
 func sum64(p unsafe.Pointer, n int, seed uint64) uint64 {
 	return sum64Generic(p, n, seed)
 }
+// sum64NS is what Sum64 and Sum64String reach: the same hash with the seed
+// known to be zero, so the prologue's mix is a constant rather than a
+// multiply. The entry point settles which kernel a caller gets at compile
+// time, so it costs no branch.
+func sum64NS(p unsafe.Pointer, n int) uint64 { return sum64GenericNS(p, n) }
+
 
 // Backend names the kernel in use.
 func Backend() string { return "generic" }

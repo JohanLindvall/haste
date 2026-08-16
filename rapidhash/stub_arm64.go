@@ -9,7 +9,12 @@ import "unsafe"
 // Declarations for the arm64 kernels in the .s files beside this one.
 // Which of them runs is decided in dispatch_arm64.go.
 
-// sum64Rapid sum64Rapid hashes the n bytes at in under seed, whatever n is: every length class and the fold in one call..
+// sum64Rapid hashes the n bytes at in under seed, whatever n is: every length class and the fold in one call.
 //
 //go:noescape
 func sum64Rapid(in unsafe.Pointer, n int, seed uint64) uint64
+
+// sum64RapidNS is sum64Rapid with no seed: the prologue's mix is a constant, loaded rather than computed.
+//
+//go:noescape
+func sum64RapidNS(in unsafe.Pointer, n int) uint64

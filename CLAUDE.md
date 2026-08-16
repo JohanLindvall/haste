@@ -1151,6 +1151,42 @@ So the rung inlining is worth keeping on its own merits, and the Zen 3 losses
 are still owed the three relinked layouts on an AMD box -- this only shows
 they do not follow the change onto other hardware.
 
+### rapidhash
+
+- **The prologue's mix is a constant when the seed is zero, and Sum64 takes
+  it that way.** rapidhash opens every hash with
+  `seed ^= mix(seed ^ secret[2], secret[1])`, which for an unseeded call is
+  always `0x422765567d8fbfd6`. The secret table carries it as a ninth word
+  and the generator emits a second kernel, `sum64RapidNS`, whose prologue
+  loads it instead of multiplying; `Sum64` and `Sum64String` reach that one
+  and `Sum64Seed` the original, so the choice is the entry point's and costs
+  no branch. It removes a multiply, and a serial one that stands at the head
+  of every hash before any input is read. Measured on a Zen 4, three
+  relinked layouts: **+6.0% at 1..16 bytes, +2.1% at 17..32, +14.7% at
+  33..112, +11.5% at 113..224, +3.6% at 225..1024** and nothing from 4 KiB
+  up, where one multiply is lost in the block loop. The portable path gains
+  far more -- 46% at 4 bytes, 41% at 17..32 -- because the kernel was
+  already overlapping the multiply that the Go code could not.
+- **mulx does not help this kernel on Zen 4, and the evidence is now in.**
+  The x86 face notes that `mulq`'s fixed rdx:rax pair costs a move per lane
+  round and that BMI2's `mulx` would lift it. It does, and the loop is
+  slower for it: a seven-lane round measures 13.57 cycles with `mulq` and
+  15.58 with `mulx` on this core, and raw throughput is 1.57 cycles per
+  multiply against 1.62. Seven multiplies at 1.57 is 11 cycles, so the
+  shipped loop at 13.57 is within 23% of the multiplier bound with the
+  instruction count doing the rest. No second kernel, no CPUID check.
+- **The short path is a call, not arithmetic.** An empty kernel call with
+  this signature is 1.28 ns on a Zen 4 against 2.01 for a whole 8-byte hash,
+  so under a nanosecond of it is the hash. Moving the 0..16 case into Go so
+  it inlines into the caller would remove the call -- and does not fit: the
+  case costs 190 inliner nodes against a budget of 80, and even the 8..16
+  branch alone costs 106, which takes `Sum64` itself from inlinable to a
+  call at 148. Tried, measured, reverted.
+- **224 bytes is slower than 225** (8.56 against 7.50 ns), because 224 does
+  not enter the 224-byte block loop: it runs one 112-byte block of seven
+  parallel lanes and then all six ladder rungs, which are serial, where 225
+  runs fourteen parallel lanes and no rungs. Wire format, not a bug.
+
 ### amd64, measured on Zen 4 (Ryzen 7 8840HS)
 
 The core retires **four 256-bit vector ALU operations per cycle**, and an

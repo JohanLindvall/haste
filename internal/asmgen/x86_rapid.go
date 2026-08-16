@@ -194,6 +194,10 @@ func (x *x86Rapid) SeedMix() {
 	x.xor(x.Seed(), rAX)
 }
 
+// SeedConst is SeedMix with the seed known to be zero: one load of the ninth
+// secret word, where the value it always computes is kept.
+func (x *x86Rapid) SeedConst() { x.movSec(x.Seed(), 8) }
+
 func (x *x86Rapid) Round(lane GPR, off, slot int) {
 	// lane = mix(load(in+off) ^ secret[slot], load(in+off+8) ^ lane)
 	//

@@ -10,7 +10,7 @@
 
 // func sum64Rapid(in unsafe.Pointer, n int, seed uint64) uint64
 //
-// sum64Rapid hashes the n bytes at in under seed, whatever n is: every length class and the fold in one call..
+// hashes the n bytes at in under seed, whatever n is: every length class and the fold in one call.
 TEXT ·sum64Rapid(SB), NOSPLIT, $0-32
 	MOVD in+0(FP), R0
 	MOVD n+8(FP), R1
@@ -308,4 +308,299 @@ TEXT ·sum64Rapid(SB), NOSPLIT, $0-32
 	WORD $0x9b057c80 // mul x0, x4, x5
 	WORD $0xca0d0000 // eor x0, x0, x13
 	MOVD R0, ret+24(FP)
+	RET
+
+// func sum64RapidNS(in unsafe.Pointer, n int) uint64
+//
+// is sum64Rapid with no seed: the prologue's mix is a constant, loaded rather than computed.
+TEXT ·sum64RapidNS(SB), NOSPLIT, $0-24
+	MOVD in+0(FP), R0
+	MOVD n+8(FP), R1
+	MOVD $·secret(SB), R3
+	WORD $0xf9402062 // ldr x2, [x3, #64]
+	WORD $0xf100403f // cmp x1, #0x10
+	WORD $0x540003cc // b.gt 80 <kernel+0x80>
+	// .Lshort1:
+	WORD $0xf100103f // cmp x1, #0x4
+	WORD $0x540001cb // b.lt 48 <kernel+0x48> // b.tstop
+	WORD $0xca010042 // eor x2, x2, x1
+	WORD $0xf100203f // cmp x1, #0x8
+	WORD $0x540000ca // b.ge 34 <kernel+0x34> // b.tcont
+	WORD $0xb940000a // ldr w10, [x0]
+	WORD $0xaa0103ec // mov x12, x1
+	WORD $0xd100118c // sub x12, x12, #0x4
+	WORD $0xb86c680b // ldr w11, [x0, x12]
+	WORD $0x14000005 // b 44 <kernel+0x44>
+	// .Leight7:
+	WORD $0xf940000a // ldr x10, [x0]
+	WORD $0xaa0103ec // mov x12, x1
+	WORD $0xd100218c // sub x12, x12, #0x8
+	WORD $0xf86c680b // ldr x11, [x0, x12]
+	// .Lshortdone8:
+	WORD $0x140000f4 // b 414 <kernel+0x414>
+	// .Lshort1to32:
+	WORD $0xf100003f // cmp x1, #0x0
+	WORD $0x54000140 // b.eq 74 <kernel+0x74> // b.none
+	WORD $0x3940000a // ldrb w10, [x0]
+	WORD $0xd353494a // lsl x10, x10, #45
+	WORD $0xaa0103ec // mov x12, x1
+	WORD $0xd100058c // sub x12, x12, #0x1
+	WORD $0x386c680b // ldrb w11, [x0, x12]
+	WORD $0xaa0b014a // orr x10, x10, x11
+	WORD $0xd341fc2c // lsr x12, x1, #1
+	WORD $0x386c680b // ldrb w11, [x0, x12]
+	WORD $0x140000e9 // b 414 <kernel+0x414>
+	// .Lempty3:
+	WORD $0xaa1f03ea // mov x10, xzr
+	WORD $0xaa1f03eb // mov x11, xzr
+	WORD $0x140000e6 // b 414 <kernel+0x414>
+	// .Lblocks6:
+	WORD $0xf101c03f // cmp x1, #0x70
+	WORD $0x5400154d // b.le 32c <kernel+0x32c>
+	WORD $0xaa0203e4 // mov x4, x2
+	WORD $0xaa0203e5 // mov x5, x2
+	WORD $0xaa0203e6 // mov x6, x2
+	WORD $0xaa0203e7 // mov x7, x2
+	WORD $0xaa0203e8 // mov x8, x2
+	WORD $0xaa0203e9 // mov x9, x2
+	WORD $0xf103803f // cmp x1, #0xe0
+	WORD $0x54000ced // b.le 240 <kernel+0x240>
+	// .Lloop9:
+	WORD $0xa940280c // ldp x12, x10, [x0]
+	WORD $0xf940006b // ldr x11, [x3]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca02014a // eor x10, x10, x2
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d82 // mul x2, x12, x10
+	WORD $0xca0d0042 // eor x2, x2, x13
+	WORD $0xa941280c // ldp x12, x10, [x0, #16]
+	WORD $0xf940046b // ldr x11, [x3, #8]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca04014a // eor x10, x10, x4
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d84 // mul x4, x12, x10
+	WORD $0xca0d0084 // eor x4, x4, x13
+	WORD $0xa942280c // ldp x12, x10, [x0, #32]
+	WORD $0xf940086b // ldr x11, [x3, #16]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca05014a // eor x10, x10, x5
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d85 // mul x5, x12, x10
+	WORD $0xca0d00a5 // eor x5, x5, x13
+	WORD $0xa943280c // ldp x12, x10, [x0, #48]
+	WORD $0xf9400c6b // ldr x11, [x3, #24]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca06014a // eor x10, x10, x6
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d86 // mul x6, x12, x10
+	WORD $0xca0d00c6 // eor x6, x6, x13
+	WORD $0xa944280c // ldp x12, x10, [x0, #64]
+	WORD $0xf940106b // ldr x11, [x3, #32]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca07014a // eor x10, x10, x7
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d87 // mul x7, x12, x10
+	WORD $0xca0d00e7 // eor x7, x7, x13
+	WORD $0xa945280c // ldp x12, x10, [x0, #80]
+	WORD $0xf940146b // ldr x11, [x3, #40]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca08014a // eor x10, x10, x8
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d88 // mul x8, x12, x10
+	WORD $0xca0d0108 // eor x8, x8, x13
+	WORD $0xa946280c // ldp x12, x10, [x0, #96]
+	WORD $0xf940186b // ldr x11, [x3, #48]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca09014a // eor x10, x10, x9
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d89 // mul x9, x12, x10
+	WORD $0xca0d0129 // eor x9, x9, x13
+	WORD $0xa947280c // ldp x12, x10, [x0, #112]
+	WORD $0xf940006b // ldr x11, [x3]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca02014a // eor x10, x10, x2
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d82 // mul x2, x12, x10
+	WORD $0xca0d0042 // eor x2, x2, x13
+	WORD $0xa948280c // ldp x12, x10, [x0, #128]
+	WORD $0xf940046b // ldr x11, [x3, #8]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca04014a // eor x10, x10, x4
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d84 // mul x4, x12, x10
+	WORD $0xca0d0084 // eor x4, x4, x13
+	WORD $0xa949280c // ldp x12, x10, [x0, #144]
+	WORD $0xf940086b // ldr x11, [x3, #16]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca05014a // eor x10, x10, x5
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d85 // mul x5, x12, x10
+	WORD $0xca0d00a5 // eor x5, x5, x13
+	WORD $0xa94a280c // ldp x12, x10, [x0, #160]
+	WORD $0xf9400c6b // ldr x11, [x3, #24]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca06014a // eor x10, x10, x6
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d86 // mul x6, x12, x10
+	WORD $0xca0d00c6 // eor x6, x6, x13
+	WORD $0xa94b280c // ldp x12, x10, [x0, #176]
+	WORD $0xf940106b // ldr x11, [x3, #32]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca07014a // eor x10, x10, x7
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d87 // mul x7, x12, x10
+	WORD $0xca0d00e7 // eor x7, x7, x13
+	WORD $0xa94c280c // ldp x12, x10, [x0, #192]
+	WORD $0xf940146b // ldr x11, [x3, #40]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca08014a // eor x10, x10, x8
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d88 // mul x8, x12, x10
+	WORD $0xca0d0108 // eor x8, x8, x13
+	WORD $0xa94d280c // ldp x12, x10, [x0, #208]
+	WORD $0xf940186b // ldr x11, [x3, #48]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca09014a // eor x10, x10, x9
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d89 // mul x9, x12, x10
+	WORD $0xca0d0129 // eor x9, x9, x13
+	WORD $0x91038000 // add x0, x0, #0xe0
+	WORD $0xd1038021 // sub x1, x1, #0xe0
+	WORD $0xf103803f // cmp x1, #0xe0
+	WORD $0x54fff36c // b.gt a8 <kernel+0xa8>
+	// .Lone10:
+	WORD $0xf101c03f // cmp x1, #0x70
+	WORD $0x5400068d // b.le 314 <kernel+0x314>
+	WORD $0xa940280c // ldp x12, x10, [x0]
+	WORD $0xf940006b // ldr x11, [x3]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca02014a // eor x10, x10, x2
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d82 // mul x2, x12, x10
+	WORD $0xca0d0042 // eor x2, x2, x13
+	WORD $0xa941280c // ldp x12, x10, [x0, #16]
+	WORD $0xf940046b // ldr x11, [x3, #8]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca04014a // eor x10, x10, x4
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d84 // mul x4, x12, x10
+	WORD $0xca0d0084 // eor x4, x4, x13
+	WORD $0xa942280c // ldp x12, x10, [x0, #32]
+	WORD $0xf940086b // ldr x11, [x3, #16]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca05014a // eor x10, x10, x5
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d85 // mul x5, x12, x10
+	WORD $0xca0d00a5 // eor x5, x5, x13
+	WORD $0xa943280c // ldp x12, x10, [x0, #48]
+	WORD $0xf9400c6b // ldr x11, [x3, #24]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca06014a // eor x10, x10, x6
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d86 // mul x6, x12, x10
+	WORD $0xca0d00c6 // eor x6, x6, x13
+	WORD $0xa944280c // ldp x12, x10, [x0, #64]
+	WORD $0xf940106b // ldr x11, [x3, #32]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca07014a // eor x10, x10, x7
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d87 // mul x7, x12, x10
+	WORD $0xca0d00e7 // eor x7, x7, x13
+	WORD $0xa945280c // ldp x12, x10, [x0, #80]
+	WORD $0xf940146b // ldr x11, [x3, #40]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca08014a // eor x10, x10, x8
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d88 // mul x8, x12, x10
+	WORD $0xca0d0108 // eor x8, x8, x13
+	WORD $0xa946280c // ldp x12, x10, [x0, #96]
+	WORD $0xf940186b // ldr x11, [x3, #48]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca09014a // eor x10, x10, x9
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d89 // mul x9, x12, x10
+	WORD $0xca0d0129 // eor x9, x9, x13
+	WORD $0x9101c000 // add x0, x0, #0x70
+	WORD $0xd101c021 // sub x1, x1, #0x70
+	// .Lafter11:
+	WORD $0xca040042 // eor x2, x2, x4
+	WORD $0xca0600a5 // eor x5, x5, x6
+	WORD $0xca0800e7 // eor x7, x7, x8
+	WORD $0xca090042 // eor x2, x2, x9
+	WORD $0xca0700a5 // eor x5, x5, x7
+	WORD $0xca050042 // eor x2, x2, x5
+	// .Ltail4:
+	WORD $0xf100403f // cmp x1, #0x10
+	WORD $0x540006ad // b.le 404 <kernel+0x404>
+	WORD $0xa940280c // ldp x12, x10, [x0]
+	WORD $0xf940086b // ldr x11, [x3, #16]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca02014a // eor x10, x10, x2
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d82 // mul x2, x12, x10
+	WORD $0xca0d0042 // eor x2, x2, x13
+	WORD $0xf100803f // cmp x1, #0x20
+	WORD $0x5400058d // b.le 404 <kernel+0x404>
+	WORD $0xa941280c // ldp x12, x10, [x0, #16]
+	WORD $0xf940086b // ldr x11, [x3, #16]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca02014a // eor x10, x10, x2
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d82 // mul x2, x12, x10
+	WORD $0xca0d0042 // eor x2, x2, x13
+	WORD $0xf100c03f // cmp x1, #0x30
+	WORD $0x5400046d // b.le 404 <kernel+0x404>
+	WORD $0xa942280c // ldp x12, x10, [x0, #32]
+	WORD $0xf940046b // ldr x11, [x3, #8]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca02014a // eor x10, x10, x2
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d82 // mul x2, x12, x10
+	WORD $0xca0d0042 // eor x2, x2, x13
+	WORD $0xf101003f // cmp x1, #0x40
+	WORD $0x5400034d // b.le 404 <kernel+0x404>
+	WORD $0xa943280c // ldp x12, x10, [x0, #48]
+	WORD $0xf940046b // ldr x11, [x3, #8]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca02014a // eor x10, x10, x2
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d82 // mul x2, x12, x10
+	WORD $0xca0d0042 // eor x2, x2, x13
+	WORD $0xf101403f // cmp x1, #0x50
+	WORD $0x5400022d // b.le 404 <kernel+0x404>
+	WORD $0xa944280c // ldp x12, x10, [x0, #64]
+	WORD $0xf940086b // ldr x11, [x3, #16]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca02014a // eor x10, x10, x2
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d82 // mul x2, x12, x10
+	WORD $0xca0d0042 // eor x2, x2, x13
+	WORD $0xf101803f // cmp x1, #0x60
+	WORD $0x5400010d // b.le 404 <kernel+0x404>
+	WORD $0xa945280c // ldp x12, x10, [x0, #80]
+	WORD $0xf940046b // ldr x11, [x3, #8]
+	WORD $0xca0b018c // eor x12, x12, x11
+	WORD $0xca02014a // eor x10, x10, x2
+	WORD $0x9bca7d8d // umulh x13, x12, x10
+	WORD $0x9b0a7d82 // mul x2, x12, x10
+	WORD $0xca0d0042 // eor x2, x2, x13
+	// .Ltail1612:
+	WORD $0x8b01000c // add x12, x0, x1
+	WORD $0xf85f018a // ldur x10, [x12, #-16]
+	WORD $0xf85f818b // ldur x11, [x12, #-8]
+	WORD $0xca01014a // eor x10, x10, x1
+	// .Ldone5:
+	WORD $0xf940046c // ldr x12, [x3, #8]
+	WORD $0xca0c014a // eor x10, x10, x12
+	WORD $0xca02016b // eor x11, x11, x2
+	WORD $0x9bcb7d45 // umulh x5, x10, x11
+	WORD $0x9b0b7d44 // mul x4, x10, x11
+	WORD $0xf9401c6a // ldr x10, [x3, #56]
+	WORD $0xca0a0084 // eor x4, x4, x10
+	WORD $0xca0c00a5 // eor x5, x5, x12
+	WORD $0xca0100a5 // eor x5, x5, x1
+	WORD $0x9bc57c8d // umulh x13, x4, x5
+	WORD $0x9b057c80 // mul x0, x4, x5
+	WORD $0xca0d0000 // eor x0, x0, x13
+	MOVD R0, ret+16(FP)
 	RET
