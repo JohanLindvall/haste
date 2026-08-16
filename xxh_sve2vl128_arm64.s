@@ -39,12 +39,12 @@ TEXT ·hashLongSVE2VL128(SB), NOSPLIT, $0-40
 	WORD $0xd10004e7 // sub x7, x7, #0x1
 	// .Lblock1:
 	WORD $0xeb0600ff // cmp x7, x6
-	WORD $0x540010eb // b.lt 270 <kernel+0x270> // b.tstop
+	WORD $0x540010cb // b.lt 26c <kernel+0x26c> // b.tstop
 	WORD $0xaa0403e8 // mov x8, x4
 	WORD $0xd343fd08 // lsr x8, x8, #3
 	WORD $0xaa0303e9 // mov x9, x3
-	WORD $0xf100091f // cmp x8, #0x2
-	WORD $0x540006eb // b.lt 144 <kernel+0x144> // b.tstop
+	WORD $0xf1000908 // subs x8, x8, #0x2
+	WORD $0x540006cb // b.lt 140 <kernel+0x140> // b.tstop
 	// .Lunroll3:
 	WORD $0xa5e0a030 // ld1d {z16.d}, p0/z, [x1]
 	WORD $0xa5e0a131 // ld1d {z17.d}, p0/z, [x9]
@@ -97,12 +97,12 @@ TEXT ·hashLongSVE2VL128(SB), NOSPLIT, $0-40
 	WORD $0x04f600e7 // add z7.d, z7.d, z22.d
 	WORD $0x91002129 // add x9, x9, #0x8
 	WORD $0x91020021 // add x1, x1, #0x80
-	WORD $0xd1000908 // sub x8, x8, #0x2
-	WORD $0xf100091f // cmp x8, #0x2
-	WORD $0x54fff96a // b.ge 6c <kernel+0x6c> // b.tcont
+	WORD $0xf1000908 // subs x8, x8, #0x2
+	WORD $0x54fff98a // b.ge 6c <kernel+0x6c> // b.tcont
 	// .Lone4:
+	WORD $0x91000908 // add x8, x8, #0x2
 	WORD $0xf100011f // cmp x8, #0x0
-	WORD $0x540003cd // b.le 1c0 <kernel+0x1c0>
+	WORD $0x540003ad // b.le 1bc <kernel+0x1bc>
 	// .Lonebody6:
 	WORD $0xa5e0a030 // ld1d {z16.d}, p0/z, [x1]
 	WORD $0xa5e0a131 // ld1d {z17.d}, p0/z, [x9]
@@ -130,9 +130,8 @@ TEXT ·hashLongSVE2VL128(SB), NOSPLIT, $0-40
 	WORD $0x04f900e7 // add z7.d, z7.d, z25.d
 	WORD $0x91010021 // add x1, x1, #0x40
 	WORD $0x91002129 // add x9, x9, #0x8
-	WORD $0xd1000508 // sub x8, x8, #0x1
-	WORD $0xf100011f // cmp x8, #0x0
-	WORD $0x54fffc8c // b.gt 14c <kernel+0x14c>
+	WORD $0xf1000508 // subs x8, x8, #0x1
+	WORD $0x54fffcac // b.gt 14c <kernel+0x14c>
 	// .Ldone5:
 	WORD $0x05e47490 // trn2 z16.d, z4.d, z4.d
 	WORD $0x05e4709f // trn1 z31.d, z4.d, z4.d
@@ -177,13 +176,13 @@ TEXT ·hashLongSVE2VL128(SB), NOSPLIT, $0-40
 	WORD $0x04b03063 // eor z3.d, z3.d, z16.d
 	WORD $0x04ef6063 // mul z3.d, z3.d, z15.d
 	WORD $0xcb0600e7 // sub x7, x7, x6
-	WORD $0x17ffff79 // b 50 <kernel+0x50>
+	WORD $0x17ffff7a // b 50 <kernel+0x50>
 	// .Ltail2:
 	WORD $0xaa0703e8 // mov x8, x7
 	WORD $0xd346fd08 // lsr x8, x8, #6
 	WORD $0xaa0303e9 // mov x9, x3
-	WORD $0xf100091f // cmp x8, #0x2
-	WORD $0x540006eb // b.lt 35c <kernel+0x35c> // b.tstop
+	WORD $0xf1000908 // subs x8, x8, #0x2
+	WORD $0x540006cb // b.lt 354 <kernel+0x354> // b.tstop
 	// .Lunroll7:
 	WORD $0xa5e0a030 // ld1d {z16.d}, p0/z, [x1]
 	WORD $0xa5e0a131 // ld1d {z17.d}, p0/z, [x9]
@@ -236,12 +235,12 @@ TEXT ·hashLongSVE2VL128(SB), NOSPLIT, $0-40
 	WORD $0x04f600e7 // add z7.d, z7.d, z22.d
 	WORD $0x91002129 // add x9, x9, #0x8
 	WORD $0x91020021 // add x1, x1, #0x80
-	WORD $0xd1000908 // sub x8, x8, #0x2
-	WORD $0xf100091f // cmp x8, #0x2
-	WORD $0x54fff96a // b.ge 284 <kernel+0x284> // b.tcont
+	WORD $0xf1000908 // subs x8, x8, #0x2
+	WORD $0x54fff98a // b.ge 280 <kernel+0x280> // b.tcont
 	// .Lone8:
+	WORD $0x91000908 // add x8, x8, #0x2
 	WORD $0xf100011f // cmp x8, #0x0
-	WORD $0x540003cd // b.le 3d8 <kernel+0x3d8>
+	WORD $0x540003ad // b.le 3d0 <kernel+0x3d0>
 	// .Lonebody10:
 	WORD $0xa5e0a030 // ld1d {z16.d}, p0/z, [x1]
 	WORD $0xa5e0a131 // ld1d {z17.d}, p0/z, [x9]
@@ -269,9 +268,8 @@ TEXT ·hashLongSVE2VL128(SB), NOSPLIT, $0-40
 	WORD $0x04f900e7 // add z7.d, z7.d, z25.d
 	WORD $0x91010021 // add x1, x1, #0x40
 	WORD $0x91002129 // add x9, x9, #0x8
-	WORD $0xd1000508 // sub x8, x8, #0x1
-	WORD $0xf100011f // cmp x8, #0x0
-	WORD $0x54fffc8c // b.gt 364 <kernel+0x364>
+	WORD $0xf1000508 // subs x8, x8, #0x1
+	WORD $0x54fffcac // b.gt 360 <kernel+0x360>
 	// .Ldone9:
 	WORD $0xaa0303eb // mov x11, x3
 	WORD $0x8b04016b // add x11, x11, x4
@@ -353,7 +351,7 @@ TEXT ·accumBlocksSVE2VL128(SB), NOSPLIT, $0-48
 	WORD $0xcb050108 // sub x8, x8, x5
 	// .Lblocks1:
 	WORD $0xf100005f // cmp x2, #0x0
-	WORD $0x540011ad // b.le 284 <kernel+0x284>
+	WORD $0x5400118d // b.le 280 <kernel+0x280>
 	WORD $0xaa0803e9 // mov x9, x8
 	WORD $0xeb02013f // cmp x9, x2
 	WORD $0x5400004d // b.le 64 <kernel+0x64>
@@ -361,8 +359,8 @@ TEXT ·accumBlocksSVE2VL128(SB), NOSPLIT, $0-48
 	// .Lmin3:
 	WORD $0xcb090042 // sub x2, x2, x9
 	WORD $0xaa0903ea // mov x10, x9
-	WORD $0xf100093f // cmp x9, #0x2
-	WORD $0x540006eb // b.lt 14c <kernel+0x14c> // b.tstop
+	WORD $0xf1000929 // subs x9, x9, #0x2
+	WORD $0x540006cb // b.lt 148 <kernel+0x148> // b.tstop
 	// .Lunroll4:
 	WORD $0xa5e0a030 // ld1d {z16.d}, p0/z, [x1]
 	WORD $0xa5e0a0f1 // ld1d {z17.d}, p0/z, [x7]
@@ -415,12 +413,12 @@ TEXT ·accumBlocksSVE2VL128(SB), NOSPLIT, $0-48
 	WORD $0x04f600e7 // add z7.d, z7.d, z22.d
 	WORD $0x910020e7 // add x7, x7, #0x8
 	WORD $0x91020021 // add x1, x1, #0x80
-	WORD $0xd1000929 // sub x9, x9, #0x2
-	WORD $0xf100093f // cmp x9, #0x2
-	WORD $0x54fff96a // b.ge 74 <kernel+0x74> // b.tcont
+	WORD $0xf1000929 // subs x9, x9, #0x2
+	WORD $0x54fff98a // b.ge 74 <kernel+0x74> // b.tcont
 	// .Lone5:
+	WORD $0x91000929 // add x9, x9, #0x2
 	WORD $0xf100013f // cmp x9, #0x0
-	WORD $0x540003cd // b.le 1c8 <kernel+0x1c8>
+	WORD $0x540003ad // b.le 1c4 <kernel+0x1c4>
 	// .Lonebody7:
 	WORD $0xa5e0a030 // ld1d {z16.d}, p0/z, [x1]
 	WORD $0xa5e0a0f1 // ld1d {z17.d}, p0/z, [x7]
@@ -448,12 +446,11 @@ TEXT ·accumBlocksSVE2VL128(SB), NOSPLIT, $0-48
 	WORD $0x04f900e7 // add z7.d, z7.d, z25.d
 	WORD $0x91010021 // add x1, x1, #0x40
 	WORD $0x910020e7 // add x7, x7, #0x8
-	WORD $0xd1000529 // sub x9, x9, #0x1
-	WORD $0xf100013f // cmp x9, #0x0
-	WORD $0x54fffc8c // b.gt 154 <kernel+0x154>
+	WORD $0xf1000529 // subs x9, x9, #0x1
+	WORD $0x54fffcac // b.gt 154 <kernel+0x154>
 	// .Ldone6:
 	WORD $0xeb08015f // cmp x10, x8
-	WORD $0x540005c1 // b.ne 284 <kernel+0x284> // b.any
+	WORD $0x540005c1 // b.ne 280 <kernel+0x280> // b.any
 	WORD $0x05e47490 // trn2 z16.d, z4.d, z4.d
 	WORD $0x05e4709f // trn1 z31.d, z4.d, z4.d
 	WORD $0x05ff7210 // trn1 z16.d, z16.d, z31.d
@@ -498,7 +495,7 @@ TEXT ·accumBlocksSVE2VL128(SB), NOSPLIT, $0-48
 	WORD $0x04ef6063 // mul z3.d, z3.d, z15.d
 	WORD $0xaa0303e7 // mov x7, x3
 	WORD $0xaa0603e8 // mov x8, x6
-	WORD $0x17ffff73 // b 4c <kernel+0x4c>
+	WORD $0x17ffff74 // b 4c <kernel+0x4c>
 	// .Lbdone2:
 	WORD $0x05e47490 // trn2 z16.d, z4.d, z4.d
 	WORD $0x05e4709f // trn1 z31.d, z4.d, z4.d
@@ -540,8 +537,8 @@ TEXT ·accumSVE2VL128(SB), NOSPLIT, $0-32
 	WORD $0xa5e3a003 // ld1d {z3.d}, p0/z, [x0, #3, mul vl]
 	WORD $0x25f8c007 // mov z7.d, #0
 	WORD $0xaa0303e6 // mov x6, x3
-	WORD $0xf100085f // cmp x2, #0x2
-	WORD $0x540006eb // b.lt 108 <kernel+0x108> // b.tstop
+	WORD $0xf1000842 // subs x2, x2, #0x2
+	WORD $0x540006cb // b.lt 104 <kernel+0x104> // b.tstop
 	// .Lunroll1:
 	WORD $0xa5e0a030 // ld1d {z16.d}, p0/z, [x1]
 	WORD $0xa5e0a0d1 // ld1d {z17.d}, p0/z, [x6]
@@ -594,12 +591,12 @@ TEXT ·accumSVE2VL128(SB), NOSPLIT, $0-32
 	WORD $0x04f600e7 // add z7.d, z7.d, z22.d
 	WORD $0x910020c6 // add x6, x6, #0x8
 	WORD $0x91020021 // add x1, x1, #0x80
-	WORD $0xd1000842 // sub x2, x2, #0x2
-	WORD $0xf100085f // cmp x2, #0x2
-	WORD $0x54fff96a // b.ge 30 <kernel+0x30> // b.tcont
+	WORD $0xf1000842 // subs x2, x2, #0x2
+	WORD $0x54fff98a // b.ge 30 <kernel+0x30> // b.tcont
 	// .Lone2:
+	WORD $0x91000842 // add x2, x2, #0x2
 	WORD $0xf100005f // cmp x2, #0x0
-	WORD $0x540003cd // b.le 184 <kernel+0x184>
+	WORD $0x540003ad // b.le 180 <kernel+0x180>
 	// .Lonebody4:
 	WORD $0xa5e0a030 // ld1d {z16.d}, p0/z, [x1]
 	WORD $0xa5e0a0d1 // ld1d {z17.d}, p0/z, [x6]
@@ -627,9 +624,8 @@ TEXT ·accumSVE2VL128(SB), NOSPLIT, $0-32
 	WORD $0x04f900e7 // add z7.d, z7.d, z25.d
 	WORD $0x91010021 // add x1, x1, #0x40
 	WORD $0x910020c6 // add x6, x6, #0x8
-	WORD $0xd1000442 // sub x2, x2, #0x1
-	WORD $0xf100005f // cmp x2, #0x0
-	WORD $0x54fffc8c // b.gt 110 <kernel+0x110>
+	WORD $0xf1000442 // subs x2, x2, #0x1
+	WORD $0x54fffcac // b.gt 110 <kernel+0x110>
 	// .Ldone3:
 	WORD $0x05e47490 // trn2 z16.d, z4.d, z4.d
 	WORD $0x05e4709f // trn1 z31.d, z4.d, z4.d

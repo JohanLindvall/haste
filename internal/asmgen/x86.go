@@ -185,6 +185,14 @@ func (x *x86) BranchI(a GPR, imm int64, c Cond, label string) {
 	x.branch(c, label)
 }
 
+func (x *x86) SubBranch(r GPR, imm int64, c Cond, label string) {
+	x.b.emit(func(m *Machine) {
+		m.setCmp(m.R[r], uint64(imm))
+		m.R[r] -= uint64(imm)
+	}, "subq $%d, %s", imm, x.GPRName(r))
+	x.branch(c, label)
+}
+
 func (x *x86) BranchR(a, b GPR, c Cond, label string) {
 	x.b.emit(func(m *Machine) { m.setCmp(m.R[a], m.R[b]) },
 		"cmpq %s, %s", x.GPRName(b), x.GPRName(a))

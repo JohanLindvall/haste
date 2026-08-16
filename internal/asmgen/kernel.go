@@ -254,7 +254,13 @@ func emitStripeLoop(a Arch, in, s, cnt GPR) {
 	u := a.Unroll()
 	unrolled, single, done := b.NewLabel("unroll"), b.NewLabel("one"), b.NewLabel("done")
 
-	a.BranchI(cnt, int64(u), LT, single)
+	// The counter runs biased by -u while the unrolled loop is live: it holds
+	// the stripes left after the group about to run, and goes negative
+	// exactly when a whole group no longer fits. That makes the loop's step
+	// and its test one flag-setting subtract instead of a subtract and a
+	// compare -- an instruction per group, which matters on cores that issue
+	// this loop as fast as they can fetch it.
+	a.SubBranch(cnt, int64(u), LT, single)
 	a.GroupBegin(s)
 	b.Label(unrolled)
 	for k := 0; k < u; k++ {
@@ -269,18 +275,17 @@ func emitStripeLoop(a Arch, in, s, cnt GPR) {
 	if a.SecretImm() {
 		a.AddRI(s, int64(secretConsumeRate*u))
 	}
-	a.SubRI(cnt, int64(u))
-	a.BranchI(cnt, int64(u), GE, unrolled)
+	a.SubBranch(cnt, int64(u), GE, unrolled)
 
 	b.Label(single)
+	a.AddRI(cnt, int64(u))
 	a.BranchI(cnt, 0, LE, done)
 	loop := b.NewLabel("onebody")
 	b.Label(loop)
 	a.Stripe(Standalone, in, 0, s, 0)
 	a.AddRI(in, stripeLen)
 	a.AddRI(s, secretConsumeRate)
-	a.SubRI(cnt, 1)
-	a.BranchI(cnt, 0, GT, loop)
+	a.SubBranch(cnt, 1, GT, loop)
 	b.Label(done)
 }
 

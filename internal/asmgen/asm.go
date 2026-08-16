@@ -138,6 +138,11 @@ type Arch interface {
 	BranchI(a GPR, imm int64, c Cond, label string)
 	BranchR(a, b GPR, c Cond, label string)
 	Jmp(label string)
+	// SubBranch subtracts imm from r and branches if the old value compared
+	// with imm satisfies c -- equivalently, if the result does against zero.
+	// It is the step and test of a counted loop in one flag-setting subtract
+	// on both architectures.
+	SubBranch(r GPR, imm int64, c Cond, label string)
 
 	// Setup prepares whatever the vector steps need. scramble says whether
 	// the kernel can reach a Scramble: a kernel that cannot does not need the

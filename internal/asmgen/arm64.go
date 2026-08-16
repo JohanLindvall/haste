@@ -47,6 +47,14 @@ type arm64 struct {
 	tmp    []VReg
 	stmp   []GPR
 	kprime VReg
+	// sec8, when nonzero, is a register the unrolled group keeps at the
+	// secret pointer plus eight: the odd stripes' base, so that their vector
+	// secret loads, which fall on 8 mod 16, can pair up in ldp -- whose
+	// immediate must be a multiple of 16 -- rather than go one register at a
+	// time. It costs one add per group and saves one load instruction per
+	// register pair per odd stripe. Only kernels with a register to spare
+	// set it.
+	sec8 GPR
 	// kprimeHi is kprime shifted into the high half of each 64-bit lane; only
 	// the NEON scramble uses it.
 	kprimeHi VReg
@@ -60,7 +68,11 @@ type arm64 struct {
 // measured out at roughly 7 cycles there, but it costs instruction bandwidth,
 // which would make it a regression on four-pipe cores (Neoverse V-series,
 // Apple), so the kernel stays purely vector.
-func newNEON(unroll int) *arm64 { return newARM("neon", false, 16, unroll) }
+func newNEON(unroll int) *arm64 {
+	a := newARM("neon", false, 16, unroll)
+	a.sec8 = 13
+	return a
+}
 
 // newNEONHybrid splits the stripe between the vector and integer units.
 // newNEONHybrid builds the split kernel. scalarLanes is fixed at four by
@@ -173,6 +185,14 @@ var armCC = map[Cond]string{LT: "lt", GE: "ge", EQ: "eq", NE: "ne", GT: "gt", LE
 func (a *arm64) BranchI(r GPR, imm int64, c Cond, label string) {
 	a.b.emit(func(m *Machine) { m.setCmp(m.R[r], uint64(imm)) },
 		"cmp %s, #%d", a.GPRName(r), imm)
+	a.branch(c, label)
+}
+
+func (a *arm64) SubBranch(r GPR, imm int64, c Cond, label string) {
+	a.b.emit(func(m *Machine) {
+		m.setCmp(m.R[r], uint64(imm))
+		m.R[r] -= uint64(imm)
+	}, "subs %s, %s, #%d", a.GPRName(r), a.GPRName(r), imm)
 	a.branch(c, label)
 }
 
@@ -639,7 +659,7 @@ func (a *arm64) Stripe(k int, in GPR, inOff int, sec GPR, secOff int) {
 		a.stripeSVE(k, in, inOff, sec, secOff)
 		return
 	}
-	a.stripeNEON(k, in, inOff, sec, secOff)
+	a.stripeNEON(k, grouped, in, inOff, sec, secOff)
 	switch {
 	case a.scalarLanes == 0:
 	case grouped:
@@ -651,7 +671,18 @@ func (a *arm64) Stripe(k int, in GPR, inOff int, sec GPR, secOff int) {
 
 // stripeNEON works on register pairs, because uzp1/uzp2 deinterleave two
 // registers in one instruction each.
-func (a *arm64) stripeNEON(k int, in GPR, inOff int, sec GPR, secOff int) {
+func (a *arm64) stripeNEON(k int, grouped bool, in GPR, inOff int, sec GPR, secOff int) {
+	if a.sec8 != 0 && grouped {
+		if k == 0 {
+			// The first stripe of the group sets the odd stripes' base; the
+			// group's secret pointer does not move until its end.
+			a.b.emit(func(m *Machine) { m.R[a.sec8] = m.R[sec] + 8 },
+				"add %s, %s, #8", a.GPRName(a.sec8), a.GPRName(sec))
+		}
+		if secOff%16 == 8 {
+			sec, secOff = a.sec8, secOff-8
+		}
+	}
 	for j := 0; j < a.nvec; j += 2 {
 		t := a.tmp[6*((k*a.nvec/2+j/2)%(len(a.tmp)/6)):]
 		d0, d1, s0, s1, lo, hi := t[0], t[1], t[2], t[3], t[4], t[5]
