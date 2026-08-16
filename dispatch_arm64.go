@@ -21,17 +21,19 @@ type backendID uint8
 const (
 	backendNEON backendID = iota
 	backendNEONHybrid
+	backendNEONHybrid2
 	backendSVE2VL128
 	backendSVE2VL256
 	backendSVE2VL512
 )
 
 var backendNames = map[backendID]string{
-	backendNEON:       "neon",
-	backendNEONHybrid: "neon-hybrid",
-	backendSVE2VL128:  "sve2-vl128",
-	backendSVE2VL256:  "sve2-vl256",
-	backendSVE2VL512:  "sve2-vl512",
+	backendNEON:        "neon",
+	backendNEONHybrid:  "neon-hybrid",
+	backendNEONHybrid2: "neon-hybrid2",
+	backendSVE2VL128:   "sve2-vl128",
+	backendSVE2VL256:   "sve2-vl256",
+	backendSVE2VL512:   "sve2-vl512",
 }
 
 var backend = pickBackend()
@@ -96,6 +98,8 @@ func hashLong(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, 
 		hashLongSVE2VL128(acc, in, n, sec, secretLimit)
 	case backendNEONHybrid:
 		hashLongNEONHybrid(acc, in, n, sec, secretLimit)
+	case backendNEONHybrid2:
+		hashLongNEONHybrid2(acc, in, n, sec, secretLimit)
 	default:
 		hashLongNEON(acc, in, n, sec, secretLimit)
 	}
@@ -111,6 +115,8 @@ func accumStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsa
 		accumSVE2VL128(acc, in, nbStripes, sec)
 	case backendNEONHybrid:
 		accumNEONHybrid(acc, in, nbStripes, sec)
+	case backendNEONHybrid2:
+		accumNEONHybrid2(acc, in, nbStripes, sec)
 	default:
 		accumNEON(acc, in, nbStripes, sec)
 	}
@@ -126,6 +132,8 @@ func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsaf
 		accumBlocksSVE2VL128(acc, in, nbStripes, sec, secretLimit, soFar)
 	case backendNEONHybrid:
 		accumBlocksNEONHybrid(acc, in, nbStripes, sec, secretLimit, soFar)
+	case backendNEONHybrid2:
+		accumBlocksNEONHybrid2(acc, in, nbStripes, sec, secretLimit, soFar)
 	default:
 		accumBlocksNEON(acc, in, nbStripes, sec, secretLimit, soFar)
 	}

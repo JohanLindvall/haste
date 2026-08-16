@@ -43,10 +43,13 @@ type arm64 struct {
 	// ssec holds the scalar lanes' secret words across an unrolled group.
 	// The secret advances one 64-bit word per stripe, so all but one of them
 	// are already in registers; only the word entering the window is loaded.
-	ssec   []GPR
-	tmp    []VReg
-	stmp   []GPR
-	kprime VReg
+	ssec []GPR
+	// laneReassoc selects the scalar lane form whose accumulator chain is
+	// one add per stripe; see laneMixReassoc.
+	laneReassoc bool
+	tmp         []VReg
+	stmp        []GPR
+	kprime      VReg
 	// sec8, when nonzero, is a register the unrolled group keeps at the
 	// secret pointer plus eight: the odd stripes' base, so that their vector
 	// secret loads, which fall on 8 mod 16, can pair up in ldp -- whose
@@ -66,24 +69,32 @@ type arm64 struct {
 // 10.9 cycles per 64-byte stripe against a marginal rate of ~1.9 vector
 // operations per cycle. Moving half the stripe onto the idle integer pipes
 // measured out at roughly 7 cycles there, but it costs instruction bandwidth,
-// which would make it a regression on four-pipe cores (Neoverse V-series,
-// Apple), so the kernel stays purely vector.
+// which makes it a regression on four-pipe cores: on an Apple M2 this kernel
+// runs at exactly its sixteen vector operations over four pipes, 4.0 cycles
+// per stripe, and the four-lane split is 10% behind it. So the kernel stays
+// purely vector.
 func newNEON(unroll int) *arm64 {
 	a := newARM("neon", false, 16, unroll)
 	a.sec8 = 13
 	return a
 }
 
-// newNEONHybrid splits the stripe between the vector and integer units.
-// newNEONHybrid builds the split kernel. scalarLanes is fixed at four by
-// measurement, not by structure: two leaves thirteen vector operations per
-// stripe, and this core sustains about 1.5 of those per cycle, which costs
-// more than the two instructions it saves. See CLAUDE.md.
-func newNEONHybrid(unroll, scalarLanes int) *arm64 {
-	if scalarLanes%2 != 0 || (accNB-scalarLanes)%4 != 0 {
-		panic("asmgen: scalar lanes must leave an even number of vector registers")
+// newNEONHybrid builds a split kernel: scalarLanes of the stripe's eight
+// lanes go through general-purpose registers, the rest through NEON.
+//
+// Four is the N2's split, by measurement rather than structure: two leaves
+// thirteen vector operations per stripe, and that core sustains about 1.5
+// of those per cycle, which costs more than the instructions it saves. Two
+// is the other shape a four-vector-pipe core with a wide front end can use,
+// where the four-lane split loses on the integer side (its multiply-
+// accumulates issue at one per cycle on an Apple M2) and pure NEON is bound
+// by the vector pipes; it holds the odd vector register in the reference's
+// xtn/shrn form. See CLAUDE.md for what each measured.
+func newNEONHybrid(name string, unroll, scalarLanes int) *arm64 {
+	if scalarLanes%2 != 0 || scalarLanes < 2 || scalarLanes > 4 || unroll%scalarLanes != 0 {
+		panic("asmgen: scalar lanes must be 2 or 4 and divide the unroll")
 	}
-	a := newARM("neonhybrid", false, 16, unroll)
+	a := newARM(name, false, 16, unroll)
 	a.scalarLanes = scalarLanes
 	a.nvec = (accNB - a.scalarLanes) / a.lanes
 	a.accA, a.accB = a.accA[:a.nvec], a.accB[:a.nvec]
@@ -92,6 +103,12 @@ func newNEONHybrid(unroll, scalarLanes int) *arm64 {
 	a.scc = []GPR{17, 19, 20, 21}[:scalarLanes]
 	a.ssec = []GPR{22, 23, 24, 25}[:scalarLanes]
 	a.stmp = []GPR{13, 14, 15, 16}
+	if scalarLanes == 2 {
+		// The registers the other two lanes would have held.
+		a.stmp = append(a.stmp, 20, 21)
+		a.laneReassoc = true
+		a.sec8 = 24
+	}
 	return a
 }
 
@@ -427,12 +444,12 @@ func (a *arm64) lsr3(dst, src GPR, sh uint) {
 		"lsr %s, %s, #%d", a.GPRName(dst), a.GPRName(src), sh)
 }
 
-// umaddl accumulates the widening product of two low halves: the integer
-// side's answer to NEON's umlal, and one instruction rather than two.
-func (a *arm64) umaddl(acc, x, y GPR) {
+// umaddl computes dst = addend + lo32(x)*lo32(y): the integer side's answer
+// to NEON's umlal, and one instruction rather than two.
+func (a *arm64) umaddl(dst, x, y, addend GPR) {
 	a.b.emit(func(m *Machine) {
-		m.R[acc] += uint64(uint32(m.R[x])) * uint64(uint32(m.R[y]))
-	}, "umaddl %s, w%d, w%d, %s", a.GPRName(acc), int(x), int(y), a.GPRName(acc))
+		m.R[dst] = m.R[addend] + uint64(uint32(m.R[x]))*uint64(uint32(m.R[y]))
+	}, "umaddl %s, w%d, w%d, %s", a.GPRName(dst), int(x), int(y), a.GPRName(addend))
 }
 
 func (a *arm64) add3(dst, x, y GPR) {
@@ -476,6 +493,13 @@ func (a *arm64) stripeScalarGroup(k int, in GPR, inOff int, sec GPR, secOff int)
 		a.ldp(d0, d1, in, inOff+off)
 		a.eor3(k0, d0, s0)
 		a.eor3(k1, d1, s1)
+		if a.laneReassoc {
+			// s0 is free now, and takes the word this lane will read n
+			// stripes from here.
+			a.ldr(s0, sec, secOff+8*accNB)
+			a.laneMixReassoc(i, d0, d1, k0, k1)
+			continue
+		}
 		a.add3(a.scc[i], a.scc[i], d1)
 		a.add3(a.scc[i+1], a.scc[i+1], d0)
 		if i == 0 {
@@ -485,9 +509,33 @@ func (a *arm64) stripeScalarGroup(k int, in GPR, inOff int, sec GPR, secOff int)
 		}
 		a.lsr3(d0, k0, 32)
 		a.lsr3(d1, k1, 32)
-		a.umaddl(a.scc[i], k0, d0)
-		a.umaddl(a.scc[i+1], k1, d1)
+		a.umaddl(a.scc[i], k0, d0, a.scc[i])
+		a.umaddl(a.scc[i+1], k1, d1, a.scc[i+1])
 	}
+}
+
+// laneMixReassoc finishes a scalar lane pair with the product added to the
+// neighbour's data word first and the accumulator last:
+//
+//	acc[i] += d[i+1] + lo(k[i]) * hi(k[i])
+//
+// grouped as acc[i] += (d[i+1] + lo*hi). Same six instructions as the
+// straight form; what changes is the dependency chain through acc[i]. A
+// multiply-accumulate whose addend comes from anything but another multiply
+// waits the whole multiplier latency for it -- measured 4 cycles per stripe on
+// an Apple M2 for add-then-umaddl against 1 for umaddl-then-umaddl -- and the
+// straight form puts the lane's add right there. Grouped this way the chain
+// through the accumulator is one add per stripe and the multiply hangs off the
+// freshly loaded data instead. It costs two more temporaries, which only the
+// two-lane split has to spare.
+func (a *arm64) laneMixReassoc(i int, d0, d1, k0, k1 GPR) {
+	h0, h1 := a.stmp[4], a.stmp[5]
+	a.lsr3(h0, k0, 32)
+	a.lsr3(h1, k1, 32)
+	a.umaddl(d1, k0, h0, d1)
+	a.umaddl(d0, k1, h1, d0)
+	a.add3(a.scc[i], a.scc[i], d1)
+	a.add3(a.scc[i+1], a.scc[i+1], d0)
 }
 
 // stripeScalar absorbs the lanes held in general-purpose registers, in the
@@ -502,12 +550,16 @@ func (a *arm64) stripeScalar(in GPR, inOff int, sec GPR, secOff int) {
 		a.ldp(k0, k1, sec, secOff+off)
 		a.eor3(k0, d0, k0)
 		a.eor3(k1, d1, k1)
+		if a.laneReassoc {
+			a.laneMixReassoc(i, d0, d1, k0, k1)
+			continue
+		}
 		a.add3(a.scc[i], a.scc[i], d1)
 		a.add3(a.scc[i+1], a.scc[i+1], d0)
 		a.lsr3(d0, k0, 32)
 		a.lsr3(d1, k1, 32)
-		a.umaddl(a.scc[i], k0, d0)
-		a.umaddl(a.scc[i+1], k1, d1)
+		a.umaddl(a.scc[i], k0, d0, a.scc[i])
+		a.umaddl(a.scc[i+1], k1, d1, a.scc[i+1])
 	}
 }
 
@@ -605,6 +657,16 @@ func (a *arm64) xtn(dst, src VReg) {
 	}, "xtn %s, %s", a.v(dst, "2s"), a.v(src, "2d"))
 }
 
+// shrn narrows the 64-bit lanes to their bits sh and up, packed into the low
+// half of dst; at sh = 32 that is the high halves.
+func (a *arm64) shrn(dst, src VReg, sh uint) {
+	a.b.emit(func(m *Machine) {
+		var out [8]uint64
+		out[0] = uint64(uint32(m.V[src][0]>>sh)) | uint64(uint32(m.V[src][1]>>sh))<<32
+		m.V[dst] = out
+	}, "shrn %s, %s, #%d", a.v(dst, "2s"), a.v(src, "2d"), sh)
+}
+
 // mul4s multiplies 32-bit lanes, keeping the low 32 bits of each product.
 func (a *arm64) mul4s(dst, x, y VReg) {
 	a.b.emit(func(m *Machine) {
@@ -684,7 +746,25 @@ func (a *arm64) stripeNEON(k int, grouped bool, in GPR, inOff int, sec GPR, secO
 		}
 	}
 	for j := 0; j < a.nvec; j += 2 {
-		t := a.tmp[6*((k*a.nvec/2+j/2)%(len(a.tmp)/6)):]
+		if j+1 == a.nvec {
+			// An odd register count leaves one register without a partner
+			// for uzp. Its halves are split the way the reference does it,
+			// with xtn and shrn: five operations for the register against the
+			// pair's four each, which is still cheaper than a fourth vector
+			// register would be on a core whose integer side has room for two
+			// more lanes.
+			t := a.tmp[12:]
+			d, s, lo, hi := t[0], t[1], t[2], t[3]
+			a.vload(d, in, inOff+16*j)
+			a.vload(s, sec, secOff+16*j)
+			a.vxor(s, d, s)
+			a.xtn(lo, s)
+			a.shrn(hi, s, 32)
+			a.umlalNEON(a.accA[j], lo, hi, false)
+			a.vadd(a.accB[j], a.accB[j], d)
+			return
+		}
+		t := a.tmp[6*((k*a.nvec/2+j/2)%2):]
 		d0, d1, s0, s1, lo, hi := t[0], t[1], t[2], t[3], t[4], t[5]
 		a.vloadPair(d0, d1, in, inOff+16*j)
 		a.vloadPair(s0, s1, sec, secOff+16*j)
