@@ -82,6 +82,7 @@ func setBackend(name string) bool {
 			return false
 		}
 		backend = id
+		accumBlocksStream = pickAccumBlocks()
 		return true
 	}
 	return false
@@ -117,6 +118,24 @@ func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsaf
 		accumBlocksAVX2(acc, in, nbStripes, sec, secretLimit, soFar)
 	default:
 		accumBlocksSSE2(acc, in, nbStripes, sec, secretLimit, soFar)
+	}
+}
+
+// accumBlocksStream is the streaming path's route to the same kernel. It is a
+// function variable rather than the switch above because absorb runs per
+// Write: the switch is one call level, and it measured 18% of a 256-byte
+// Write on a Zen 4, where an indirect call costs two cycles. The other
+// architectures keep the switch; see their dispatch files.
+var accumBlocksStream = pickAccumBlocks()
+
+func pickAccumBlocks() func(*[accNB]uint64, unsafe.Pointer, int, unsafe.Pointer, int, int) {
+	switch backend {
+	case backendAVX512:
+		return accumBlocksAVX512
+	case backendAVX2:
+		return accumBlocksAVX2
+	default:
+		return accumBlocksSSE2
 	}
 }
 

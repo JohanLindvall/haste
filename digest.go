@@ -172,6 +172,27 @@ func (d *Digest) absorb(p []byte) {
 	// layer around it showed up as 9% of a small-write benchmark.
 	sec := d.secretPtr()
 	soFar := d.nbStripesSoFar
+
+	// A small write drains with one kernel call: the staged whole stripes
+	// are absorbed -- all safe, since p continues the message -- and p goes
+	// back to being staged. The general path below makes two calls, one for
+	// the staged bytes and one straight out of p, and on a Zen 4 the call's
+	// fixed cost (accumulators loaded and stored, prologue) was a third of a
+	// 256-byte Write; the extra copy of p here is cheaper until p is most of
+	// the staging area. The bound also keeps the slide provably in bounds:
+	// at most 63 staged bytes remain, so window + remainder + p fits.
+	if len(p) < internalBufferSize-(stripeLen-1) {
+		k := d.bufUsed / stripeLen
+		accumBlocksStream(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), k, sec, d.secretLimit, soFar)
+		d.nbStripesSoFar = d.wrap(soFar + k)
+		// Slide the new window -- the last 64 bytes absorbed -- and the
+		// staged remainder down, then stage p after them.
+		rem := d.bufUsed - k*stripeLen
+		copy(d.buf[:stripeLen+rem], d.buf[k*stripeLen:stripeLen+d.bufUsed])
+		d.bufUsed = rem + copy(d.buf[stripeLen+rem:], p)
+		return
+	}
+
 	nb := (d.bufUsed + len(p) - 1) / stripeLen
 
 	// Everything staged, plus enough of p to finish the stripe it ends in.
@@ -186,7 +207,7 @@ func (d *Digest) absorb(p []byte) {
 		staged++
 	}
 	if staged > 0 {
-		accumBlocks(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), staged, sec, d.secretLimit, soFar)
+		accumBlocksStream(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), staged, sec, d.secretLimit, soFar)
 		soFar = d.wrap(soFar + staged)
 		nb -= staged
 	}
@@ -194,7 +215,7 @@ func (d *Digest) absorb(p []byte) {
 	if nb > 0 {
 		// The rest comes straight out of p. The window and what is left over
 		// are adjacent at its end, so one copy re-establishes both.
-		accumBlocks(&d.acc, unsafe.Pointer(&p[pOff]), nb, sec, d.secretLimit, soFar)
+		accumBlocksStream(&d.acc, unsafe.Pointer(&p[pOff]), nb, sec, d.secretLimit, soFar)
 		d.nbStripesSoFar = d.wrap(soFar + nb)
 		pOff += nb * stripeLen
 		d.bufUsed = copy(d.buf[:], p[pOff-stripeLen:]) - stripeLen
@@ -211,7 +232,9 @@ func (d *Digest) absorb(p []byte) {
 
 // consumeStripes runs nbStripes stripes through acc, scrambling at each block
 // boundary the run crosses, and returns the new position within the block.
-// Only Sum64 uses it: absorb calls the backend directly.
+// Only Sum64 uses it: absorb calls the backend directly. It goes through the
+// dispatch switch, not accumBlocksStream: a call through a function variable
+// makes its arguments escape, and acc here is digestLong's stack copy.
 func (d *Digest) consumeStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes, soFar int) int {
 	accumBlocks(acc, in, nbStripes, d.secretPtr(), d.secretLimit, soFar)
 	return d.wrap(soFar + nbStripes)
