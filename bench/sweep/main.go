@@ -75,6 +75,16 @@ func main() {
 		{"zeebo128", func(b []byte) uint64 { return xxh3.Hash128(b).Lo }},
 	}
 
+	// Warm up before the first measurement. A core takes a few milliseconds
+	// to reach its full clock, and the first length measured is otherwise
+	// charged for it: on an Apple M2 the empty input read as 12ns cold
+	// against 2.4ns warm.
+	for t := time.Now(); time.Since(t) < 200*time.Millisecond; {
+		for _, im := range impls {
+			sink += im.f(buf[:64])
+		}
+	}
+
 	fmt.Print("len")
 	for _, im := range impls {
 		fmt.Printf(",%s", im.name)

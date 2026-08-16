@@ -279,6 +279,98 @@ worth nothing.
   `go build -gcflags='-m=2'` before restructuring these — an accidental
   non-inlined call in the short path costs 5-15%.
 
+### arm64, measured on Apple M2 (Avalanche P-core, 3.49 GHz, macOS)
+
+macOS has no MIDR and no SVE, so this core runs the plain NEON kernel, and
+the numbers below are that kernel's unless said otherwise. The core was
+characterized with the instructions the kernels actually use, in a scratch
+harness of GNU-syntax loops assembled with clang; the model that came out
+predicts every kernel here to within a few percent, and it is a different
+model from the N2's.
+
+- **Vector: four pipes, uniform.** Every NEON operation the kernels issue
+  -- `eor`, `add`, `ushr`, `shl`, `uzp1/2`, `ext`, `xtn`, `shrn`, `umlal`,
+  `umull`, `mul.4s` -- runs at exactly 4 per cycle; latency 2 for the logic,
+  shifts, permutes and adds, 3 for the multiplies. A stripe's 16 operations
+  take 4.00 cycles with or without their loads.
+- **Front end: 8-wide, sustaining ~7.0-7.3 in the stripe loop.** Padding
+  the NEON loop with `nop`s is free until ~26 instructions per stripe, then
+  costs one cycle per ~7.2 instructions. `nop` and `movi #0` are otherwise
+  eliminated; `mov` between registers too.
+- **Loads: ~2.8 per cycle.** `ldp q` is two load micro-ops, `ldp x` one;
+  a 16-byte load at 8 mod 16 costs nothing extra. `ld2` (deinterleaving
+  load) takes two vector-pipe slots on top of its loads, so it cannot
+  replace the `uzp` pair. Measured and dropped.
+- **Integer multiply-accumulate is the trap.** `umaddl`/`madd` issue once
+  per cycle (`mul`/`umull` twice), and a multiply-accumulate whose addend
+  comes from anything but another multiply waits the full 3-cycle
+  multiplier latency: `add` then `umaddl` on one accumulator is 4 cycles per
+  pair, `umaddl` after `umaddl` is 1. Simple ALU ops run on 6 pipes;
+  shifted-register forms (`eor x, x, x, lsr #n`) on about 2.
+- **Calls are cheap here:** an empty Go call with sum64's signature is
+  0.86ns (3 cycles) against 1.77 on the N2; `accumNEON` with no stripes is
+  3.44ns, one stripe 4.36; `mergeAccs` 2.6ns; the `acc := initAcc` copy
+  1.0ns.
+
+What that makes of the kernels:
+
+- The NEON long path is **exactly vector-bound**: 4.0 cycles per stripe in
+  the loop, plus the per-block scramble and materialize. With the reference's
+  three-operation multiply in the scramble (`xtn`, `mul.4s` by `{0,P}`,
+  `umlal`) that is (16 stripes x 16 + 4 x 8) / 4 / 16 = 4.5 cycles per stripe
+  all-in against 4.72 before it: 1385ns to 1330ns at 64 KiB, +4%. Nothing
+  else on the vector side is left to remove -- the 16 operations per stripe
+  are the algorithm's floor over 128-bit registers -- and the only further
+  block-level saving would be `eor3` (FEAT_SHA3, present here) folding the
+  xorshift and secret xor, 4 operations per block, ~1.4%, not worth a
+  feature gate.
+- The **four-lane split kernel loses by 4-10%**, as CLAUDE.md predicted, but
+  for a reason the vector-pipe count does not capture: its four `umaddl` per
+  stripe alone are 4 cycles at one per cycle, and each lane's
+  add-then-multiply-accumulate chain is another 4. It is also 9-17% behind
+  on the E-cores.
+- A **two-lane split** (`neonhybrid2`, generated and measured, not
+  selected) removes both integer bottlenecks and cuts the vector work to 13
+  operations per stripe, and then hits the front end instead: 27.5
+  instructions per stripe at ~7.1 per cycle is 3.9 cycles, which is where it
+  measures. Getting there needed the lanes' product added to the data word
+  before the accumulator (`laneMixReassoc`) and unroll 8, the most `ldp x`
+  reaches. Against the NEON kernel: +5.6% at >=64 KiB, +5.0% at 16 KiB,
+  +3.3% at 4 KiB, -2.4% at 1 KiB, -5.4% at 256 bytes; level all-in on the
+  E-cores. Not enough to dispatch on this core. The same arithmetic says it
+  wins on a wider front end -- 27.5 instructions at 9 per cycle would be
+  3.1 cycles against NEON's 4.0 -- so an M4-class core is where to measure
+  it next, before enabling it anywhere. On the N2 the vector-operation model
+  puts it behind the four-lane kernel (8.7 against 7.7 cycles per stripe).
+- Both kernels bracket the M2 optimum from opposite sides -- one on the
+  vector pipes, one on the front end -- and no split of the eight lanes
+  lands between them, because lanes move in pairs.
+- **240 to 256 bytes is a 30% cliff here** (8.7ns to 11.2ns) where the N2
+  and Zen 4 show a few percent. The ladder is fast on this core, and the
+  accumulator path's fixed cost is not: at 256 bytes the kernel is 26.7
+  cycles, mergeAccs 9.1, the initAcc copy 3.6 -- 39.4 of the 39.2 measured
+  -- and most of the kernel's share is one latency chain from the last
+  stripe's `umlal` through `ext`, `add`, the store, the forwarded load and
+  the merge's multiplies, which five stripes of throughput work cannot hide.
+  The in-kernel merge rejected on the N2 for its constant materialization is
+  a weaker objection here (a call is 3 cycles, four `movk`s half a cycle),
+  but it would trade the store-and-forward for eight vector-to-GPR moves;
+  unmeasured.
+- Against zeebo/xxh3 on this core: +4-5% at 4-16 bytes, +18% at 32, +23%
+  at 64, +37% at 128, +51% at 240, +17% at 256, +47% at 1 KiB, 1.6x from
+  4 KiB up (47 GB/s against 30 at 64 KiB); the 128-bit hash the same shape.
+  Ahead of cespare's XXH64 everywhere, 1.2x at 4 bytes to 3x at 64 KiB.
+  The per-length sweep leaves 1..3 bytes 3-8% behind, as on Zen 4, and
+  everything else level or ahead. Streaming: 11.1 GB/s at 64-byte writes,
+  29.6 at 1 KiB, 40.6 at 4 KiB, 45.7 at 64 KiB.
+- `bench/sweep` charged its first few lengths for the core's clock ramp
+  (length 0 read 12ns cold against 2.4 warm); it now warms up first. Check
+  that before trusting any single early length from an older run.
+- The E-cores, measured under `taskpolicy -b` (which also clocks them down
+  to ~0.95 GHz, so only the ratios mean anything): ~2 vector operations per
+  cycle, ~6.5-wide, `umaddl` at 1.2 per cycle. NEON and the two-lane split
+  tie all-in; the four-lane split loses.
+
 ### amd64, measured on Zen 4 (Ryzen 7 8840HS)
 
 The core retires **four 256-bit vector ALU operations per cycle**, and an
