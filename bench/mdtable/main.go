@@ -2,15 +2,23 @@
 // per benchmark, sizes down the side and implementations across the top.
 //
 //	go test -run xxx -bench Compare -count 5 . | go run ./mdtable
+//	go test -run xxx -bench . ./xxh3 | go run ./mdtable -label xxh3 -level 3
 //
 // Repetitions from -count collapse to the median, and the best cell of each
-// row is bold. Lines that are not benchmark results pass through unseen, so
-// the tool can be fed a whole log.
+// row is bold where there is more than one to choose between. Lines that are
+// not benchmark results pass through unseen, so the tool can be fed a whole
+// log.
+//
+// -label prefixes every heading with where the numbers came from. Benchmark
+// names are only unique within a package, and this repository has three
+// packages carrying a Backends, a Sum64Seed and a Digest each; concatenated
+// into one document without it, the reader cannot tell which is which.
 package main
 
 import (
 	"bufio"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +26,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+)
+
+// label prefixes each heading, and level is its markdown depth. Both are
+// about placing the tables in a larger document; neither changes a number.
+var (
+	label = flag.String("label", "", "prefix every heading with this, e.g. the package the benchmarks came from")
+	level = flag.Int("level", 2, "markdown heading level for each table")
 )
 
 // result is one benchmark line, split into the table coordinates it lands
@@ -34,6 +49,7 @@ type result struct {
 var line = regexp.MustCompile(`^Benchmark(\S+?)(?:-\d+)?\s+\d+\s+([0-9.]+) ns/op`)
 
 func main() {
+	flag.Parse()
 	if err := run(os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "mdtable:", err)
 		os.Exit(1)
@@ -115,7 +131,7 @@ func emit(w io.Writer, results []result) {
 		if gi > 0 {
 			fmt.Fprintln(w)
 		}
-		fmt.Fprintf(w, "## %s\n\n", g)
+		fmt.Fprintf(w, "%s %s\n\n", strings.Repeat("#", headingLevel()), heading(g))
 		fmt.Fprintln(w, "ns/op, median of repetitions, lower is better.")
 		fmt.Fprintln(w)
 		impls := cols[g]
@@ -134,10 +150,15 @@ func emit(w io.Writer, results []result) {
 
 		for _, s := range sizes {
 			row := cells[g][s]
+			// A single-implementation table has nothing to compare, so
+			// nothing is marked: bolding the only cell in every row says
+			// only that it is the only cell.
 			best := 0.0
-			for _, reps := range row {
-				if m := median(reps); best == 0 || m < best {
-					best = m
+			if len(impls) > 1 {
+				for _, reps := range row {
+					if m := median(reps); best == 0 || m < best {
+						best = m
+					}
 				}
 			}
 			label := s
@@ -161,6 +182,21 @@ func emit(w io.Writer, results []result) {
 			fmt.Fprintf(w, "| %s |\n", strings.Join(out, " | "))
 		}
 	}
+}
+
+// heading names a table: the group, prefixed by the label when there is one.
+func heading(group string) string {
+	if *label == "" {
+		return group
+	}
+	return *label + ": " + group
+}
+
+func headingLevel() int {
+	if *level < 1 || *level > 6 {
+		return 2
+	}
+	return *level
 }
 
 func median(v []float64) float64 {

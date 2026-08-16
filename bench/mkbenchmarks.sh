@@ -48,7 +48,7 @@ for d in "$dir"/bench-*/; do
 	fi
 	found=$((found + 1))
 
-	printf '\n---\n\n# %s\n\n' "$runner"
+	printf '\n---\n\n## %s\n\n' "$runner"
 	if [ -s "$d/cpu.txt" ]; then
 		printf '<details><summary>machine</summary>\n\n```\n'
 		cat "$d/cpu.txt"

@@ -116,3 +116,72 @@ func TestEmptyInputIsAnError(t *testing.T) {
 		t.Error("no error for input with no benchmark lines")
 	}
 }
+
+// A single-implementation table has no winner to mark. Bolding the only cell
+// of every row was pure noise, and made the one-column tables in
+// benchmarks.md look like each value had beaten something.
+func TestSingleColumnIsNotBolded(t *testing.T) {
+	in := "BenchmarkSum64Seed/8   \t 100\t 4.20 ns/op\nBenchmarkSum64Seed/64  \t 100\t 6.34 ns/op\n"
+	var sb strings.Builder
+	if err := run(strings.NewReader(in), &sb); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sb.String(), "**") {
+		t.Errorf("single-column table has bold cells:\n%s", sb.String())
+	}
+	for _, want := range []string{"| 8 | 4.20 |", "| 64 | 6.34 |"} {
+		if !strings.Contains(sb.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, sb.String())
+		}
+	}
+}
+
+// With two implementations the winner is still marked.
+func TestTwoColumnsStillBold(t *testing.T) {
+	in := "BenchmarkX/8/a \t 100\t 10.00 ns/op\nBenchmarkX/8/b \t 100\t 20.00 ns/op\n"
+	var sb strings.Builder
+	if err := run(strings.NewReader(in), &sb); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sb.String(), "**10.00**") {
+		t.Errorf("winner not bolded:\n%s", sb.String())
+	}
+}
+
+// -label and -level place the tables in a larger document. Benchmark names
+// are unique only within a package, and this repository has three packages
+// with a Backends apiece.
+func TestLabelAndLevel(t *testing.T) {
+	oldL, oldV := *label, *level
+	defer func() { *label, *level = oldL, oldV }()
+
+	in := "BenchmarkBackends/64/scalar \t 100\t 10.00 ns/op\n"
+
+	*label, *level = "", 2
+	var plain strings.Builder
+	if err := run(strings.NewReader(in), &plain); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plain.String(), "## Backends\n") {
+		t.Errorf("default heading wrong:\n%s", plain.String())
+	}
+
+	*label, *level = "rapidhash", 3
+	var labelled strings.Builder
+	if err := run(strings.NewReader(in), &labelled); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(labelled.String(), "### rapidhash: Backends\n") {
+		t.Errorf("labelled heading wrong:\n%s", labelled.String())
+	}
+
+	// Out-of-range levels fall back rather than emitting nonsense.
+	*level = 99
+	var bad strings.Builder
+	if err := run(strings.NewReader(in), &bad); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(bad.String(), "## rapidhash: Backends\n") {
+		t.Errorf("out-of-range level not clamped:\n%s", bad.String())
+	}
+}

@@ -116,12 +116,23 @@ jobs:
       - name: per-length sweep 0..255
         run: |
           cd bench && go run ./sweep -max 255 2>&1 | tee ../sweep.csv
+      # Each log is labelled with where it came from. A benchmark name is
+      # unique only within a package, and all three packages have a Backends,
+      # a Digest or a Sum64Seed -- concatenated into one document unlabelled,
+      # the reader cannot tell which table is which. The comparison log needs
+      # no label: its names say Compare already.
       - name: markdown tables
         run: |
           cd bench
-          for f in compare backends xxh64 rapidhash; do
-            if [ -s "../$f.txt" ]; then
-              go run ./mdtable < "../$f.txt" > "../$f.md"
+          set -- "compare:" "backends:xxh3" "xxh64:xxh64" "rapidhash:rapidhash"
+          for spec in "$@"; do
+            f=${spec%%:*}
+            lbl=${spec#*:}
+            [ -s "../$f.txt" ] || continue
+            if [ -n "$lbl" ]; then
+              go run ./mdtable -label "$lbl" -level 3 < "../$f.txt" > "../$f.md"
+            else
+              go run ./mdtable -level 3 < "../$f.txt" > "../$f.md"
             fi
           done
           if [ -s ../compare.md ]; then
