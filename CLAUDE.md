@@ -439,6 +439,40 @@ simply disappear.
 
 ## Performance notes
 
+### Which hash to reach for
+
+Measured on a Zen 4, every length 0..512 through one harness (ns, median per
+class), with all three packages' own entry points:
+
+| bytes | XXH3-64 | XXH64 | rapidhash |
+|---|---|---|---|
+| 0-16 | 1.99 | 3.04 | **1.92** |
+| 17-32 | 2.33 | 4.51 | **2.23** |
+| 33-64 | 3.20 | 8.50 | **2.83** |
+| 65-128 | 4.56 | 10.83 | **4.25** |
+| 129-240 | 7.94 | 15.60 | **7.16** |
+| 241-512 | **9.97** | 25.44 | 12.62 |
+
+rapidhash is the fastest of the three at every class below 241 bytes and
+XXH3 above it, decisively: 102 GB/s against 42 at 64 KiB, because one has a
+vector kernel and the other is folded multiplies. XXH64 is slowest
+everywhere and is here because it is the hash existing Go code already
+computes. For a key that is already an integer, all three packages'
+fixed-size entry points beat all of these -- 0.87 to 1.63 ns -- by skipping
+the call.
+
+All three are ahead of the C they were transcribed from, at sizes where the
+cgo boundary has amortized: XXH3 1.47-1.95x, rapidhash 1.11-1.35x, XXH64
+1.07-1.17x over 4 KiB to 1 MiB.
+
+What binds each, from counters: the short paths are renamer-bound (rapidhash
+at 8 bytes issues 5.20 macro-ops per cycle against a 6-wide renamer, XXH3
+4.87), XXH3's long path is vector-bound at IPC 2.34, rapidhash's is
+multiplier-bound at 1.78 cycles per multiply against 1.57 in isolation, and
+XXH64's is at its floor of about one cycle per imul.
+
+
+
 ### XXH64 (`xxh64/`)
 
 XXH64 is a scalar hash and its lane loop has two bounds that no kernel can
