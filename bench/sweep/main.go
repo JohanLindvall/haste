@@ -51,19 +51,25 @@ var sink uint64
 // so the call is direct; see the package comment.
 type runner func(in []byte, iters int) uint64
 
-// block is how long one timed run should take. It is a thousand times the
-// clock's own granularity, or a millisecond, whichever is larger.
+// block is how long one timed run should take, and reps how many of them
+// each point gets. Both come from the clock rather than from a constant.
 //
-// A millisecond is plenty on Linux and macOS, where time.Now resolves to
-// tens of nanoseconds. It is not plenty everywhere: on a windows-latest
-// runner the whole 0..255 matrix came back mostly 0.000, with the odd real
-// number scattered through it, because the timed block was under the clock's
-// step and most deltas read as zero. Silence would have been better than
-// that -- a column of zeros looks like a hash that costs nothing -- so the
-// granularity is measured here rather than assumed.
-var block = calibrateBlock()
+// A millisecond and nine repetitions are right where time.Now resolves to
+// tens of nanoseconds, which is Linux and macOS. It is not right everywhere:
+// on a windows-latest runner the whole 0..255 matrix came back mostly 0.000,
+// with the odd real number scattered through it, because the timed block was
+// under the clock's step and most deltas read as zero.
+//
+// The first fix for that asked for a thousand ticks a block, which is correct
+// and unusable: with a millisecond tick it is a second per repetition, nine
+// per point, and four hours for the matrix. It ran for an hour on a runner
+// before that became obvious. So the block asks for a hundred ticks -- one
+// percent of quantization, which the median across repetitions can carry --
+// capped at fifty milliseconds, and a coarse clock trades repetitions for
+// the longer blocks it forces.
+var block, reps = calibrate()
 
-func calibrateBlock() time.Duration {
+func calibrate() (time.Duration, int) {
 	// The smallest non-zero delta the clock will admit, best of five.
 	tick := time.Hour
 	for i := 0; i < 5; i++ {
@@ -76,10 +82,22 @@ func calibrateBlock() time.Duration {
 			tick = d
 		}
 	}
-	if b := tick * 1000; b > time.Millisecond {
-		return b
+	b := tick * 100
+	if b > 50*time.Millisecond {
+		b = 50 * time.Millisecond
 	}
-	return time.Millisecond
+	if b < time.Millisecond {
+		b = time.Millisecond
+	}
+	r := 9
+	if b > 5*time.Millisecond {
+		r = 3
+	}
+	if tick > time.Millisecond {
+		fmt.Fprintf(os.Stderr, "sweep: clock ticks at %v; blocks of %v are %d ticks, so these numbers are quantized\n",
+			tick, b, b/tick)
+	}
+	return b, r
 }
 
 func measure(f runner, in []byte) float64 {
@@ -98,7 +116,7 @@ func measure(f runner, in []byte) float64 {
 		}
 		iters *= 4
 	}
-	reps := make([]float64, 9)
+	reps := make([]float64, reps)
 	for r := range reps {
 		t := time.Now()
 		sink += f(in, iters)
