@@ -149,6 +149,64 @@ The simulator proves the *instruction sequence* is correct. It says nothing
 about encodings — those come from the system assembler, and the disassembly
 comments in the `.s` files are the audit trail.
 
+## Benchmarking
+
+Every number in the performance notes came out of this procedure; produce
+comparable ones before believing a change, and expect a review to ask which
+of these steps a surprising number skipped.
+
+```
+go test -c -o /tmp/x.test . && taskset -c 12 /tmp/x.test \
+  -test.run='^$' -test.bench=<pattern> -test.benchtime=300ms -test.count=6
+cd bench && go test -c -o /tmp/b.test .        # the comparison suite
+go build -o /tmp/sweep ./sweep                 # every length, one at a time
+```
+
+- **Pre-compile, pin, take medians.** Compilation is multi-core noise, so
+  benchmark the test binary, not `go test -bench`. Pin with `taskset` to one
+  core (its SMT sibling stays with the OS) so clock and thermals are one
+  core's story; 300 ms × 6 counts and the median of the six is enough for
+  1-2% resolution on this machine. Log the clock if the numbers will be kept:
+  `scaling_cur_freq` sampled every few seconds during the run -- the Zen 4
+  box holds 4.5-4.9 GHz pinned, and which end of that range decides a few
+  percent. A laptop drifts; measure A against B back to back, never against
+  last week.
+- **A change is judged inside one binary where possible** -- its rows against
+  the competitor's rows from the same run. Cross-binary deltas under ~8% at
+  32..256 bytes are not results until they survive relinking; see the
+  caller-alignment lottery below.
+- **The caller-alignment lottery.** On the Zen 4, 32..256-byte results move
+  ~0.65 ns with the *benchmark caller's* address (mod-64 phase 32 fast,
+  phase 0 slow; both this library and cespare swing; no perf counter shows
+  it). To sample layouts, add a `//go:noinline` dummy *function* of varying
+  size to the bench package and relink -- padding data moves nothing, text
+  placement is what matters -- and read the phase with `go tool nm` on the
+  benchmark closure. Believe medians over 3+ relinked layouts, or a
+  within-binary comparison, and nothing else at those sizes.
+- **A single-length spike in the sweep is noise until it reproduces in
+  isolation**: rerun `sweep -min N -max N` a few times before chasing it.
+  Two 2-3x spikes have been chased to nothing this way (lengths 130 and 154
+  in one run, 32 in another); they are the same lottery wearing a different
+  hat. The sweep warms the core up first -- see the M2 note -- so early
+  lengths are safe, but its function-pointer harness adds ~1 ns to every
+  implementation equally: use it for shapes and ratios, the compare suite
+  for absolute claims.
+- **perf works here** (`perf_event_paranoid=2` allows user-space counting of
+  own processes). Two traps: `perf stat -o FILE` truncates FILE when perf
+  exits, so redirect the benchmark's stdout somewhere else or lose the
+  iteration count; and raw counters divided by iterations overstate per-op
+  cost by the calibration ramp's share (~25%). Take cycles/op as ns/op ×
+  the measured clock (cycles ÷ task-clock), instructions/op as IPC ×
+  cycles/op -- the ramp cancels -- and trust ratios between paired probes
+  over absolutes. Branch-miss and frontend-stall counts are reliable nulls:
+  when both are zero and cycles moved, suspect fetch geometry, not
+  prediction.
+- **Backends only diverge from 241 bytes** -- below that no kernel is
+  entered, and the portable path measures identical to the assembly build.
+  Force them with `setBackend` from a benchmark in the package
+  (BenchmarkBackends is the pattern); purego needs its own binary
+  (`-tags purego`). qemu is for correctness only: TCG timings mean nothing.
+
 ## Invariants
 
 - **Wire format**: every constant in `generic.go` marked as such changes the
@@ -237,8 +295,10 @@ anything on top of that.
   one-block input; measured, accepted.
 - **amd64 is one form** and imul-bound: eight `imul` per block at one per
   cycle on every current core, so ~8 cycles per 32 bytes against a 5-cycle
-  chain, and cespare's kernel is already there. Not measured here (no amd64
-  at hand); the simulator and CI's native amd64 runners check correctness.
+  chain, and cespare's kernel is already there. Measured on a Zen 4
+  (2026-08): the long loop runs at 1.01 cycles per imul -- the wall, exactly
+  as modelled -- and every length from 33 bytes up is within +/-2% of
+  cespare.
   What could move it, and is deliberately not shipped unmeasured: offloading
   the four off-chain `in*P2` products to the vector unit -- `vpmullq` on
   AVX-512DQ, or the three-`vpmuludq` emulation on AVX2 -- and moving them back
@@ -247,6 +307,24 @@ anything on top of that.
   transfers are the unknown, and an all-vector loop is out (Intel's `vpmullq`
   is a 15-cycle latency, and the chain would eat it). Needs a Zen 4 and an
   Intel core to measure before it goes anywhere near dispatch.
+- **The amd64 tail opens with combined-mask skips** (`TailMaskSkips` in the
+  generator): test n against 31, 24, 7 and 3 ahead of the per-bit guards, so
+  a trivial tail pays 1-2 taken branches instead of up to 5. Five taken
+  branches in a dozen instructions were most of a measured -19..-25% against
+  cespare at 4-8 bytes on the Zen 4 (worst at n in {0,1,4,5,8,9,12,16}, the
+  sparse-bit lengths); with the skips, 4 B went 15.1 -> 12.1 cycles and
+  16-32 B to level-or-ahead. The arm64 kernel is byte-identical -- the M2
+  was already level at these lengths -- and turning the skips on there means
+  measuring first, then flipping TailMaskSkips.
+- **Benchmarking 32..256-byte XXH64 on Zen 4 is a caller-alignment lottery.**
+  Both this kernel and cespare's swing ~0.65 ns (6 cycles) at those lengths
+  with the *calling function's* address: mod-64 phase 32 is the fast mode,
+  phase 0 the slow one, verified by correlating `go tool nm` addresses of the
+  benchmark closure across relinked binaries. No counter shows it -- zero
+  mispredicts, zero frontend-stall cycles, icache quiet -- and PCALIGN on the
+  kernel itself does nothing, because the phase that matters is the
+  caller's. Single-binary comparisons at these lengths carry that +/-5-8%;
+  believe only medians over several relinked layouts.
 - **Unroll two, odd block first.** The loop is chain-bound, not
   overhead-bound, but the N2 model prices the two loop instructions per block
   at ~11% of the fused form's 16-instruction block, and pairing halves them.
@@ -308,6 +386,27 @@ worth nothing.
   a scalar `add` two units of a two-slot resource, i.e. one integer op per
   cycle on a core with six ALUs, so its hybrid numbers are meaningless. Check
   the resource-pressure table before believing a result.
+- Two streaming changes landed 2026-08, measured on the Zen 4 and applied to
+  all architectures; the small-write numbers below and in the M2 section
+  predate them and need re-measuring on those machines:
+  1. **absorb drains small writes with one kernel call**: when p fits the
+     staging area (len(p) < internalBufferSize-63), the staged whole stripes
+     are absorbed and p is re-staged, instead of the two-call
+     staged-then-direct split. The call's fixed cost (accumulators loaded
+     and stored, prologue) was a third of a 256-byte Write on the Zen 4.
+     16-byte writes went +29% ahead of zeebo, 64-byte from -5% to +10%;
+     256-byte writes trade the saved call for ~190 more copied bytes and
+     measure a wash inside the caller-alignment noise; >=449-byte writes
+     keep the old path untouched. This supersedes half of the rejected
+     seventh-argument idea below: the small-write case now gets its one-call
+     drain without the argument every call would pay for.
+  2. **absorb dispatches through accumBlocksStream**, a function variable on
+     amd64 (the dispatch switch was 18% of a 256-byte Write there; an
+     indirect call is two cycles) and an inlined wrapper everywhere else, so
+     arm64 and purego compile to exactly the code they had. consumeStripes
+     must keep calling the switch: a call through a function variable makes
+     its arguments escape, and digestLong's accumulator copy lives on the
+     stack (TestNoAlloc is the tripwire).
 - Streaming was profiled rather than guessed at, and the guess was wrong: for
   1 KiB writes, `runtime.memmove` was under 5% while the Go glue around the
   kernel (`consumeStripes`, the dispatch wrapper, the block-position modulo)
@@ -560,12 +659,39 @@ unrolling.
   immediates, worth 1-3% -- a 64-bit immediate costs about what an L1 load
   costs, so this is far less than it looks.
 
-The remaining gap to zeebo/xxh3 below 256 bytes is not what it appears to be.
-At 128 bytes the two execute within 1% of the same number of instructions; the
-difference is entirely IPC, 4.7 against 5.5. Two things are known to be in it,
-one more call level and the two adds per chunk that a runtime seed costs.
-Between them they do not account for all of it, and the rest has not been
-found. Worth a fresh look, not another round of the hypotheses above.
+The below-256-byte gap to zeebo/xxh3 is closed (2026-08, go1.26.5). Two
+things closed it. The toolchain moved first: where this file recorded the two
+executing the same instruction count at 128 bytes with an unexplained IPC gap
+(4.7 against 5.5), go1.26.5 compiles the 64-bit path to ~18% fewer
+instructions at the same lower IPC, and the two measured dead level before
+any code changed. The rest was the "one more call level" hypothesis,
+confirmed by deleting it:
+
+- **The 33..128 rungs are hand-inlined into sum64NS and sum128NS** rather
+  than called. The call's true cost was far more than call+ret -- the callee
+  re-tested the length tree and the boundary blocked load hoisting -- and
+  removing it measured 64-bit 3.35 -> 3.04 ns at 64 bytes and 5.27 -> 5.03 at
+  128; 128-bit 5.13 -> 4.53 and 8.50 -> 6.66, from -7% and -17% behind zeebo
+  to +5% ahead. The 129..240 rungs keep the call on purpose: they were
+  already ahead, and their bodies would bloat a nosplit function. The ladder
+  functions themselves remain for the seeded digest path.
+- **The 128-bit rounds run hi-half first, j-side loads first** (zeebo's
+  statement order), worth 3-4% on its own before the inlining: the function
+  is dense in multiplies contending for the one integer-multiply port, and
+  which half finishes last gates the merge's imuls.
+- **The seeded one-shots have full-bodied twins**: sum64Seeded/sum128Seeded
+  carry the short cases and the 17..128 rungs inline, so Sum64Seed reaches
+  the arithmetic in one call instead of two-plus-re-dispatch. Seeded 8 B went
+  3.29 -> 2.33 ns (level with zeebo, was -36%), 64 B 4.88 -> 3.50 (+7%
+  ahead). The >240 derive branch lives in sum64SeededLong because the
+  192-byte secret frame does not fit the nosplit budget once the race
+  detector inflates it. sum64/sum128 (secret-parameterized) remain for the
+  digest.
+
+After those, a fresh per-length sweep on this core has both widths level or
+ahead of zeebo at every class: 0..3 bytes included (the old 3-8% deficit
+there is gone under go1.26.5), and the 128-bit 33..128 zone that briefly
+measured -5..-9% behind is +5..+6% ahead direct-call.
 
 ## Reference vectors
 
