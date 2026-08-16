@@ -318,11 +318,33 @@ anything on top of that.
   branch are the price of shipping both lane rounds in one kernel, which is
   what buys +31% on Apple cores, and the rest is a couple of instructions in a
   ~34-cycle hash. By 64 bytes it is gone (-1%), and from 200 bytes up the
-  kernel is 5-6% ahead. Two things were tried and are not worth keeping:
+  kernel is 5-6% ahead. Three things were tried and are not worth keeping:
   turning `TailMaskSkips` on for arm64 (33 unchanged, 37 slightly better, 88
-  worse -- branch cost on this core is not what it is on x86), and hoisting
-  the form load above `InitLanes` to cover its latency (neutral; the
-  out-of-order window was already covering it).
+  worse -- branch cost on this core is not what it is on x86), hoisting the
+  form load above `InitLanes` to cover its latency (neutral; the out-of-order
+  window was already covering it), and inverting the branch so the fused form
+  falls through and the split form is the taken side (neutral, as instruction
+  counting predicts -- it is one taken branch either way).
+- **Do not move the form choice out of the kernel.** It looks like the obvious
+  way to spare the cores that do not need it, and every mechanism costs more
+  than the 0.18ns it saves, because all of them move the choice into the
+  caller's path where every length pays it:
+  - Two kernels with a branch in Go: `sum64` then needs two call nodes, about
+    114 against the inliner's 80, so the wrapper stops inlining and every hash
+    pays a whole extra call level -- ~1.5ns, eight times the saving.
+  - A function variable: an indirect call, measured at 2 cycles (0.57ns) on
+    the M2, three times the saving and again on every call. It also gives up
+    "one direct call in total", which is why short XXH64 is competitive here
+    at all.
+  - Build tags (`darwin/arm64` split, `linux/arm64` fused): does not help the
+    Neoverse case at all, because Linux runs on Apple cores too -- Asahi is
+    exactly why the MIDR check exists -- and forcing it there would trade
+    0.18ns for the 31% the split form is worth on those cores.
+  - Emitting the cold form out of line, after the function's tail, is the one
+    clean option: it removes the taken branch from the default path. Its
+    ceiling is half of 0.18ns, it needs deferred emission in a Builder that
+    is linear by design, and the cheap proxy for it (the branch inversion
+    above) measured neutral.
 - **The amd64 tail opens with combined-mask skips** (`TailMaskSkips` in the
   generator): test n against 31, 24, 7 and 3 ahead of the per-bit guards, so
   a trivial tail pays 1-2 taken branches instead of up to 5. Five taken
