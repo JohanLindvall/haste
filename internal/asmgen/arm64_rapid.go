@@ -169,7 +169,7 @@ func (a *arm64Rapid) SeedMix() {
 	a.eor(a.Seed(), a.Seed(), t)
 }
 
-func (a *arm64Rapid) Round(lane GPR, off, slot int) {
+func (a *arm64Rapid) Round(lane GPR, off, slot int, _ bool) {
 	// lane = mix(load(in+off) ^ secret[slot], load(in+off+8) ^ lane)
 	w0, w1 := a.tmp(), a.A()
 	a.ldp(w0, w1, a.In(), off)
@@ -178,6 +178,16 @@ func (a *arm64Rapid) Round(lane GPR, off, slot int) {
 	a.eor(w0, w0, s)
 	a.eor(w1, w1, lane)
 	a.mix(lane, w0, w1)
+}
+
+// DualMul is off: mul and umulh are three-operand and unconstrained, so
+// there is no second form to choose between.
+func (a *arm64Rapid) DualMul() bool { return false }
+
+// BranchNotAltMul and AltBlockBody are unreachable with DualMul off.
+func (a *arm64Rapid) BranchNotAltMul(string) { panic("asmgen: arm64 rapid has one multiply form") }
+func (a *arm64Rapid) AltBlockBody(func(int) GPR) {
+	panic("asmgen: arm64 rapid has one block-loop form")
 }
 
 func (a *arm64Rapid) SpreadLanes() {

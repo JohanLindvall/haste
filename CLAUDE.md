@@ -656,6 +656,51 @@ anything on top of that.
   caller's slice straight to the `blocks` kernel; the tail and merge run in
   Go once per Sum64.
 
+### rapidhash (`rapidhash/`)
+
+rapidhash has one primitive -- the two halves of a 64x64 multiply, xored --
+and no rotates, shifts or additions to hide behind it. That makes its bounds
+easy to state and unusually easy to get wrong from first principles. On a
+Redwood Cove, measured:
+
+- **Every length class is instruction-bound at the short end.** 16 bytes
+  retires 88.6% of its slots (55.6 instructions, 5.4 IPC against a 6-wide
+  machine), 64 bytes 87.8%. There is nothing to hide there and nothing to
+  overlap; instructions removed are cycles removed, roughly one for six.
+- **The block loop is not.** It looks instruction-bound -- 78% retiring --
+  and is not: removing 4,100 instructions from a 64 KiB hash left the cycles
+  where they were and turned the freed slots into backend-bound ones
+  (15.7% to 29.0%), total slots unchanged. Anything that costs no execution
+  port is free to remove and buys nothing.
+
+  What it *is* bound by was found by taking one kind of work out at a time,
+  wrong results and all, in a standalone copy of the loop. Per 224-byte
+  iteration, against 22.3 cycles shipped: dropping the multiply entirely is
+  worth 1.8 cycles, dropping the lane xor 0.8, and **dropping the secret xor
+  2.6** -- the largest single lever, and the multiply is nearly the smallest.
+  The loop reloads all seven secret words twice an iteration, fourteen L1
+  loads it is short of ports for.
+- **What was taken from that.** mulx frees rax, which mulq's fixed
+  destination occupies; rax then holds a lane's secret word across both of
+  that lane's rounds, halving the secret loads. Isolated, mulx alone is 10.8%
+  and the held secret another 6.7%. mulx alone in the shipped kernel is about
+  1%: worth having only for the register it frees.
+- **The two loops must be ordered so the baseline one falls through** into
+  the code both forms share. Emitted the other way round, with 500 bytes of
+  alternative loop in between, 225..384 bytes lost 2-3% -- lengths that take
+  the baseline path either way. That artifact also produced a false result:
+  a minimum-iteration threshold looked necessary to stop one iteration
+  regressing, and once the order was fixed it was not, and dropping it made
+  256..448 bytes 1-6% faster instead. Reorder before thresholding.
+- **The short paths compute `in + n - k` in an addressing mode**, not in a
+  register. mov, sub and a load is three instructions where `disp(base,idx,1)`
+  is one, and at 10 cycles a hash that is 2-5%.
+
+Against the state before this round, cycles per hash, median of nine, both
+alignment phases: 1..16 bytes −0.7 to −5.0%, 17..128 level, 224..448 −1.7 to
+−5.9%, 512 bytes and up −8.8 to −15.1%. 225..232 changes sign between the two
+phases and is the lottery rather than a result.
+
 ### arm64, measured on Neoverse N2 (2 vector pipes, 3.4 GHz)
 
 The kernel obeys

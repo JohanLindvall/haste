@@ -15,13 +15,18 @@ package asmgen
 // land, and why a round is a move, a mulq and a xor rather than arm64's two
 // independent multiplies.
 //
-// BMI2's mulx would lift the constraint -- it takes the multiplicand in rdx
-// implicitly and writes two registers of its choosing, so the seven lanes
-// would not queue through one pair. It is not in the amd64 baseline, so
-// taking it means a second kernel and a CPUID check, the way the XXH64
-// backend carries two prime forms. Worth doing on evidence; not worth doing
-// before there is any, and the lanes are only seven multiplies deep in a loop
-// that is otherwise load-bound.
+// BMI2's mulx lifts the constraint: it takes the multiplicand in rdx
+// implicitly and writes two registers of its choosing, so a round needs no
+// move to get the result out of rax. That is one instruction in six, in a
+// loop this core spends 78% of its slots retiring -- so instructions are what
+// it costs. The block loop is emitted twice for that reason and the form is
+// chosen at run time from secret[8].
+//
+// The branch is not at the top of the kernel. It sits after the n > 112 test,
+// so only an input long enough to run the block loop pays it, and there it is
+// one predictable branch against fourteen multiplies an iteration. Putting a
+// form test in front of every call is what the XXH64 kernel does, and it
+// costs 3-7% of a short hash there; this hash is shorter still.
 //
 // The secret is reached through a pointer. Eight 64-bit constants would be
 // ten bytes each as immediates, eighty bytes of prologue every call pays
@@ -128,21 +133,21 @@ func (x *x86Rapid) load8(dst, base GPR, off int) {
 		"movzbq %s, %s", x.mem(base, off), x.GPRName(dst))
 }
 
-// loadIdx8 is a byte load at base+idx, which the 1..3 path needs: neither of
-// its offsets is a constant.
-func (x *x86Rapid) loadIdx8(dst, base, idx GPR) {
-	x.b.emit(func(m *Machine) { m.R[dst] = m.Load8(m.R[base] + m.R[idx]) },
-		"movzbq (%s,%s,1), %s", x.GPRName(base), x.GPRName(idx), x.GPRName(dst))
+// The indexed loads read at base+idx+off in one instruction. Every "read at
+// n-k" the short paths do is that addressing mode, which is why none of them
+// computes the index in a register first: mov, sub and a load is three
+// instructions where disp(base,index,1) is one, and at these lengths the hash
+// is bound by nothing but how many instructions it is.
+func (x *x86Rapid) loadIdx8Off(dst, base, idx GPR, off int) {
+	x.b.emit(func(m *Machine) { m.R[dst] = m.Load8(m.R[base] + m.R[idx] + uint64(int64(off))) },
+		"movzbq %d(%s,%s,1), %s", off, x.GPRName(base), x.GPRName(idx), x.GPRName(dst))
 }
 
-func (x *x86Rapid) loadIdx32(dst, base, idx GPR) {
-	x.b.emit(func(m *Machine) { m.R[dst] = m.Load32(m.R[base] + m.R[idx]) },
-		"movl (%s,%s,1), %s", x.GPRName(base), x.GPRName(idx), x.GPRName32(dst))
-}
+func (x *x86Rapid) loadIdx8(dst, base, idx GPR) { x.loadIdx8Off(dst, base, idx, 0) }
 
-func (x *x86Rapid) loadIdx64(dst, base, idx GPR) {
-	x.b.emit(func(m *Machine) { m.R[dst] = m.Load64(m.R[base] + m.R[idx]) },
-		"movq (%s,%s,1), %s", x.GPRName(base), x.GPRName(idx), x.GPRName(dst))
+func (x *x86Rapid) loadIdx32Off(dst, base, idx GPR, off int) {
+	x.b.emit(func(m *Machine) { m.R[dst] = m.Load32(m.R[base] + m.R[idx] + uint64(int64(off))) },
+		"movl %d(%s,%s,1), %s", off, x.GPRName(base), x.GPRName(idx), x.GPRName32(dst))
 }
 
 // loadIdx64Off is a load at base+idx+off, for the tail's In + I - 16.
@@ -194,17 +199,88 @@ func (x *x86Rapid) SeedMix() {
 	x.xor(x.Seed(), rAX)
 }
 
-func (x *x86Rapid) Round(lane GPR, off, slot int) {
+func (x *x86Rapid) Round(lane GPR, off, slot int, mulx bool) {
 	// lane = mix(load(in+off) ^ secret[slot], load(in+off+8) ^ lane)
 	//
-	// The first operand goes to rax because mulq demands it; the second is
-	// built in r14, the one scratch register the plan keeps free. The secret
-	// is an operand of the xor rather than a load of its own.
+	// The second operand is built in r14, the one scratch register the plan
+	// keeps free, and the secret is an operand of the xor rather than a load
+	// of its own.
+	if mulx {
+		// mulx names both destinations, so the low half lands in the lane
+		// directly and the high half goes back into r14 -- which mulx may do
+		// even though r14 is also its source, since the source is read before
+		// either destination is written. Six instructions against seven.
+		x.load64(rDX, x.In(), off)
+		x.xorSec(rDX, slot)
+		x.load64(r14, x.In(), off+8)
+		x.xor(r14, lane)
+		x.mulx(r14, lane, r14)
+		x.xor(lane, r14)
+		return
+	}
+	// The first operand goes to rax because mulq demands it.
 	x.load64(rAX, x.In(), off)
 	x.xorSec(rAX, slot)
 	x.load64(r14, x.In(), off+8)
 	x.xor(r14, lane)
 	x.mixInto(lane, r14)
+}
+
+// mulx is BMI2's unsigned multiply: hi:lo = rdx * src, with both destinations
+// named. src may be the same register as hi.
+func (x *x86Rapid) mulx(src, lo, hi GPR) {
+	x.b.emit(func(m *Machine) {
+		a, b := m.R[rDX], m.R[src]
+		l, h := a*b, mulHigh(a, b)
+		m.R[lo], m.R[hi] = l, h
+	}, "mulxq %s, %s, %s", x.GPRName(src), x.GPRName(lo), x.GPRName(hi))
+}
+
+// DualMul is on: see the file comment.
+func (x *x86Rapid) DualMul() bool { return true }
+
+// AltBlockBody is the two-group iteration, lane by lane rather than group by
+// group, with each lane's secret word loaded once into rax and used by both
+// of that lane's rounds.
+//
+// rax is free here and nowhere else: mulq's fixed destination is what
+// normally occupies it, so this shape exists only because the form already
+// uses mulx. That is where most of the alternative form's win is. The
+// shipped order loads all seven secret words twice per iteration -- fourteen
+// L1 loads that the loop is measurably short of ports for. Dropping the
+// secret load entirely, which nothing can, is worth 12.7% of the loop;
+// halving it this way is worth 6.7% on top of mulx alone, and mulx alone is
+// 10.8%.
+//
+// Reordering is safe: a lane's two rounds keep their order, and no lane
+// reads another. The bits are identical, which the simulator checks by
+// running every length through both forms.
+func (x *x86Rapid) AltBlockBody(lane func(int) GPR) {
+	for i := 0; i < 7; i++ {
+		x.movSec(rAX, i)
+		x.roundHeldSecret(lane(i), i*16, rAX)
+		x.roundHeldSecret(lane(i), 112+i*16, rAX)
+	}
+}
+
+// roundHeldSecret is the mulx round with the secret word already in a
+// register rather than a memory operand of the xor.
+func (x *x86Rapid) roundHeldSecret(lane GPR, off int, sec GPR) {
+	x.load64(rDX, x.In(), off)
+	x.xor(rDX, sec)
+	x.load64(r14, x.In(), off+8)
+	x.xor(r14, lane)
+	x.mulx(r14, lane, r14)
+	x.xor(lane, r14)
+}
+
+// BranchNotAltMul branches to label when secret[8] says the machine has no
+// BMI2. The flag is in the table because a generated body cannot name a Go
+// symbol, and because the kernel is holding that pointer anyway.
+func (x *x86Rapid) BranchNotAltMul(label string) {
+	x.b.emit(func(m *Machine) { m.setCmp(m.Load64(m.R[rCX]+64), 0) },
+		"cmpq $0, %s", x.mem(rCX, 64))
+	x.branch(EQ, label)
 }
 
 func (x *x86Rapid) SpreadLanes() {
@@ -228,16 +304,12 @@ func (x *x86Rapid) Short4to16() {
 	x.BranchI(x.I(), 8, GE, eight)
 	// 4..7: 32-bit reads at 0 and at n-4.
 	x.load32(rAX, x.In(), 0)
-	x.mov(r14, x.I())
-	x.subImm(r14, 4)
-	x.loadIdx32(rDX, x.In(), r14)
+	x.loadIdx32Off(rDX, x.In(), x.I(), -4)
 	x.Jmp(done)
 	x.b.Label(eight)
 	// 8..16: 64-bit reads at 0 and at n-8, overlapping below 16.
 	x.load64(rAX, x.In(), 0)
-	x.mov(r14, x.I())
-	x.subImm(r14, 8)
-	x.loadIdx64(rDX, x.In(), r14)
+	x.loadIdx64Off(rDX, x.In(), x.I(), -8)
 	x.b.Label(done)
 }
 
@@ -245,9 +317,7 @@ func (x *x86Rapid) Short1to3() {
 	// a = p[0]<<45 | p[n-1]; b = p[n>>1]
 	x.load8(rAX, x.In(), 0)
 	x.shl(rAX, 45)
-	x.mov(r14, x.I())
-	x.subImm(r14, 1)
-	x.loadIdx8(rDX, x.In(), r14)
+	x.loadIdx8Off(rDX, x.In(), x.I(), -1)
 	x.or(rAX, rDX)
 	x.mov(r14, x.I())
 	x.shr(r14, 1)

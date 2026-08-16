@@ -23,7 +23,13 @@ type simRegion struct {
 	inAt, tableAt uint64
 }
 
-func newSimRegion(in []byte) *simRegion {
+func newSimRegion(in []byte) *simRegion { return newSimRegionForm(in, secret[8]) }
+
+// newSimRegionForm lays the region out with a chosen multiply-form word, so
+// that a kernel carrying both block loops can be run either way. The word is
+// not part of the hash; every form must produce the same answer, which is
+// what the caller checks.
+func newSimRegionForm(in []byte, form uint64) *simRegion {
 	const pad = 64
 	inOff := pad
 	tableOff := inOff + len(in) + pad
@@ -32,6 +38,7 @@ func newSimRegion(in []byte) *simRegion {
 	for i, w := range secret {
 		binary.LittleEndian.PutUint64(mem[tableOff+8*i:], w)
 	}
+	binary.LittleEndian.PutUint64(mem[tableOff+8*(len(secret)-1):], form)
 	m := asmgen.NewMachine(mem, 1)
 	return &simRegion{
 		mem: mem, m: m,
@@ -44,8 +51,12 @@ func newSimRegion(in []byte) *simRegion {
 // Go assembly around the generated body does first: the table's address into
 // its register, then the arguments.
 func simSum64(t *testing.T, k asmgen.Kernel, def asmgen.FuncDef, in []byte, seed uint64) uint64 {
+	return simSum64Form(t, k, def, in, seed, secret[8])
+}
+
+func simSum64Form(t *testing.T, k asmgen.Kernel, def asmgen.FuncDef, in []byte, seed uint64, form uint64) uint64 {
 	t.Helper()
-	r := newSimRegion(in)
+	r := newSimRegionForm(in, form)
 	if k.TableGPR() >= 0 {
 		r.m.R[k.TableGPR()] = r.tableAt
 	}
@@ -77,18 +88,29 @@ func TestSimulatedBackends(t *testing.T) {
 			ks, defs := b.EmitAll(), b.Defs()
 			k, def := ks[0], defs[0]
 
+			// A backend with two multiply forms carries both block loops in
+			// one instruction stream, chosen by the table's last word. Both
+			// are their own code and nothing else here would reach the
+			// second, so every length runs through each.
+			forms := []uint64{0}
+			if b.NewRapid().DualMul() {
+				forms = []uint64{0, 1}
+			}
+
 			var lens []int
 			for n := 0; n <= 512; n++ {
 				lens = append(lens, n)
 			}
 			lens = append(lens, 671, 672, 673, 895, 896, 897, 1024, 1337, 2048)
 
-			for _, n := range lens {
-				for _, seed := range seeds {
-					want := sum64Generic(ptr(buf), n, seed)
-					if got := simSum64(t, k, def, buf[:n], seed); got != want {
-						t.Fatalf("len=%d seed=%#x: kernel %#016x != portable %#016x",
-							n, seed, got, want)
+			for _, form := range forms {
+				for _, n := range lens {
+					for _, seed := range seeds {
+						want := sum64Generic(ptr(buf), n, seed)
+						if got := simSum64Form(t, k, def, buf[:n], seed, form); got != want {
+							t.Fatalf("form=%d len=%d seed=%#x: kernel %#016x != portable %#016x",
+								form, n, seed, got, want)
+						}
 					}
 				}
 			}
@@ -96,17 +118,20 @@ func TestSimulatedBackends(t *testing.T) {
 			// And the vectors, which come from the C implementation rather
 			// than from this package's own idea of the algorithm.
 			checked := 0
-			for _, v := range refVecs {
-				if v.Len > 2048 {
-					continue
+			for _, form := range forms {
+				for _, v := range refVecs {
+					if v.Len > 2048 {
+						continue
+					}
+					if got := simSum64Form(t, k, def, buf[:v.Len], v.Seed, form); got != v.H64 {
+						t.Fatalf("form=%d vector len=%d seed=%#x: %#016x != %#016x",
+							form, v.Len, v.Seed, got, v.H64)
+					}
+					checked++
 				}
-				if got := simSum64(t, k, def, buf[:v.Len], v.Seed); got != v.H64 {
-					t.Fatalf("vector len=%d seed=%#x: %#016x != %#016x",
-						v.Len, v.Seed, got, v.H64)
-				}
-				checked++
 			}
-			t.Logf("%d lengths and %d reference vectors reproduced", len(lens)*len(seeds), checked)
+			t.Logf("%d multiply form(s), %d lengths and %d reference vectors reproduced",
+				len(forms), len(lens)*len(seeds), checked)
 		})
 	}
 }

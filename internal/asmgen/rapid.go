@@ -44,8 +44,33 @@ type RapidArch interface {
 	//	lane = mix(load(In+off) ^ secret[slot], load(In+off+8) ^ lane)
 	//
 	// The two loads are adjacent, which arm64 takes as one instruction and
-	// x86 as two; that choice is the backend's.
-	Round(lane GPR, off, slot int)
+	// x86 as two; that choice is the backend's. alt selects the second
+	// multiply form on a backend that has one, and is always false on a
+	// backend that does not -- see DualMul.
+	Round(lane GPR, off, slot int, alt bool)
+
+	// DualMul reports whether the backend has a second multiply form worth
+	// emitting the block loop twice for. On x86 that is BMI2's mulx, which
+	// saves the move mulq's fixed RDX:RAX destination costs -- one
+	// instruction in six, in a loop that is bound by how many it is. It is
+	// not in the amd64 baseline, so the choice is made at run time.
+	//
+	// The branch sits after the kernel's own n > 112 test, so only inputs
+	// that reach the block loop pay it, and there it is one predictable
+	// branch against fourteen multiplies per iteration. A test at the top
+	// would have cost every short hash a load and a branch, which on this
+	// hash is 3-7% of one.
+	DualMul() bool
+	// BranchNotAltMul branches to label when the alternative form is not
+	// selected -- the baseline one. The sense is that way round so that the
+	// baseline loop can be emitted last and fall through into the code both
+	// forms share, rather than jumping over the other loop to reach it.
+	BranchNotAltMul(label string)
+	// AltBlockBody emits the two-group block-loop body -- the fourteen
+	// rounds of one 224-byte iteration -- in whatever shape the alternative
+	// form wants, which need not be the shared one. lane names the register
+	// lane i accumulates into. Only a DualMul backend implements it.
+	AltBlockBody(lane func(int) GPR)
 
 	// Short4to16 fills A and B for a 4..16-byte input and folds the length
 	// into the seed: the two reads overlap below 16 bytes, and are 32-bit
@@ -156,23 +181,61 @@ func emitRapidSum64(a RapidArch) {
 	// do. That is the reference's shape, and what guarantees the ladder
 	// below always has something left to read: it exits with i > 16.
 	a.SpreadLanes()
-	loop, one, after := b.NewLabel("loop"), b.NewLabel("one"), b.NewLabel("after")
+	// Allocated in this order so that a backend with one multiply form
+	// regenerates byte for byte, comments included: the alternative loop's
+	// label comes after these and only exists when there is one.
+	baseLoop, one, after := b.NewLabel("loop"), b.NewLabel("one"), b.NewLabel("after")
+
+	// The 224-byte loop, once per multiply form the backend has. Everything
+	// around it is shared, including the single group below: the form test
+	// sits inside the "more than 224 bytes remain" branch, so an input that
+	// runs one group and no loop never executes it. Putting it above that
+	// test cost 1-2% at 113..225 bytes, where there is one group of work to
+	// amortize it over and it does not pay for itself.
+	//
+	// There is no minimum iteration count. One was measured and dropped: a
+	// single iteration appeared to lose 2-3% until the two loops were
+	// ordered as they are below, and then it did not. The threshold had been
+	// paying for a layout problem rather than for anything about the form.
+	emitLoop := func(loop string, alt bool) {
+		b.Label(loop)
+		if alt {
+			// The alternative form reorders the iteration; see the backend.
+			// Every lane's two rounds stay in order and the lanes stay
+			// independent, so the result is the same bits either way.
+			a.AltBlockBody(lane)
+		} else {
+			for group := 0; group < 2; group++ {
+				for i := 0; i < 7; i++ {
+					a.Round(lane(i), group*112+i*16, i, false)
+				}
+			}
+		}
+		a.AdvanceIn(224)
+		a.SubI(224)
+		a.BranchI(a.I(), 224, GT, loop)
+	}
 
 	a.BranchI(a.I(), 224, LE, one)
-	b.Label(loop)
-	for group := 0; group < 2; group++ {
-		for i := 0; i < 7; i++ {
-			a.Round(lane(i), group*112+i*16, i)
-		}
+	if a.DualMul() {
+		a.BranchNotAltMul(baseLoop)
+		// The alternative loop is emitted first so the baseline one runs
+		// straight into `one` below. The other way round put 500 bytes of
+		// loop between them, which cost 2-3% at 225..384 bytes -- lengths
+		// that take the baseline path either way.
+		emitLoop(b.NewLabel("altloop"), true)
+		a.Jmp(one)
+		emitLoop(baseLoop, false)
+	} else {
+		emitLoop(baseLoop, false)
 	}
-	a.AdvanceIn(224)
-	a.SubI(224)
-	a.BranchI(a.I(), 224, GT, loop)
 
 	b.Label(one)
+	// The last group of seven, at most one, in the baseline form: a second
+	// copy of it would need its own form test and it runs once.
 	a.BranchI(a.I(), 112, LE, after)
 	for i := 0; i < 7; i++ {
-		a.Round(lane(i), i*16, i)
+		a.Round(lane(i), i*16, i, false)
 	}
 	a.AdvanceIn(112)
 	a.SubI(112)
@@ -185,7 +248,10 @@ func emitRapidSum64(a RapidArch) {
 	last := b.NewLabel("tail16")
 	for _, r := range ladder {
 		a.BranchI(a.I(), int64(r.above), LE, last)
-		a.Round(a.Seed(), r.off, r.slot)
+		// The ladder keeps the baseline form: at most six rounds, reached by
+		// inputs as short as 17 bytes, where a second form would have to be
+		// chosen before them and the branch costs what the rounds save.
+		a.Round(a.Seed(), r.off, r.slot, false)
 	}
 	b.Label(last)
 	a.Tail16()

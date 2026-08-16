@@ -32,11 +32,18 @@ import (
 	"unsafe"
 )
 
-// secret is rapidhash's default secret. Wire format: the hash changes if any
-// word does. The last is not a random constant like the rest -- upstream
-// gives it as 0xaaaa..., the alternating bit pattern -- and it keys only the
-// final mix.
-var secret = [8]uint64{
+// secret is rapidhash's default secret, in the first eight words. Wire
+// format: the hash changes if any of them does. The last of the eight is not
+// a random constant like the rest -- upstream gives it as 0xaaaa..., the
+// alternating bit pattern -- and it keys only the final mix.
+//
+// The ninth word is not a secret. It is the amd64 kernel's multiply form,
+// written once at package init (see dispatch_amd64.go) and read by the block
+// loop only, on the path that runs it. It lives here because the kernel
+// already holds a pointer to this table, so the branch costs no load of its
+// own -- and a generated body cannot name a Go symbol, which is the other
+// reason a flag has to be reachable through that pointer.
+var secret = [9]uint64{
 	0x2d358dccaa6c78a5,
 	0x8bb84b93962eacc9,
 	0x4b33a62ed433d4a3,
@@ -45,6 +52,7 @@ var secret = [8]uint64{
 	0xe7037ed1a0b428db,
 	0x90ed1765281c388c,
 	0xaaaaaaaaaaaaaaaa,
+	0, // the amd64 multiply form; not part of the hash
 }
 
 // The four entry points are wrappers around one call into the kernel, so that

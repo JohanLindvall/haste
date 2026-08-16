@@ -306,6 +306,16 @@ rather than the hashing. That is the opposite of what the other two hashes
 gain from assembly, and the reason is the seven lanes: Go will not keep them
 all in registers across the block loop, and the kernel does.
 
+On amd64 the block loop has a second form, taken when CPUID reports BMI2.
+`mulx` has no fixed destination, which frees the register `mulq` occupies;
+that register then holds a lane's secret word across both of the lane's
+rounds, halving the loop's secret loads. The choice is made inside the kernel
+and only by inputs long enough to run the loop, so a short hash never
+executes the test. Measured on a Core Ultra 9 185H against the same kernel
+without it: **−9 to −15% from 512 bytes up**, level below. Short inputs are
+2-5% quicker for an unrelated reason — their `in + n - k` reads are one
+addressing mode now rather than three instructions.
+
 ## Backends
 
 | backend | selected when | verified by |
