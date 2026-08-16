@@ -1,6 +1,12 @@
 # Test binaries from `go test -c`, which CLAUDE.md's qemu commands produce.
 *.test
 
+# Binaries built from the tools in this module, which land in the directory
+# `go build` was run from rather than in a build cache.
+/gen
+/sweep
+/mdtable
+
 # Profiles and coverage.
 *.out
 *.prof
