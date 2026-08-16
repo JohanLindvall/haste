@@ -255,3 +255,28 @@ func ExampleSum64() {
 	fmt.Printf("%#016x\n", Sum64([]byte("hello")))
 	// Output: 0x26c7827d889f6da3
 }
+
+// TestNoAlloc guards what makes the one-shot entry points usable on a hot
+// path, the same property the parent package pins for XXH3: no allocation,
+// on any input size, streaming included.
+func TestNoAlloc(t *testing.T) {
+	buf := testBuffer(4096)
+	cases := []struct {
+		name string
+		fn   func()
+	}{
+		{"Sum64/8", func() { sink += Sum64(buf[:8]) }},
+		{"Sum64/4096", func() { sink += Sum64(buf) }},
+		{"Sum64Seed/4096", func() { sink += Sum64Seed(buf, 7) }},
+		{"Sum64String/16", func() { sink += Sum64String("0123456789abcdef") }},
+	}
+	for _, c := range cases {
+		if n := testing.AllocsPerRun(100, c.fn); n != 0 {
+			t.Errorf("%s: %v allocs/op, want 0", c.name, n)
+		}
+	}
+	d := New()
+	if n := testing.AllocsPerRun(100, func() { d.Reset(); d.Write(buf); sink += d.Sum64() }); n != 0 {
+		t.Errorf("Digest Write+Sum64: %v allocs/op, want 0", n)
+	}
+}

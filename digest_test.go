@@ -12,15 +12,21 @@ import (
 // agreeing with the reference. What it buys is coverage at lengths and secret
 // sizes no vector was generated for.
 
-// TestStreamingDenseLengths walks every length up to 1300, which crosses the
-// stripe (64), the staging area (512) and the first block (1 KiB) many times
-// over. The chunkings are the ones that leave the buffer in an awkward state:
-// one byte at a time, a stripe either side, the staging area either side, and
-// the whole input at once.
+// TestStreamingDenseLengths walks every length past two fillings of the
+// staging buffer, crossing the stripe, the staging area and the block many
+// times over. The chunkings are the ones that leave the buffer in an awkward
+// state: one byte at a time, a stripe either side, the staging area either
+// side, and the whole input at once.
+//
+// The boundaries are derived from the constants rather than written out,
+// because the staging size is a tuning parameter, not wire format: it has
+// been 256, 512 and 1024 already, and a literal here quietly stops sitting
+// on the edge it was chosen for.
 func TestStreamingDenseLengths(t *testing.T) {
-	const maxLen = 1300
+	const maxLen = 2*internalBufferSize + 300
 	buf := testBuffer(maxLen)
-	chunks := []int{1, 63, 64, 65, 511, 512, 513, 1024, maxLen}
+	chunks := []int{1, stripeLen - 1, stripeLen, stripeLen + 1,
+		internalBufferSize - 1, internalBufferSize, internalBufferSize + 1, maxLen}
 
 	for n := 0; n <= maxLen; n++ {
 		in := buf[:n]

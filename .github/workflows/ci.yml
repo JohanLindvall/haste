@@ -146,25 +146,33 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-      - name: one minute per target
+      # Discovered, not listed: a hand-kept list silently stops covering a
+      # new target or a new package, and this one already went stale once
+      # when xxh64 arrived. Go allows one -fuzz target per invocation, hence
+      # the loop. A run with zero targets discovered is a discovery failure,
+      # not a clean pass.
+      - name: one minute per discovered target
         run: |
-          set -e
-          for f in FuzzStreamingMatchesOneShot FuzzCustomSecret FuzzBackendsAgree FuzzUnmarshalBinary; do
-            echo "== $f"
-            go test -run "^$f$" -fuzz "^$f$" -fuzztime=60s .
+          set -euo pipefail
+          total=0
+          for pkg in $(go list ./...); do
+            for f in $(go test -list '^Fuzz' "$pkg" | grep '^Fuzz' || true); do
+              echo "== $pkg $f"
+              go test -run "^$f$" -fuzz "^$f$" -fuzztime=60s "$pkg"
+              total=$((total + 1))
+            done
           done
-          for f in FuzzStreamingMatchesOneShot FuzzKernelsAgree FuzzUnmarshalBinary; do
-            echo "== xxh64 $f"
-            go test -run "^$f$" -fuzz "^$f$" -fuzztime=60s ./xxh64
-          done
+          echo "$total fuzz targets ran"
+          if [ "$total" -eq 0 ]; then
+            echo "::error::no fuzz targets discovered; the -list probe is broken"
+            exit 1
+          fi
       - name: keep any input that failed
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-crashers
-          path: |
-            testdata/fuzz/
-            xxh64/testdata/fuzz/
+          path: "**/testdata/fuzz/"
           if-no-files-found: ignore
 
   crosscheck:
