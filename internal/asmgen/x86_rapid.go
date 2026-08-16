@@ -118,6 +118,14 @@ func (x *x86Rapid) movSec(dst GPR, slot int) {
 		"movq %s, %s", x.sec(slot), x.GPRName(dst))
 }
 
+// xorMem is dst ^= load(base+off), the load folded into the xor. x86 cracks
+// it into the same load and xor the pair would issue, so it is one
+// instruction fewer through the front end and nothing else changes.
+func (x *x86Rapid) xorMem(dst, base GPR, off int) {
+	x.b.emit(func(m *Machine) { m.R[dst] ^= m.Load64(m.R[base] + uint64(off)) },
+		"xorq %s, %s", x.mem(base, off), x.GPRName(dst))
+}
+
 func (x *x86Rapid) load64(dst, base GPR, off int) {
 	x.b.emit(func(m *Machine) { m.R[dst] = m.Load64(m.R[base] + uint64(off)) },
 		"movq %s, %s", x.mem(base, off), x.GPRName(dst))
@@ -210,10 +218,26 @@ func (x *x86Rapid) HoldSecret(...int) {}
 func (x *x86Rapid) Round(lane GPR, off, slot int) {
 	// lane = mix(load(in+off) ^ secret[slot], load(in+off+8) ^ lane)
 	//
-	// The second operand is built in r14, the one scratch register the plan
-	// keeps free, and the secret is an operand of the xor rather than a load
-	// of its own. The first goes to rax because mulq demands it; the
+	// The lane is dead the moment the multiply has read it -- the round
+	// overwrites it with the result -- so the second operand is built in
+	// the lane itself rather than in the scratch register, and its load
+	// folds into that xor. That is six instructions where the obvious
+	// spelling is seven, and this loop is bound by what it can issue
+	// rather than by its multiplies: seven lanes at seven instructions is
+	// 52 per 112 bytes and 13.6 cycles, which is 3.8 per cycle, where the
+	// seven multiplies alone would be 11.
+	//
+	// The first operand still goes to rax because mulq demands it; the
 	// alternative form does not use this round at all, see AltBlockBody.
+	x.load64(rAX, x.In(), off)
+	x.xorSec(rAX, slot)
+	x.xorMem(lane, x.In(), off+8)
+	x.mixInto(lane, lane)
+}
+
+// ChainRound builds the second operand in the scratch register, so its load
+// does not sit behind the previous round's result. See the interface.
+func (x *x86Rapid) ChainRound(lane GPR, off, slot int) {
 	x.load64(rAX, x.In(), off)
 	x.xorSec(rAX, slot)
 	x.load64(r14, x.In(), off+8)
