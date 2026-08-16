@@ -56,10 +56,29 @@ jobs:
           # The root module has no go.sum; the cache keys on the bench
           # module's, which every step here builds against.
           cache-dependency-path: bench/go.sum
+      # A runner with no C toolchain still has CGO_ENABLED=1 by default, and
+      # then every build of bench/ fails outright instead of dropping the C
+      # reference columns -- which is what windows-11-arm did. Decide it once,
+      # here, by actually asking the compiler to build something: "is cc in
+      # PATH" is not the same question and gets this wrong on images that ship
+      # a stub.
+      - name: is there a C compiler
+        run: |
+          cc=$(go env CC)
+          printf 'int main(void){return 0;}\n' > probe.c
+          if "$cc" probe.c -o probe 2>/dev/null; then
+            echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
+            echo "cgo enabled via $cc; the C reference columns will be present"
+          else
+            echo "CGO_ENABLED=0" >> "$GITHUB_ENV"
+            echo "no working C compiler ($cc); the C reference columns will be absent"
+          fi
+          rm -f probe.c probe probe.exe
       - name: what this runner is
         run: |
           set +e
           echo "runner=${{ matrix.runner }}" | tee cpu.txt
+          echo "cgo=${CGO_ENABLED}" | tee -a cpu.txt
           (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null) | sed 's/^/nproc=/' | tee -a cpu.txt
           grep -m1 -E 'model name|Model name' /proc/cpuinfo 2>/dev/null | tee -a cpu.txt
           lscpu 2>/dev/null | grep -E 'Model name|Vendor|Flags|Features|Architecture|MHz|Thread|Core|Socket' | tee -a cpu.txt

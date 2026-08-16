@@ -93,6 +93,14 @@ jobs:
             GOOS=linux GOARCH=$a go test -c -o /dev/null .
             GOOS=linux GOARCH=$a go test -c -o /dev/null ./xxh64
           done
+          # The other operating systems the assembly and the core detection
+          # have to compile for. arm64 outside Linux takes a different file --
+          # MIDR is unreadable there -- and nothing else here would build it.
+          for t in windows/amd64 windows/arm64 darwin/amd64 darwin/arm64 freebsd/amd64; do
+            echo "== $t"
+            GOOS=${t%/*} GOARCH=${t#*/} go test -c -o /dev/null .
+            GOOS=${t%/*} GOARCH=${t#*/} go test -c -o /dev/null ./xxh64
+          done
           echo "== js/wasm"
           GOOS=js GOARCH=wasm go build ./...
 
