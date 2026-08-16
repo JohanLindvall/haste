@@ -742,38 +742,60 @@ What that makes of the kernels:
 
 ### amd64 on Intel, measured on GitHub runners (shared VMs)
 
-Two Intel cores have been sampled, both on four-vCPU GitHub runner VMs, so
-the ratios are usable and the absolute numbers are not. They agree on the
-one finding that matters and disagree on its cause:
+Three Intel server cores have been sampled, all on four-vCPU GitHub runner
+VMs. The VMs turn out to be steady for this workload -- across four
+independent Zen 3 allocations both our numbers and zeebo's repeat to +-0.3%
+up to 64 KiB -- so the ratios below are real, and only the absolute
+nanoseconds carry the VM's clock.
 
-- **XXH3 is behind zeebo/xxh3 from 16 KiB up on both.** Ice Lake-SP (Xeon
-  8370C, current build): 0.92x / 0.89x / 0.87x at 16 KiB / 64 KiB / 1 MiB.
-  Granite Rapids (Xeon 6973P-C, the build of 465276d): 0.85x / 0.76x /
-  0.72x. Below 4 KiB both are ahead of it, up to 1.40x, and every other core
-  measured -- M2, N2, Zen 3, Zen 4 -- is ahead at every size. This is the
-  open performance item in the repository.
-- **It is not a dispatch mistake on Ice Lake.** There our AVX-512 kernel is
-  the fastest of ours (1,152 ns at 64 KiB against AVX2's 1,207), and
-  zeebo's AVX2 still beats it at 1,024: 2.8 cycles per stripe against our
-  3.15, on a core with three vector ports.
-- **On Granite Rapids it is**, but only there: AVX2 1,061 against AVX-512
-  1,168. So preferring AVX2 on Intel in `pickBackend` would help that core
-  and cost 4% on Ice Lake; a CPUID-model check would be needed, and neither
-  core has been measured on hardware we control.
-- Candidates for why zeebo's AVX2 loop wins on Intel while ours wins on
-  both AMD cores, none of them tested: 512-bit licence downclocking on the
-  fast-block path, our extra secret load per stripe against whatever it
+- **Dispatch picks AVX-512 on Intel and it is the wrong kernel on two of
+  the three.** At 64 KiB: Emerald Rapids (Xeon 8573C) 1,222 ns AVX-512
+  against 1,159 AVX2; Granite Rapids (Xeon 6973P-C) 1,168 against 1,061;
+  Ice Lake-SP (Xeon 8370C) the other way round, 1,152 against 1,207. The
+  inversion follows the Golden-Cove-derived server line and not the older
+  Ice Lake. A vendor-only rule in `pickBackend` (Intel implies AVX2) buys
+  5-9% on two cores and costs 4% on the third; getting all three needs a
+  CPUID model check, which this repository does not have today. **On AMD the
+  current choice is right**: an EPYC 9V74 runner that exposed AVX-512
+  (another had it masked off by the host) runs our AVX-512 kernel 11% faster
+  than our AVX2, 825 ns against 929.
+- **XXH3 is behind zeebo/xxh3 from 16 KiB up on all three Intel cores, and
+  nowhere else.** Emerald Rapids 0.85x / 0.83x / 0.77x at 16 KiB / 64 KiB /
+  1 MiB, Ice Lake 0.92x / 0.89x / 0.87x, Granite Rapids 0.85x / 0.76x /
+  0.72x. Below 4 KiB the same cores have us ahead by up to 2.08x, and every
+  non-Intel core -- M2, N2, Zen 3, Zen 4 -- is ahead at every size. Choosing
+  AVX2 there would close part of the gap (Emerald Rapids 0.83x to 0.88x at
+  64 KiB) and not all of it: zeebo's AVX2 loop still beats our AVX2 loop on
+  that core, 1,022 ns against 1,159. This is the open performance item.
+- Candidates for the remainder, none tested: 512-bit licence behaviour on
+  the fast-block path, our per-stripe secret load against whatever zeebo
   keeps in registers, and Intel's three-port 256-bit issue against Zen's
-  four. This wants an afternoon on real Intel hardware, not another runner.
-- XXH64 on Ice Lake is 5-8% behind cespare between 32 and 256 bytes and
-  exactly level elsewhere -- the one x86 window the combined-mask tail did
-  not reach. On Zen 3 and Zen 4 that window is level or ahead.
+  four. It wants an Intel machine with counters, not another runner.
+- **XXH64's remaining x86 gap is Intel-only and lives between 64 and 256
+  bytes**: Emerald Rapids 0.84-0.90x of cespare there, Ice Lake 0.92-0.95x,
+  while Zen 3 and Zen 4 are level or ahead across that window and every core
+  is exactly level from 1 KiB up. The combined-mask tail closed it on AMD
+  and not on Intel -- the same split as the kernel finding above.
 
 Which physical CPU an amd64 runner gives you is a lottery: the pool has
-served Zen 3 (EPYC 7763), Zen 4 (EPYC 9V74, with AVX-512 masked off by the
-host, so it dispatches to AVX2) and both Intel cores above. Dispatch
-`bench.yml` twice if a particular vendor is wanted, and read `cpu.txt` in
-the artifact before trusting which core produced a number.
+served Zen 3 (EPYC 7763), Zen 4 (EPYC 9V74, sometimes with AVX-512 masked
+off by the host, in which case it dispatches to AVX2 and says nothing about
+AVX-512) and the three Intel cores above. Dispatch `bench.yml` a few times
+if a particular vendor is wanted, and read `cpu.txt` in the artifact before
+trusting which core produced a number.
+
+### The 33..128 inlining is not free on Zen 3
+
+Inlining the 33..128 rungs won 26.8% at 64 bytes and 12.0% at 128 on Zen 3,
+and cost 7.6% at 32 bytes, 2.1% at 512 and 5.2% at a kibibyte -- 3.74 to
+4.05 ns, 18.46 to 18.86, 26.24 to 27.67. Measured across two runner
+allocations before and four after, with zeebo's rows from the same binaries
+unmoved to +-0.3% as the control, so it is not VM weather. The M2 shows
+none of it (32 bytes -1.1%, a kibibyte unchanged), which makes it x86 code
+placement rather than work: `sum64` grew, and everything laid out after it
+moved with it -- the caller-alignment lottery under Benchmarking, seen from
+the other side. Settle it the way that section prescribes, with three
+relinked layouts on an AMD box, before trading the 64-128 byte win away.
 
 ### amd64, measured on Zen 4 (Ryzen 7 8840HS)
 
