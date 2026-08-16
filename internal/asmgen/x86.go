@@ -105,6 +105,10 @@ func (x *x86) Build() *Builder  { return x.b }
 func (x *x86) Unroll() int      { return x.unroll }
 func (x *x86) SecretImm() bool  { return true }
 func (x *x86) ArgGPR(i int) GPR { return x86ArgGPR[i] }
+
+// The vector kernels return nothing and read no table.
+func (x *x86) RetGPR() GPR      { return -1 }
+func (x *x86) TableGPR() GPR    { return -1 }
 func (x *x86) TmpGPR(i int) GPR { return x86TmpGPR[i] }
 func (x *x86) GPRName(r GPR) string {
 	n, ok := x86GPRNames[r]

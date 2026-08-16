@@ -20,7 +20,7 @@ import (
 func main() {
 	out := flag.String("out", ".", "directory to write generated files to")
 	only := flag.String("only", "", "generate just this backend")
-	dump := flag.Int("dump", -1, "print the assembler source of kernel N (0 hashLong, 1 accumBlocks, 2 accum) instead of generating; use with -only")
+	dump := flag.Int("dump", -1, "print the assembler source of kernel N (0 hashLong, 1 accumBlocks, 2 accum; for the XXH64 backends 0 sum64, 1 blocks) instead of generating; use with -only")
 	flag.Parse()
 	log.SetFlags(0)
 	log.SetPrefix("asmgen: ")
@@ -28,20 +28,27 @@ func main() {
 	// -dump prints one kernel as assembler source, which is what feeds
 	// llvm-mca when a backend has to be analysed rather than run.
 	if *dump >= 0 {
-		for _, b := range asmgen.Backends() {
+		for _, b := range asmgen.AllBackends() {
 			if *only != "" && b.Name != *only {
 				continue
 			}
-			fmt.Print(asmgen.EmitAll(b.New)[*dump].Build().Text())
+			fmt.Print(b.EmitAll()[*dump].Build().Text())
 		}
 		return
 	}
 
-	// The stubs always cover every backend of an architecture, even when only
-	// one was regenerated: they have to match what dispatch calls.
-	byArch := map[string][]asmgen.Backend{}
-	for _, b := range asmgen.Backends() {
-		byArch[b.GOARCH] = append(byArch[b.GOARCH], b)
+	// The stubs always cover every backend of a package and architecture,
+	// even when only one was regenerated: they have to match what dispatch
+	// calls.
+	type key struct{ dir, goarch string }
+	byPkg := map[key][]asmgen.Backend{}
+	var keys []key
+	for _, b := range asmgen.AllBackends() {
+		k := key{b.Dir, b.GOARCH}
+		if _, seen := byPkg[k]; !seen {
+			keys = append(keys, k)
+		}
+		byPkg[k] = append(byPkg[k], b)
 		if *only != "" && b.Name != *only {
 			continue
 		}
@@ -51,16 +58,19 @@ func main() {
 		}
 		write(filepath.Join(*out, b.Filename()), asm)
 	}
-	for goarch, bs := range byArch {
-		stubs, err := asmgen.GenerateStubs(goarch, bs)
+	for _, k := range keys {
+		stubs, err := asmgen.GenerateStubs(k.goarch, byPkg[k])
 		if err != nil {
 			log.Fatal(err)
 		}
-		write(filepath.Join(*out, fmt.Sprintf("stub_%s.go", goarch)), stubs)
+		write(filepath.Join(*out, k.dir, fmt.Sprintf("stub_%s.go", k.goarch)), stubs)
 	}
 }
 
 func write(path, content string) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		log.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		log.Fatal(err)
 	}

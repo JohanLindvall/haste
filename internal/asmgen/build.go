@@ -175,6 +175,7 @@ type Function struct {
 	Def      FuncDef
 	Prologue []string // Go assembly that lands the arguments in registers
 	Lines    []string // the generated body, without the RET
+	Epilogue []string // Go assembly that stores the result, if any
 }
 
 // Decl renders the Go declaration of a kernel.
@@ -182,6 +183,7 @@ func (f Function) Decl() string {
 	types := map[string]string{
 		"acc": "*[8]uint64", "in": "unsafe.Pointer", "sec": "unsafe.Pointer",
 		"n": "int", "nbStripes": "int", "secretLimit": "int", "soFar": "int",
+		"lanes": "*[4]uint64", "seed": "uint64", "nbBlocks": "int", "split": "int",
 	}
 	var args []string
 	for _, a := range f.Def.Args {
@@ -191,31 +193,62 @@ func (f Function) Decl() string {
 		}
 		args = append(args, a+" "+t)
 	}
-	return fmt.Sprintf("%s(%s)", f.Def.Name, strings.Join(args, ", "))
+	d := fmt.Sprintf("%s(%s)", f.Def.Name, strings.Join(args, ", "))
+	if f.Def.Ret != "" {
+		d += " " + f.Def.Ret
+	}
+	return d
 }
 
 // ArgSize is the size of the argument area, which every kernel passes on the
-// stack: these are ABI0 functions.
-func (f Function) ArgSize() int { return 8 * len(f.Def.Args) }
+// stack: these are ABI0 functions. A result, if any, follows the arguments.
+func (f Function) ArgSize() int {
+	n := 8 * len(f.Def.Args)
+	if f.Def.Ret != "" {
+		n += 8
+	}
+	return n
+}
 
-// prologue loads the stack arguments into the registers the body expects.
-func prologue(a Arch, def FuncDef) []string {
+// prologue loads the stack arguments into the registers the body expects,
+// and the address of the constant table, if the kernel has one and the
+// architecture reads it.
+func prologue(k Kernel, def FuncDef) []string {
 	mov := "MOVQ"
-	if a.GOARCH() == "arm64" {
+	if k.GOARCH() == "arm64" {
 		mov = "MOVD"
 	}
 	var out []string
 	for i, name := range def.Args {
-		reg := goRegName(a, a.ArgGPR(i))
+		reg := goRegName(k, k.ArgGPR(i))
 		out = append(out, fmt.Sprintf("%s %s+%d(FP), %s", mov, name, 8*i, reg))
+	}
+	if def.Table != "" && k.TableGPR() >= 0 {
+		if k.GOARCH() == "arm64" {
+			out = append(out, fmt.Sprintf("MOVD $·%s(SB), %s", def.Table, goRegName(k, k.TableGPR())))
+		} else {
+			out = append(out, fmt.Sprintf("LEAQ ·%s(SB), %s", def.Table, goRegName(k, k.TableGPR())))
+		}
 	}
 	return out
 }
 
+// epilogue stores the result from the register the kernel left it in.
+func epilogue(k Kernel, def FuncDef) []string {
+	if def.Ret == "" {
+		return nil
+	}
+	mov := "MOVQ"
+	if k.GOARCH() == "arm64" {
+		mov = "MOVD"
+	}
+	return []string{fmt.Sprintf("%s %s, ret+%d(FP)", mov, goRegName(k, k.RetGPR()), 8*len(def.Args))}
+}
+
 // goRegName maps a register to the name Go's assembler uses for it, which
 // differs from the GNU one.
-func goRegName(a Arch, r GPR) string {
-	if a.GOARCH() == "arm64" {
+func goRegName(k Kernel, r GPR) string {
+	if k.GOARCH() == "arm64" {
 		return fmt.Sprintf("R%d", int(r))
 	}
 	return map[GPR]string{
@@ -226,19 +259,19 @@ func goRegName(a Arch, r GPR) string {
 
 // Generate assembles one backend's kernels and returns the rendered .s file.
 func Generate(b Backend) (asm string, err error) {
-	defs := Funcs(b.Suffix)
-	archs := EmitAll(b.New)
+	defs := b.Defs()
+	kernels := b.EmitAll()
 	var funcs []Function
-	for i, a := range archs {
-		enc, err := Assemble(a.GOARCH(), a.Build().Text())
+	for i, k := range kernels {
+		enc, err := Assemble(k.GOARCH(), k.Build().Text())
 		if err != nil {
 			return "", fmt.Errorf("%s.%s: %w", b.Name, defs[i].Name, err)
 		}
-		lines, err := renderBody(a, enc)
+		lines, err := renderBody(k, enc)
 		if err != nil {
 			return "", fmt.Errorf("%s.%s: %w", b.Name, defs[i].Name, err)
 		}
-		funcs = append(funcs, Function{Def: defs[i], Prologue: prologue(a, defs[i]), Lines: lines})
+		funcs = append(funcs, Function{Def: defs[i], Prologue: prologue(k, defs[i]), Lines: lines, Epilogue: epilogue(k, defs[i])})
 	}
 	var buf bytes.Buffer
 	err = asmTemplate.Execute(&buf, struct {
@@ -252,10 +285,10 @@ func Generate(b Backend) (asm string, err error) {
 // renderBody pairs each emitted instruction with its encoding. They must
 // correspond one to one: an emitter that expanded into two instructions would
 // desynchronize the labels, so a mismatch is a generator bug.
-func renderBody(a Arch, enc []Encoded) ([]string, error) {
+func renderBody(k Kernel, enc []Encoded) ([]string, error) {
 	var out []string
 	i := 0
-	for _, in := range a.Build().Insts() {
+	for _, in := range k.Build().Insts() {
 		if in.Label != "" {
 			out = append(out, fmt.Sprintf("// %s:", in.Label))
 			continue
@@ -265,7 +298,7 @@ func renderBody(a Arch, enc []Encoded) ([]string, error) {
 		}
 		e := enc[i]
 		i++
-		out = append(out, fmt.Sprintf("%s // %s", goDirective(a.GOARCH(), e), e.Text))
+		out = append(out, fmt.Sprintf("%s // %s", goDirective(k.GOARCH(), e), e.Text))
 	}
 	if i != len(enc) {
 		return nil, fmt.Errorf("assembler produced %d instructions for %d emitted", len(enc), i)
@@ -294,24 +327,34 @@ TEXT ·{{.Def.Name}}(SB), NOSPLIT, $0-{{.ArgSize}}
 {{- range .Lines}}
 	{{.}}
 {{- end}}
+{{- range .Epilogue}}
+	{{.}}
+{{- end}}
 	RET
 {{end}}`))
 
 // GenerateStubs renders the Go declarations for a set of backends on one
-// architecture. They are separate from the .s files so that go vet can check
-// each kernel's argument offsets against the signature it is called with.
+// architecture, all of one package. They are separate from the .s files so
+// that go vet can check each kernel's argument offsets against the signature
+// it is called with.
 func GenerateStubs(goarch string, backends []Backend) (string, error) {
 	var funcs []Function
+	pkg := ""
 	for _, b := range backends {
-		for _, d := range Funcs(b.Suffix) {
+		if pkg != "" && b.Package() != pkg {
+			return "", fmt.Errorf("asmgen: stubs for %s and %s in one file", pkg, b.Package())
+		}
+		pkg = b.Package()
+		for _, d := range b.Defs() {
 			funcs = append(funcs, Function{Def: d})
 		}
 	}
 	var buf bytes.Buffer
 	err := stubTemplate.Execute(&buf, struct {
-		GOARCH string
-		Funcs  []Function
-	}{goarch, funcs})
+		GOARCH  string
+		Package string
+		Funcs   []Function
+	}{goarch, pkg, funcs})
 	return buf.String(), err
 }
 
@@ -320,7 +363,7 @@ var stubTemplate = template.Must(template.New("stub").Parse(
 
 //go:build !purego
 
-package xxhaste
+package {{.Package}}
 
 import "unsafe"
 

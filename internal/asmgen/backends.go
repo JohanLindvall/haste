@@ -1,6 +1,9 @@
 package asmgen
 
-import "fmt"
+import (
+	"fmt"
+	"path"
+)
 
 // Backend is one generated kernel family.
 //
@@ -14,11 +17,63 @@ type Backend struct {
 	Suffix string // Go identifier suffix
 	GOARCH string
 	// VL is the SVE vector length in bytes this kernel is built for, or 0.
-	VL  int
-	New func() Arch
+	VL int
+	// Dir is the package directory the generated files belong to, relative
+	// to the module root; empty is the root package.
+	Dir string
+	// Exactly one of these is set: New builds an XXH3 vector backend, New64
+	// an XXH64 scalar one.
+	New   func() Arch
+	New64 func() XXH64Arch
 }
 
-// Backends lists everything the generator produces.
+// Defs returns the functions this backend generates, in emission order.
+func (b Backend) Defs() []FuncDef {
+	if b.New64 != nil {
+		return XXH64Funcs(b.Suffix, b.New64().Dual())
+	}
+	return Funcs(b.Suffix)
+}
+
+// EmitAll emits every function of this backend.
+func (b Backend) EmitAll() []Kernel {
+	if b.New64 != nil {
+		return EmitXXH64(b.New64)
+	}
+	var ks []Kernel
+	for _, a := range EmitAll(b.New) {
+		ks = append(ks, a)
+	}
+	return ks
+}
+
+// Package is the Go package the generated files belong to.
+func (b Backend) Package() string {
+	if b.Dir == "" {
+		return "xxhaste"
+	}
+	return path.Base(b.Dir)
+}
+
+// AllBackends is everything the generator produces: the XXH3 backends and the
+// XXH64 ones.
+func AllBackends() []Backend {
+	return append(Backends(), XXH64Backends()...)
+}
+
+// XXH64Backends lists the scalar XXH64 kernels, which live in the xxh64
+// package: one per architecture. The arm64 one carries both forms of the
+// lane round; see arm64_xxh64.go for which core wants which.
+func XXH64Backends() []Backend {
+	return []Backend{
+		{Name: "scalar", Suffix: "Scalar", GOARCH: "amd64", Dir: "xxh64",
+			New64: func() XXH64Arch { return newX86Scalar() }},
+		{Name: "scalar", Suffix: "Scalar", GOARCH: "arm64", Dir: "xxh64",
+			New64: func() XXH64Arch { return newARM64Scalar() }},
+	}
+}
+
+// Backends lists the XXH3 backends.
 func Backends() []Backend {
 	return []Backend{
 		{Name: "sse2", Suffix: "SSE2", GOARCH: "amd64",
@@ -42,8 +97,9 @@ func Backends() []Backend {
 	}
 }
 
-// Filename is where this backend's assembly goes. The architecture suffix is
-// what constrains the build, so it has to be last.
+// Filename is where this backend's assembly goes, relative to the module
+// root. The architecture suffix is what constrains the build, so it has to be
+// last.
 func (b Backend) Filename() string {
-	return fmt.Sprintf("xxh_%s_%s.s", b.Name, b.GOARCH)
+	return path.Join(b.Dir, fmt.Sprintf("xxh_%s_%s.s", b.Name, b.GOARCH))
 }
