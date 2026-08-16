@@ -99,12 +99,22 @@ func main() {
 		}
 	}
 
-	buf := make([]byte, *max+64)
-	g := uint64(2654435761)
-	for i := range buf {
-		buf[i] = byte(g >> 56)
-		g *= 11400714785074694797
+	// Each length gets its own allocation, sized to it. Slicing one buffer
+	// sized to the longest length in the run made a length's result depend on
+	// what else was in the run, and not equally: hashing a 16 KiB prefix of a
+	// 128 KiB allocation measured cespare/xxhash 19% slower than hashing a
+	// 16 KiB allocation, where this library moved 2%. That is larger than the
+	// differences the sweep is read for.
+	fill := func(n int) []byte {
+		b := make([]byte, n)
+		g := uint64(2654435761)
+		for i := range b {
+			b[i] = byte(g >> 56)
+			g *= 11400714785074694797
+		}
+		return b
 	}
+	warm := fill(64)
 
 	impls := []struct {
 		name string
@@ -160,7 +170,7 @@ func main() {
 	// against 2.4ns warm.
 	for t := time.Now(); time.Since(t) < 200*time.Millisecond; {
 		for _, im := range impls {
-			sink += im.f(buf[:64], 1000)
+			sink += im.f(warm, 1000)
 		}
 	}
 
@@ -170,9 +180,10 @@ func main() {
 	}
 	fmt.Println()
 	for _, n := range list {
+		in := fill(n)
 		fmt.Print(n)
 		for _, im := range impls {
-			fmt.Printf(",%.3f", measure(im.f, buf[:n]))
+			fmt.Printf(",%.3f", measure(im.f, in))
 		}
 		fmt.Println()
 		os.Stdout.Sync()

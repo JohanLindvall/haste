@@ -190,6 +190,15 @@ go build -o /tmp/sweep ./sweep                 # every length, one at a time
   hat. The sweep warms the core up first -- see the M2 note -- so early
   lengths are safe.
 
+  **Each length gets its own allocation.** Slicing one buffer sized to the
+  longest length in the run made a result depend on what else was being
+  swept, and not equally: a 16 KiB prefix of a 128 KiB allocation measured
+  cespare/xxhash at 21.5 GB/s where a 16 KiB allocation measured 26.6, while
+  this library moved 2% between the same two. That inverted the standing at
+  that size -- the shared-buffer sweep read xxh64 10% ahead of cespare at
+  16 KiB where the compare suite read it 7% behind. The 0..256 range is
+  unaffected either way, those buffers being small already.
+
   **The function-pointer harness that made the sweep's comparisons
   untrustworthy is gone**: each implementation now runs its own iteration
   loop, so the hash inside it is a direct call and the indirection is paid
