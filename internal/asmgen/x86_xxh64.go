@@ -127,6 +127,25 @@ func (x *x86Scalar) AddPrime(dst GPR, n int) {
 	})
 }
 
+func (x *x86Scalar) MovPrime(dst GPR, n int) {
+	x.withPrime(dst, n, func(op string, val func(*Machine) uint64) {
+		x.b.emit(func(m *Machine) { m.R[dst] = val(m) },
+			"movq %s, %s", op, x.GPRName(dst))
+	})
+}
+
+func (x *x86Scalar) Neg(dst GPR) {
+	x.b.emit(func(m *Machine) { m.R[dst] = -m.R[dst] }, "negq %s", x.GPRName(dst))
+}
+
+// ScratchGPR is the seeded form's third argument register, free in the twin.
+func (x *x86Scalar) ScratchGPR() GPR { return rDX }
+
+// UnseededTwin: measured on a Zen 4, every length 1..40, four relinked
+// layouts -- the twin is worth 2.5 points against cespare/xxhash over 1..8
+// bytes and 0.7 over 1..40.
+func (x *x86Scalar) UnseededTwin() bool { return true }
+
 func (x *x86Scalar) MulPrime(dst GPR, n int) {
 	x.withPrime(dst, n, func(op string, val func(*Machine) uint64) {
 		x.b.emit(func(m *Machine) { m.R[dst] *= val(m) },

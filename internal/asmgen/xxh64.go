@@ -25,7 +25,13 @@ package asmgen
 // must reach the kernel in one direct call, and a wrapper choosing between
 // two callees is past the inliner's budget while a call through a variable
 // measured two cycles on an M2 -- a fifth of a short hash.
-func XXH64Funcs(suffix string, dual bool) []FuncDef {
+func XXH64Funcs(suffix string, dual bool) []FuncDef { return xxh64Funcs(suffix, dual, false) }
+
+// XXH64FuncsNS is XXH64Funcs for a backend that also emits the unseeded twin,
+// in the order EmitXXH64 emits them.
+func XXH64FuncsNS(suffix string, dual bool) []FuncDef { return xxh64Funcs(suffix, dual, true) }
+
+func xxh64Funcs(suffix string, dual, ns bool) []FuncDef {
 	// A dual backend used to take its lane-round form as a fourth argument,
 	// which made every caller load a global and every short hash carry a value
 	// it never reads. The form now lives in the sixth slot of the primes
@@ -33,7 +39,7 @@ func XXH64Funcs(suffix string, dual bool) []FuncDef {
 	// that run the lane loop pay one load for it.
 	sumArgs, blockArgs := []string{"in", "n", "seed"}, []string{"lanes", "in", "nbBlocks"}
 	_ = dual
-	return []FuncDef{
+	defs := []FuncDef{
 		{
 			Name:  "sum64" + suffix,
 			Args:  sumArgs,
@@ -48,6 +54,16 @@ func XXH64Funcs(suffix string, dual bool) []FuncDef {
 			Doc:   "absorbs nbBlocks whole blocks at in into the four lanes",
 		},
 	}
+	if ns {
+		defs = append(defs, FuncDef{
+			Name:  "sum64" + suffix + "NS",
+			Args:  []string{"in", "n"},
+			Ret:   "uint64",
+			Table: "primes",
+			Doc:   "hashes the n bytes at in with no seed, whatever n is",
+		})
+	}
+	return defs
 }
 
 // XXH64Arch is the surface the XXH64 kernels are written against. The
@@ -78,6 +94,20 @@ type XXH64Arch interface {
 	// AddPrime is dst += Pn; MulPrime is dst *= Pn; MulAddPrime is
 	// dst = dst*Pmul + Padd, one instruction on arm64 and two on x86.
 	AddPrime(dst GPR, n int)
+	// MovPrime and Neg exist for the unseeded twin's lane setup.
+	MovPrime(dst GPR, n int)
+	Neg(dst GPR)
+
+	// ScratchGPR is a register the unseeded twin may use where the seeded
+	// form uses its third argument.
+	ScratchGPR() GPR
+
+	// UnseededTwin reports whether this backend emits sum64<B>NS beside
+	// sum64<B>. On for x86, where the seed costs a load, an add on the short
+	// path and two instructions of lane setup -- worth 2.5 points against
+	// cespare/xxhash over 1..8 bytes on a Zen 4. Off for arm64 until it is
+	// measured on one.
+	UnseededTwin() bool
 	MulPrime(dst GPR, n int)
 	MulAddPrime(dst GPR, mul, add int)
 
@@ -158,22 +188,47 @@ type XXH64Arch interface {
 // EmitXXH64 emits the two kernels into one instruction stream per function.
 func EmitXXH64(new func() XXH64Arch) []Kernel {
 	a1, a2 := new(), new()
-	emitSum64(a1)
+	emitSum64(a1, true)
 	emitBlocks(a2)
-	return []Kernel{a1, a2}
+	ks := []Kernel{a1, a2}
+	if a1.UnseededTwin() {
+		a3 := new()
+		emitSum64(a3, false)
+		ks = append(ks, a3)
+	}
+	return ks
 }
 
-// emitSum64 is the whole hash of an input of any length.
-func emitSum64(a XXH64Arch) {
+// emitSum64 is the whole hash of an input of any length. With seeded false it
+// is the same hash with the seed folded to zero: the lanes start from the
+// primes alone and the short path starts from the fifth prime, which is what
+// every unseeded caller wants and what Sum64 reaches directly.
+func emitSum64(a XXH64Arch, seeded bool) {
 	b := a.Build()
-	in, n, seed := a.ArgGPR(0), a.ArgGPR(1), a.ArgGPR(2)
+	in, n := a.ArgGPR(0), a.ArgGPR(1)
+	// The unseeded twin has no third argument; its register is free scratch,
+	// and the block count uses it exactly as the seeded form does.
+	seed := a.ScratchGPR()
+	if seeded {
+		seed = a.ArgGPR(2)
+	}
 	h := a.H()
 	v := [4]GPR{a.V(0), a.V(1), a.V(2), a.V(3)}
 	short, tail := b.NewLabel("short"), b.NewLabel("tail")
 
 	a.LoadPrimes()
 	a.BranchI(n, 32, LT, short)
-	a.InitLanes(seed, v)
+	if seeded {
+		a.InitLanes(seed, v)
+	} else {
+		// v1 = P1+P2, v2 = P2, v3 = 0, v4 = -P1.
+		a.MovPrime(v[0], 0)
+		a.AddPrime(v[0], 1)
+		a.MovPrime(v[1], 1)
+		a.Xor(v[2], v[2])
+		a.MovPrime(v[3], 0)
+		a.Neg(v[3])
+	}
 
 	// The seed is dead now; its register counts the blocks.
 	nb := seed
@@ -202,8 +257,12 @@ func emitSum64(a XXH64Arch) {
 	// Under a block there are no lanes: the hash starts from the seed and
 	// the fifth prime and is all tail.
 	b.Label(short)
-	a.Mov(h, seed)
-	a.AddPrime(h, 4)
+	if seeded {
+		a.Mov(h, seed)
+		a.AddPrime(h, 4)
+	} else {
+		a.MovPrime(h, 4)
+	}
 
 	b.Label(tail)
 	a.Add(h, n)

@@ -444,43 +444,54 @@ anything on top of that.
     decimals at 31, 32 and 64 bytes, and the sweep leaves 33 and 37 where
     they were. That is the ceiling this note predicted, half of 0.18ns, under
     the noise floor. The branch is kept as the worked answer, not merged.
+- **amd64 emits an unseeded twin of the one-shot kernel.** `sum64ScalarNS`
+  is `sum64Scalar` with the seed folded to zero: no third argument to load,
+  `h` starts from the fifth prime instead of `seed + P5`, and the lanes start
+  from the primes alone (six instructions against eight). `Sum64` and
+  `Sum64String` reach it in one direct call and `Sum64Seed` still reaches the
+  seeded kernel, so which one a caller gets is settled at compile time and
+  costs no branch -- the same trade the parent package makes with `sum64NS`.
+  Measured on a Zen 4, every length 1..40, four relinked layouts: **+1.0 to
+  +1.9%, and every length sampled improved**, which is what removing one to
+  three instructions from a 2.6 ns hash looks like. It does not move the
+  standing against cespare/xxhash, because the gap there is guards rather
+  than instructions -- see below. Gated on `UnseededTwin`, off for arm64
+  until an arm64 is measured: three-operand adds make its lane setup cheaper
+  already, so the twin has less to win there.
 - **The amd64 tail's combined-mask skips are generated but off.**
   `TailMaskSkips` emits tests of n against 31, 24, 7 and 3 ahead of the
   per-bit guards, so a trivial tail pays one or two taken branches instead of
   up to five. They were on while the prologue built the five primes with
   `movabs` -- fifty bytes of ten-byte instructions -- where they were worth
-  12-17% of a 4- or 8-byte hash and took 4 bytes from -19% against
-  cespare/xxhash to level. Holding the primes in registers removed that
-  prologue, and with it the thing the skips were paying for; what is left is
-  their cost, two not-taken tests on every length whose tail runs more than
-  one step. Re-measured after that change, four relinked layouts each, every
-  length 1..40 with direct calls:
+  12-17% of a 4- or 8-byte hash. Holding the primes in registers removed that
+  prologue and with it what they were paying for; what is left is their cost,
+  two not-taken tests on every length whose tail runs more than one step.
+  Re-measured after that change, four relinked layouts each, every length
+  1..40 with direct calls: off beats on by 4.8 points over 9..16 bytes and
+  3.2 over 17..32, for +1.2% against cespare across 1..40 where on reads
+  -0.8%, and the per-layout aggregates do not overlap. Only 4 bytes prefers
+  them, by 8.5 points; two narrower variants (the two entry skips alone, and
+  everything but the n&7 skip) were generated and measured and neither
+  recovers that, because the win needs the whole chain. arm64 has always had
+  them off.
+- **What is left against cespare on amd64 is the tail's shape, and it is one
+  open item.** Per length, four layouts, current build: +1.3% over 1..40,
+  +3.4% over 9..16 and +3.6% over 17..31 -- and two windows behind.
+  - **1, 2, 4, 5, 8 bytes: -5 to -7%.** These are the lengths whose tail runs
+    one or two steps, and where our unrolled chain walks all five bit guards
+    while cespare's loops walk three pointer compares. The mask skips above
+    fix exactly these and cost more than they return elsewhere, so the
+    unexplored idea is a two-level tail: dispatch once on `(n>>3)&3` for the
+    eight-byte steps and once on `n&7` for the rest, which would execute two
+    or three tests at every length instead of five. It is more code and has
+    not been written.
+  - **32, 36, 40 bytes: -3 to -6%.** One block plus a nil, four- or
+    eight-byte tail. 33, 34, 35, 37 are level or ahead, so this is not the
+    block loop; it is the same guard-count story with the block's cost
+    hiding it less than a longer tail would.
+  Both reproduce on every layout, so neither is the caller-alignment
+  lottery. Everything from 9 to 31 bytes and from 41 up is level or ahead.
 
-  | range | skips on | skips off |
-  |---|---|---|
-  | 1..8 B | -1.6% | -3.0% |
-  | 9..16 B | -1.6% | +3.2% |
-  | 17..32 B | -0.1% | +3.1% |
-  | 33..40 B | -0.8% | -0.6% |
-  | 1..40 B | -0.8% | +1.2% |
-
-  The per-layout aggregates do not overlap -- on -0.6..-1.0%, off
-  +0.9..+1.7% -- so they are off. Only 4 bytes still prefers them, by 8.5
-  points, and two narrower variants were generated and measured to keep just
-  that (the two entry skips alone, and everything but the n&7 skip); neither
-  recovers it, because the 4-byte win needs the whole chain and the chain
-  costs more than it returns everywhere else. arm64 has always had them off.
-
-  Where that leaves amd64 XXH64 against cespare on the Zen 4, same
-  measurement: mean +1.2% over 1..40 bytes, +3.2% over 9..16 and +3.1% over
-  17..32, every layout positive. Two windows still trail. 1..8 bytes reads
-  -3.0%, of which 4 bytes is -7% -- the length the skips used to buy. And a
-  scatter of multi-step tails -- 29, 32, 36, 40 -- reads -4..-6%, where
-  cespare's looped tail beats an unrolled chain of length tests; 29 bytes
-  measures the same with the skips on or off, so it is the tail's shape, not
-  the guards. Those are the places to look next. The 1.13x over 9..32
-  recorded from the compare suite elsewhere in this file does not reproduce
-  per length and should not be carried forward.
 - **Benchmarking 32..256-byte XXH64 on Zen 4 is a caller-alignment lottery.**
   Both this kernel and cespare's swing ~0.65 ns (6 cycles) at those lengths
   with the *calling function's* address: mod-64 phase 32 is the fast mode,

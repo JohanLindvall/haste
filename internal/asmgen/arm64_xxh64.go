@@ -179,6 +179,20 @@ func (a *arm64Scalar) BranchZero(r GPR, label string) {
 	}, "cbz %s, %s", a.GPRName(r), label)
 }
 
+func (a *arm64Scalar) MovPrime(dst GPR, n int) { a.Mov(dst, a.p(n)) }
+
+func (a *arm64Scalar) Neg(dst GPR) {
+	a.b.emit(func(m *Machine) { m.R[dst] = -m.R[dst] },
+		"neg %s, %s", a.GPRName(dst), a.GPRName(dst))
+}
+
+func (a *arm64Scalar) ScratchGPR() GPR { return a.ArgGPR(2) }
+
+// UnseededTwin is off here: the twin saves a handful of instructions that an
+// arm64 core with three-operand adds mostly does not pay, and no arm64 has
+// been measured with it. See the x86 face.
+func (a *arm64Scalar) UnseededTwin() bool { return false }
+
 func (a *arm64Scalar) BranchMaskClear(r GPR, mask int64, label string) {
 	a.b.emit(func(m *Machine) { m.setCmp(m.R[r]&uint64(mask), 0) },
 		"tst %s, #%d", a.GPRName(r), uint64(mask))

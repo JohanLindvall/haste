@@ -125,6 +125,27 @@ func TestSimulatedBackends(t *testing.T) {
 						}
 					}
 				}
+				// The unseeded twin, where the backend emits one: the same
+				// lengths against the portable path with a zero seed, and the
+				// unseeded reference vectors. It is a third kernel with its
+				// own instruction stream, so nothing else here covers it.
+				if len(ks) > 2 {
+					nsK, nsDef := ks[2], defs[2]
+					for _, n := range lens {
+						if got, want := simSum64(t, nsK, nsDef, buf[:n], 0, split), sum64Generic(ptr(buf), n, 0); got != want {
+							t.Fatalf("sum64NS len %d: %#016x != %#016x", n, got, want)
+						}
+					}
+					for _, v := range refVecs {
+						if v.Len > 3000 || v.Seed != 0 {
+							continue
+						}
+						if got := simSum64(t, nsK, nsDef, buf[:v.Len], 0, split); got != v.H64 {
+							t.Fatalf("sum64NS vector len %d: %#016x != %#016x", v.Len, got, v.H64)
+						}
+					}
+				}
+
 				// The reference vectors that fit the buffer, too.
 				for _, v := range refVecs {
 					if v.Len > 3000 {
