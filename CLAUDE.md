@@ -679,6 +679,20 @@ worth nothing.
 
   Those figures predate the sweep harness being made direct-call; see the
   benchmarking section. Re-run before quoting them.
+- **Writing the convergence out cost the custom-secret short paths about
+  5%.** Measured on a Zen 4 after that change, as a within-binary ratio so
+  layout and drift cancel: `Sum64Secret` against `Sum64` at the same lengths
+  was 0.96x at 0..16 bytes and 0.99x at 17..32 before, and is 1.06x and 1.05x
+  after -- a custom secret used to be free and now is not. Three independent
+  A/B pairs against the previous build reproduce it at +4.2%, +7.1% and +5.0%
+  while `Sum64` on the same cells stays flat. The mechanism is that both
+  short rungs live in `sum64NS`'s own body, so they pay for the register
+  pressure the written-out convergence adds; `&kSecret` is rematerializable
+  where a caller's secret pointer and length are not. It is kept: the same
+  change is worth 5% on this core's own long path (241..512 bytes) and 9% at
+  256 bytes in `sum128NS` upstream, and a custom secret is the rarer call.
+  Anything that revisits it should measure `Sum64Secret` at 17..32 alongside.
+
 - Specializing the 0..16 paths on the default secret (compile-time bitflips,
   guarded by seed==0 && sec==&kSecret) was measured and rejected: only empty
   input won (+13%), 4..16 regressed 3-6%. The guarding compares sit on the
