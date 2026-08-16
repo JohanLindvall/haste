@@ -218,6 +218,12 @@ go build -o /tmp/sweep ./sweep                 # every length, one at a time
   prediction.
 - **Backends only diverge from 241 bytes** -- below that no kernel is
   entered, and the portable path measures identical to the assembly build.
+  That makes the three backends a free noise gauge: forcing each in turn over
+  the same lengths measures identical code three times, and on the Zen 4 the
+  spread across them below 241 bytes is median 2.7%, p90 6.6% and 31% at
+  worst. That is the error bar on any short-length number from a harness that
+  measures one variant after another rather than interleaving them, and it is
+  why bench/sweep walks the implementations inside each length.
   Force them with `setBackend` from a benchmark in the package
   (BenchmarkBackends is the pattern); purego needs its own binary
   (`-tags purego`). qemu is for correctness only: TCG timings mean nothing.
@@ -370,10 +376,37 @@ anything on top of that.
   a trivial tail pays 1-2 taken branches instead of up to 5. Five taken
   branches in a dozen instructions were most of a measured -19..-25% against
   cespare at 4-8 bytes on the Zen 4 (worst at n in {0,1,4,5,8,9,12,16}, the
-  sparse-bit lengths); with the skips, 4 B went 15.1 -> 12.1 cycles and
-  16-32 B to level-or-ahead. The arm64 kernel is byte-identical -- the M2
-  was already level at these lengths -- and turning the skips on there means
-  measuring first, then flipping TailMaskSkips.
+  sparse-bit lengths); with the skips, 4 B went 15.1 -> 12.1 cycles. They
+  still pay after the primes moved into the table: regenerating with
+  `TailMaskSkips` false, four relinked layouts each, leaves 4 B at -14% and
+  8 B at -10% against cespare where the skips hold them to -3% and -4%, and
+  the two are indistinguishable from 16 bytes up. The arm64 kernel is
+  byte-identical -- the M2 was already level at these lengths -- and turning
+  the skips on there was measured on the N2 and rejected (see the dual-kernel
+  bullet above).
+
+  Where that leaves amd64 XXH64 against cespare on the Zen 4: within a few
+  percent everywhere, with the sign set by binary layout rather than by the
+  kernels. Six relinked layouts fall into exactly two modes, and which one a
+  binary gets is decided by the benchmark closure's address mod 64 -- the
+  kernels themselves never moved (`sum64Scalar` sat at phase 32 in all six):
+
+  | bytes | closure at phase 0 | closure at phase 32 | mean |
+  |---|---|---|---|
+  | 4 | -6.9% | +0.6% | -3.2% |
+  | 8 | -6.7% | -1.5% | -4.1% |
+  | 16 | -0.5% | +0.4% | 0.0% |
+  | 32 | +3.0% | -5.3% | -1.2% |
+  | 64 | +1.3% | +3.4% | +2.4% |
+  | 128 | -2.8% | +4.0% | +0.6% |
+  | 256 | -1.2% | -1.1% | -1.2% |
+
+  So quote the mean of the two phases, or a band of +/-5%, and never a
+  single draw: three of these sizes change sign between the modes. Note this
+  disagrees with the 1.13x over 9..32 bytes recorded above from the compare
+  suite -- that range measures 1.00x here in both phases -- so one of the two
+  runs saw something the other did not, and it is worth a re-measurement
+  before either number is relied on.
 - **Benchmarking 32..256-byte XXH64 on Zen 4 is a caller-alignment lottery.**
   Both this kernel and cespare's swing ~0.65 ns (6 cycles) at those lengths
   with the *calling function's* address: mod-64 phase 32 is the fast mode,
@@ -381,8 +414,12 @@ anything on top of that.
   benchmark closure across relinked binaries. No counter shows it -- zero
   mispredicts, zero frontend-stall cycles, icache quiet -- and PCALIGN on the
   kernel itself does nothing, because the phase that matters is the
-  caller's. Single-binary comparisons at these lengths carry that +/-5-8%;
-  believe only medians over several relinked layouts.
+  caller's. It is bimodal, not a spread: six layouts produced exactly two
+  outcomes, one per phase, and several sizes change sign between them (the
+  table above). So a median over a handful of relinked layouts is only as
+  good as its phase balance -- sample both phases and mean them, or quote a
+  band. Single-binary comparisons at these lengths carry +/-5-8% and settle
+  nothing.
 - **Unroll two, odd block first.** The loop is chain-bound, not
   overhead-bound, but the N2 model prices the two loop instructions per block
   at ~11% of the fused form's 16-instruction block, and pairing halves them.
