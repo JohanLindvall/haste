@@ -593,11 +593,12 @@ anything on top of that.
   `Sum64String` reach it in one direct call and `Sum64Seed` still reaches the
   seeded kernel, so which one a caller gets is settled at compile time and
   costs no branch -- the same trade the parent package makes with `sum64NS`.
-  Measured on a Zen 4, every length 1..40, four relinked layouts: **+1.0 to
-  +1.9%, and every length sampled improved**, which is what removing one to
-  three instructions from a 2.6 ns hash looks like. It does not move the
-  standing against cespare/xxhash, because the gap there is guards rather
-  than instructions -- see below. Gated on `UnseededTwin`, off for arm64
+  The "+1.0 to +1.9% at every length" once recorded here was measured on a
+  build where `Sum64` still called the seeded kernel, so the twin was
+  unreachable and that number was rebuild drift -- its flatness across
+  lengths was the tell, since folding a seed can only pay where the hash is
+  short. See fc5d086 for the wiring that was missing. Re-measure before
+  quoting anything here. Gated on `UnseededTwin`, off for arm64
   until an arm64 is measured: three-operand adds make its lane setup cheaper
   already, so the twin has less to win there.
 - **The amd64 tail's combined-mask skips are generated but off.**
