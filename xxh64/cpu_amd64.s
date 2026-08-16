@@ -1,5 +1,5 @@
 // Hand-written, not generated: one instruction is all the prime-form choice
-// needs. The parent package has its own copy for the same reason -- xxhaste
+// needs. The parent package has its own copy for the same reason -- haste
 // imports nothing, and that includes itself.
 
 //go:build amd64 && !purego

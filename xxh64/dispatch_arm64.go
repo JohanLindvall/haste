@@ -5,7 +5,7 @@ package xxh64
 import (
 	"unsafe"
 
-	"github.com/JohanLindvall/xxhaste/internal/cpu"
+	"github.com/JohanLindvall/haste/internal/cpu"
 )
 
 // arm64 dispatch. The kernel has the lane round in two forms: the fused

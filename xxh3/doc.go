@@ -1,4 +1,4 @@
-// Package xxhaste implements XXH3, the 64-bit and 128-bit hash from xxHash
+// Package xxh3 implements XXH3, the 64-bit and 128-bit hash from xxHash
 // v0.8.3, with assembly kernels for SSE2, AVX2, AVX-512, NEON and SVE2.
 //
 // The output is bit-identical to the reference implementation on every path,
@@ -34,5 +34,5 @@
 // built and verified.
 //
 // The older 64-bit hash of the family, XXH64, is the subpackage
-// [github.com/JohanLindvall/xxhaste/xxh64], built the same way.
+// [github.com/JohanLindvall/haste/xxh64], built the same way.
 package xxh3

@@ -329,7 +329,7 @@ func (d *Digest) MarshalBinary() ([]byte, error) {
 	return b, nil
 }
 
-var errBadState = errors.New("xxhaste: invalid hash state")
+var errBadState = errors.New("xxh3: invalid hash state")
 
 // UnmarshalBinary implements encoding.BinaryUnmarshaler. It restores the
 // accumulator and buffer state; the seed or secret comes from the Digest being

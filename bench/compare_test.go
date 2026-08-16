@@ -1,10 +1,10 @@
-// Package bench compares xxhaste with the fastest XXH3 and XXH64
+// Package bench compares haste with the fastest XXH3 and XXH64
 // implementations available for Go.
 //
 // zeebo/xxh3 is the reference point for XXH3: it is the established fast
 // port, with hand-written AVX2 and SSE2 kernels on amd64 and pure Go
 // elsewhere. cespare/xxhash is XXH64, included both because it is what most
-// Go code actually calls today and because xxhaste/xxh64 computes the same
+// Go code actually calls today and because haste/xxh64 computes the same
 // hash. rapidhash is a third algorithm again -- no vector unit at all, just
 // folded 64x64 multiplies -- included because it is what the comparison is
 // for: knowing which shape of hash wins where.
@@ -18,9 +18,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/JohanLindvall/xxhaste/rapidhash"
-	"github.com/JohanLindvall/xxhaste/xxh3"
-	"github.com/JohanLindvall/xxhaste/xxh64"
+	"github.com/JohanLindvall/haste/rapidhash"
+	"github.com/JohanLindvall/haste/xxh3"
+	"github.com/JohanLindvall/haste/xxh64"
 	cespare "github.com/cespare/xxhash/v2"
 	zeebo "github.com/zeebo/xxh3"
 )
@@ -126,7 +126,7 @@ func TestRapidhashSameAsC(t *testing.T) {
 func BenchmarkCompare64(b *testing.B) {
 	for _, n := range sizes {
 		buf := buffer(n)
-		b.Run(fmt.Sprintf("%d/xxhaste", n), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d/haste-xxh3", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
 				sink64 = xxh3.Sum64(buf)
@@ -138,7 +138,7 @@ func BenchmarkCompare64(b *testing.B) {
 				sink64 = zeebo.Hash(buf)
 			}
 		})
-		b.Run(fmt.Sprintf("%d/xxhaste-xxh64", n), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d/haste-xxh64", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
 				sink64 = xxh64.Sum64(buf)
@@ -150,7 +150,7 @@ func BenchmarkCompare64(b *testing.B) {
 				sink64 = cespare.Sum64(buf)
 			}
 		})
-		b.Run(fmt.Sprintf("%d/rapidhash", n), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d/haste-rapid", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
 				sink64 = rapidhash.Sum64(buf)
@@ -184,7 +184,7 @@ func BenchmarkCompare64(b *testing.B) {
 func BenchmarkCompare128(b *testing.B) {
 	for _, n := range sizes {
 		buf := buffer(n)
-		b.Run(fmt.Sprintf("%d/xxhaste", n), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d/haste-xxh3", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
 				sink128 = xxh3.Sum128(buf)
@@ -212,7 +212,7 @@ func BenchmarkCompare128(b *testing.B) {
 func BenchmarkCompareSeed(b *testing.B) {
 	for _, n := range sizes {
 		buf := buffer(n)
-		b.Run(fmt.Sprintf("%d/xxhaste", n), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d/haste-xxh3", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
 				sink64 = xxh3.Sum64Seed(buf, 42)
@@ -224,7 +224,7 @@ func BenchmarkCompareSeed(b *testing.B) {
 				sink64 = zeebo.HashSeed(buf, 42)
 			}
 		})
-		b.Run(fmt.Sprintf("%d/xxhaste-xxh64", n), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d/haste-xxh64", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
 				sink64 = xxh64.Sum64Seed(buf, 42)
@@ -241,7 +241,7 @@ func BenchmarkCompareSeed(b *testing.B) {
 				sink64 = d.Sum64()
 			}
 		})
-		b.Run(fmt.Sprintf("%d/rapidhash", n), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d/haste-rapid", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
 				sink64 = rapidhash.Sum64Seed(buf, 42)
@@ -278,7 +278,7 @@ func BenchmarkCompareStreamChunk(b *testing.B) {
 	const n = 1 << 20
 	buf := buffer(n)
 	for _, chunk := range []int{16, 64, 256, 1024, 4096, 16384, 65536} {
-		b.Run(fmt.Sprintf("%d/xxhaste", chunk), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d/haste-xxh3", chunk), func(b *testing.B) {
 			b.SetBytes(n)
 			d := xxh3.New()
 			for i := 0; i < b.N; i++ {
@@ -300,7 +300,7 @@ func BenchmarkCompareStreamChunk(b *testing.B) {
 				sink64 = d.Sum64()
 			}
 		})
-		b.Run(fmt.Sprintf("%d/xxhaste-xxh64", chunk), func(b *testing.B) {
+		b.Run(fmt.Sprintf("%d/haste-xxh64", chunk), func(b *testing.B) {
 			b.SetBytes(n)
 			d := xxh64.New()
 			for i := 0; i < b.N; i++ {
@@ -342,7 +342,7 @@ func BenchmarkCompareStreamChunk(b *testing.B) {
 func BenchmarkCompareStream(b *testing.B) {
 	const n = 1 << 20
 	buf := buffer(n)
-	b.Run("xxhaste", func(b *testing.B) {
+	b.Run("haste-xxh3", func(b *testing.B) {
 		b.SetBytes(n)
 		d := xxh3.New()
 		for i := 0; i < b.N; i++ {
@@ -364,7 +364,7 @@ func BenchmarkCompareStream(b *testing.B) {
 			sink64 = d.Sum64()
 		}
 	})
-	b.Run("xxhaste-xxh64", func(b *testing.B) {
+	b.Run("haste-xxh64", func(b *testing.B) {
 		b.SetBytes(n)
 		d := xxh64.New()
 		for i := 0; i < b.N; i++ {

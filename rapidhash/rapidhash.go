@@ -16,7 +16,7 @@
 // [Sum64SeedString] key the hash with a seed at no extra cost. There is no
 // streaming form: rapidhash reads the tail of its input before it has
 // finished with the head, and needs the length before it starts, so it cannot
-// be fed in pieces. Use the parent package's [github.com/JohanLindvall/xxhaste.Digest]
+// be fed in pieces. Use the parent package's [github.com/JohanLindvall/haste/xxh3.Digest]
 // when input arrives incrementally.
 //
 // # Backends

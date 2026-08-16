@@ -1,30 +1,34 @@
-# xxhaste
+# haste
 
-[![CI](https://github.com/JohanLindvall/xxhaste/actions/workflows/ci.yml/badge.svg)](https://github.com/JohanLindvall/xxhaste/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/JohanLindvall/xxhaste.svg)](https://pkg.go.dev/github.com/JohanLindvall/xxhaste)
+[![CI](https://github.com/JohanLindvall/haste/actions/workflows/ci.yml/badge.svg)](https://github.com/JohanLindvall/haste/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/JohanLindvall/haste.svg)](https://pkg.go.dev/github.com/JohanLindvall/haste)
 
-XXH3 for Go — the 64-bit and 128-bit hash from [xxHash](https://github.com/Cyan4973/xxHash)
-v0.8.3, with generated assembly kernels for **SSE2, AVX2, AVX-512, NEON and SVE2**.
-The classic **XXH64** is the subpackage `xxh64`, built the same way (see
-[XXH64](#xxh64) below).
+Three fast non-cryptographic hashes for Go, one package each, with assembly
+kernels that are generated rather than written:
 
-Output is bit-identical to the reference C implementation on every path,
-including seeds and custom secrets. No dependencies outside the standard
-library.
+| package | hash | kernels |
+|---|---|---|
+| `xxh3` | XXH3, 64- and 128-bit, one-shot and streaming | SSE2, AVX2, AVX-512, NEON, SVE2 |
+| [`xxh64`](#xxh64) | XXH64, the older scalar member of the family | amd64, arm64 |
+| [`rapidhash`](#rapidhash) | rapidhash, wyhash's successor | portable so far |
+
+Each is bit-identical to its reference C implementation on every path — seeds
+and custom secrets included — and is checked against vectors taken from that
+code. No dependencies outside the standard library.
 
 ```
-go get github.com/JohanLindvall/xxhaste
+go get github.com/JohanLindvall/haste
 ```
 
-The module holds three hashes, one package each: `xxh3` (this README's
-subject), `xxh64`, and `rapidhash`. XXH3 lived at the module root until it
-moved to `xxh3/`; an import of the root now needs `/xxh3` appended, and
-nothing else changes.
+Most of this README is about `xxh3`, which is the one to reach for unless you
+need to match something. It was at the module root until it moved to `xxh3/`:
+an import of the root now needs `/xxh3` appended, and the identifiers are
+unchanged.
 
 ## Use
 
 ```go
-import "github.com/JohanLindvall/xxhaste/xxh3"
+import "github.com/JohanLindvall/haste/xxh3"
 
 h := xxh3.Sum64(data)              // 64-bit
 h := xxh3.Sum64String(key)         // no copy, no allocation
@@ -69,7 +73,7 @@ algorithm, included for scale). Nanoseconds per hash, lower is better.
 
 Azure Cobalt 100 (Neoverse N2, 3.4 GHz), Go 1.26:
 
-| size | xxhaste | zeebo/xxh3 | cespare (XXH64) |
+| size | haste | zeebo/xxh3 | cespare (XXH64) |
 |-----:|--------:|-----------:|----------------:|
 | 4 | 3.04 | 2.97 | 3.28 |
 | 8 | 3.04 | 2.97 | 3.50 |
@@ -131,7 +135,7 @@ Neoverse N2 the split kernel is a further 40%.
 Ryzen 7 8840HS (Zen 4), Go 1.26, AVX-512. Same benchmark, same three
 implementations:
 
-| size | xxhaste | zeebo/xxh3 | cespare (XXH64) |
+| size | haste | zeebo/xxh3 | cespare (XXH64) |
 |-----:|--------:|-----------:|----------------:|
 | 4 | **2.19** | 2.39 | 2.46 |
 | 8 | **2.17** | 2.39 | 2.46 |
@@ -155,7 +159,7 @@ port at every size except 16 bytes, where the two are within a percent.
 The same benchmark on a Core Ultra 9 185H (Redwood Cove P-core, Meteor Lake),
 which has **no AVX-512** and therefore exercises the AVX2 kernel:
 
-| size | xxhaste | zeebo/xxh3 | cespare (XXH64) |
+| size | haste | zeebo/xxh3 | cespare (XXH64) |
 |-----:|--------:|-----------:|----------------:|
 | 4 | **1.61** | 1.77 | 1.91 |
 | 8 | **1.69** | 1.77 | 2.02 |
@@ -218,7 +222,7 @@ and what most Go code that says "xxhash" computes today. Its API mirrors
 cespare/xxhash, so switching is an import path:
 
 ```go
-import "github.com/JohanLindvall/xxhaste/xxh64"
+import "github.com/JohanLindvall/haste/xxh64"
 
 h := xxh64.Sum64(data)            // also Sum64String, Sum64Seed, Sum64SeedString
 d := xxh64.New()                  // hash.Hash64; NewSeed(seed) for a keyed one
@@ -271,6 +275,31 @@ registers instead — measured at both of the two code-alignment phases the
 linker can produce, which agree to within 0.6 points. See CLAUDE.md; the
 effect is reproducible, absent on Zen 4, and unexplained, which is worth
 reading before touching that prologue.
+
+## rapidhash
+
+[rapidhash](https://github.com/Nicoshev/rapidhash) is a third algorithm again,
+and the reason it is here is that it is not shaped like the other two: no
+vector unit at all, just the low and high halves of 64x64 multiplies folded
+together, over seven independent lanes. It wins where the multiplier is idle
+and the vector pipes are busy or absent, which is a different machine from the
+one XXH3 is tuned for.
+
+```go
+import "github.com/JohanLindvall/haste/rapidhash"
+
+h := rapidhash.Sum64(data)
+h := rapidhash.Sum64Seed(data, seed)
+```
+
+There is no streaming form. rapidhash reads the tail of its input before it has
+finished with the head and needs the length before it starts, so there is
+nothing to feed in pieces; use `xxh3.Digest` when input arrives incrementally.
+
+The implementation is portable Go so far — assembly is what its only mixing
+primitive waits on, a 64x64 multiply keeping both halves, which the generator
+does not yet emit. It is bit-identical to the reference C, over 640 vectors
+generated from it by `ref/rapidgen.c`.
 
 ## Backends
 

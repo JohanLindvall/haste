@@ -87,7 +87,7 @@ const MinSecretSize = secretSizeMin
 
 func checkSecret(secret []byte) {
 	if len(secret) < MinSecretSize {
-		panic("xxhaste: secret shorter than MinSecretSize")
+		panic("xxh3: secret shorter than MinSecretSize")
 	}
 }
 

@@ -1,4 +1,4 @@
-// Package asmgen generates the assembly kernels for xxhaste.
+// Package asmgen generates the assembly kernels for haste.
 //
 // A backend is not written as assembly text. It is written as calls on a
 // Builder, and each call records two things: the instruction in GNU assembler

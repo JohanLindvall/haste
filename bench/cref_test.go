@@ -5,8 +5,8 @@ package bench
 import (
 	"testing"
 
-	"github.com/JohanLindvall/xxhaste/xxh3"
-	"github.com/JohanLindvall/xxhaste/xxh64"
+	"github.com/JohanLindvall/haste/xxh3"
+	"github.com/JohanLindvall/haste/xxh64"
 )
 
 // TestSameAsC closes the loop the vectors open: not just vectors taken from

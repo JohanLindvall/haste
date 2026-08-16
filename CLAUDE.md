@@ -1,6 +1,6 @@
 # Working in this repository
 
-xxhaste is a module of three hashes, each its own package, whose assembly
+haste is a module of three hashes, each its own package, whose assembly
 kernels are generated: `xxh3/` (XXH3, 64- and 128-bit), `xxh64/` (XXH64), and
 `rapidhash/` (rapidhash, portable so far). The module root holds no code. Read this before changing anything
 under `internal/asmgen` or any `.s` file.
@@ -9,7 +9,7 @@ under `internal/asmgen` or any `.s` file.
 
 | path | what it is |
 |---|---|
-| `xxh3/xxhaste.go` | public API; `sum64`/`sum128` hold the 0..16-byte cases inline |
+| `xxh3/xxh3.go` | public API; `sum64`/`sum128` hold the 0..16-byte cases inline |
 | `xxh3/fixed.go` | call-free entry points for compile-time-known sizes |
 | `xxh3/generic.go` | portable implementation: mid-size ladders, accumulator loop, convergence |
 | `xxh3/digest.go` | streaming `Digest`; same output as `XXH3_update`, different staging |
@@ -170,10 +170,24 @@ Two jobs assert something about themselves rather than passing vacuously. The
 cross job exists because `internal/asmgen` is imported by `asmsim_test.go`, so
 a generator-only mistake takes the whole suite down on an architecture nobody
 runs. The generate job fails if a backend *skipped* for want of a
-cross-assembler, because a skip there is indistinguishable from a pass. In the
-same spirit the fuzz job discovers its targets with `go test -list` across
-every package instead of naming them: a hand-kept list stopped covering
-`xxh64` the day it landed.
+cross-assembler, because a skip there is indistinguishable from a pass.
+
+Nothing in the workflow names a package or a fuzz target. The fuzz job asks
+`go test -list`, and the cross and qemu jobs ask
+`go list -f '{{if .TestGoFiles}}...'`; all three fail if discovery returns
+nothing. Every one of those was a hand-kept list first, and each stopped
+covering a package the day one arrived -- `xxh64` for the fuzz job, `rapidhash`
+for the other two.
+
+### Repository metadata
+
+The GitHub description, homepage and topics are part of how the module is
+found and drift from it silently. As of the rename they are: the description
+naming all three hashes and the generated-and-simulated kernels, the homepage
+pointing at pkg.go.dev, and 19 of the 20 permitted topics -- the three hash
+names, `wyhash` because rapidhash succeeds it, `code-generation` because that
+is this repository's unusual property, the ISA and architecture names, and the
+Go ones. `gh repo edit` is how they change.
 
 ### Tagging
 
@@ -298,8 +312,8 @@ simply disappear.
   below are what it used to cost, and are kept because they are the reason a
   sweep run from before that change cannot be compared with one after it --
   re-run it rather than trusting old output. On a Redwood Cove the harness
-  cost xxhaste 0.65 ns per hash against zeebo/xxh3's 0.15, enough to report
-  xxhaste 9% behind over 33..64 bytes where a direct call has it 6% ahead.
+  cost haste 0.65 ns per hash against zeebo/xxh3's 0.15, enough to report
+  haste 9% behind over 33..64 bytes where a direct call has it 6% ahead.
   Both measured asymmetries were in XXH64 at short lengths:
   - Our entry points are built to inline, so a direct call reaches the
     kernel in one call while a call through a function value takes two --
@@ -1337,7 +1351,7 @@ core barring a wider one.
   this one.
 - **XXH3-128 of an empty input costs 9.5 cycles against zeebo's 6.0**, 62
   instructions against 38, because zeebo compiles the default secret's
-  bitflips in as constants and xxhaste loads them through the secret pointer.
+  bitflips in as constants and haste loads them through the secret pointer.
   Fixing it needs the specialization that was already measured and rejected
   above -- the guard compares cost more than the L1-hot loads they remove --
   so it stands.

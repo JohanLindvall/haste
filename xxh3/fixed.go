@@ -68,7 +68,7 @@ func Sum64Uint128Seed(lo, hi, seed uint64) uint64 {
 // little-endian bytes followed by hi's. For a UUID or any other fixed
 // sixteen-byte array, read the halves out first, which costs two loads:
 //
-//	h := xxhaste.Sum64Uint128(
+//	h := xxh3.Sum64Uint128(
 //		binary.LittleEndian.Uint64(id[:8]),
 //		binary.LittleEndian.Uint64(id[8:]))
 //

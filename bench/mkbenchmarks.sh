@@ -12,7 +12,7 @@ set -euo pipefail
 dir=${1:?usage: mkbenchmarks.sh <artifact-dir>}
 sha=${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}
 run=${GITHUB_RUN_ID:-}
-repo=${GITHUB_REPOSITORY:-JohanLindvall/xxhaste}
+repo=${GITHUB_REPOSITORY:-JohanLindvall/haste}
 when=${BENCH_DATE:-$(date -u +%Y-%m-%d)}
 
 cat <<EOF

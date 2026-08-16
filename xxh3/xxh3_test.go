@@ -405,11 +405,11 @@ func TestNoAlloc(t *testing.T) {
 var sink64 uint64
 
 func ExampleSum64() {
-	fmt.Printf("%016x\n", Sum64([]byte("xxhaste")))
-	// Output: 4fbd86e33e6237c6
+	fmt.Printf("%016x\n", Sum64([]byte("haste")))
+	// Output: 29a60a4033936c78
 }
 
 func ExampleSum128() {
-	fmt.Printf("%x\n", Sum128([]byte("xxhaste")).Bytes())
-	// Output: a67e18b957d9475c2122a9673d1489fa
+	fmt.Printf("%x\n", Sum128([]byte("haste")).Bytes())
+	// Output: 26b6ef3229e32bf9476854cadb11bc32
 }

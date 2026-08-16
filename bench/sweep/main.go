@@ -9,9 +9,9 @@
 //
 // Each implementation owns its whole iteration loop, so the hash inside it is
 // a *direct* call that the entry point can inline into. Timing one call at a
-// time through a func value instead was worth 0.65ns to xxhaste and 0.15ns to
+// time through a func value instead was worth 0.65ns to haste and 0.15ns to
 // zeebo/xxh3 on a Redwood Cove, which is enough to invert the comparison: it
-// reported xxhaste 9% behind over 33..64 bytes where a direct call has it 6%
+// reported haste 9% behind over 33..64 bytes where a direct call has it 6%
 // ahead. An indirection is exactly what these entry points are shaped to
 // avoid, so measuring through one measures the wrong thing.
 package main
@@ -25,8 +25,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JohanLindvall/xxhaste/xxh3"
-	"github.com/JohanLindvall/xxhaste/xxh64"
+	"github.com/JohanLindvall/haste/xxh3"
+	"github.com/JohanLindvall/haste/xxh64"
 	cespare "github.com/cespare/xxhash/v2"
 	zeebo "github.com/zeebo/xxh3"
 )
@@ -120,7 +120,7 @@ func main() {
 		name string
 		f    runner
 	}{
-		{"xxhaste", func(b []byte, n int) uint64 {
+		{"haste-xxh3", func(b []byte, n int) uint64 {
 			var s uint64
 			for i := 0; i < n; i++ {
 				s += xxh3.Sum64(b)
@@ -134,7 +134,7 @@ func main() {
 			}
 			return s
 		}},
-		{"xxhaste64", func(b []byte, n int) uint64 {
+		{"haste-xxh64", func(b []byte, n int) uint64 {
 			var s uint64
 			for i := 0; i < n; i++ {
 				s += xxh64.Sum64(b)
@@ -148,7 +148,7 @@ func main() {
 			}
 			return s
 		}},
-		{"xxhaste128", func(b []byte, n int) uint64 {
+		{"haste-xxh3-128", func(b []byte, n int) uint64 {
 			var s uint64
 			for i := 0; i < n; i++ {
 				s += xxh3.Sum128(b).Lo

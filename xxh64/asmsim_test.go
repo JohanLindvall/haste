@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/JohanLindvall/xxhaste/internal/asmgen"
+	"github.com/JohanLindvall/haste/internal/asmgen"
 )
 
 // The generated kernels are checked here by executing them through the

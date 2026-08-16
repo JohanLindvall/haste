@@ -14,7 +14,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/JohanLindvall/xxhaste/internal/asmgen"
+	"github.com/JohanLindvall/haste/internal/asmgen"
 )
 
 func main() {

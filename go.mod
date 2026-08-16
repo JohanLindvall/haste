@@ -1,3 +1,3 @@
-module github.com/JohanLindvall/xxhaste
+module github.com/JohanLindvall/haste
 
 go 1.21

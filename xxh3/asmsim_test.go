@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/JohanLindvall/xxhaste/internal/asmgen"
+	"github.com/JohanLindvall/haste/internal/asmgen"
 )
 
 // The generated kernels are checked here by executing them, instruction by

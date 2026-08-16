@@ -7,7 +7,7 @@ import (
 	"os"
 	_ "unsafe" // for go:linkname
 
-	"github.com/JohanLindvall/xxhaste/internal/cpu"
+	"github.com/JohanLindvall/haste/internal/cpu"
 )
 
 // SVE2 detection on Linux.
