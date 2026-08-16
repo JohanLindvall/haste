@@ -1463,8 +1463,18 @@ they do not follow the change onto other hardware.
   it -- the round overwrites it with the result -- so the second operand can
   be built in the lane itself and its load folded into that xor, which drops
   `mov 8(in), r14; xor lane, r14` to `xor 8(in), lane`.
-  Measured on a Zen 4: **+4.8% over 113..224 bytes, +7.9% over 225..1K,
-  +6.8% from 2 KiB up**, and +11.7% at 128 bytes.
+  Measured on a Zen 4 as medians over three relinked layouts per side:
+  **+4.2% over 113..224 bytes, +3.6% over 225..1K, +5.2% from 2 KiB up**,
+  with 0..112 unchanged (+0.8% and +0.2%, which is noise). A single pair of
+  builds read +6.8 to +11.7% and a single 17..112 draw read -3.8%; both are
+  the layout lottery, and shortening the loop moves every byte after it, so
+  this one wanted relinking before it was believed.
+
+  After it the loop is at 1.78 cycles per multiply against the 1.57 this
+  core gives a multiply in isolation, so about 13% is left and it is not
+  slots: 50.8 macro-ops per 112-byte round issue at 4.04 per cycle against a
+  6-wide renamer. What is left looks like multiplier port pressure with 21
+  loads competing, and there is no instruction left in the round to remove.
   It applies to the block loop only. The 17..112 ladder runs the same shape
   but its rounds feed each other, and there the fold costs 2-6%: the load it
   absorbs used to issue early, off the critical path, and folding it into
