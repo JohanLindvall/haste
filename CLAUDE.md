@@ -340,11 +340,16 @@ anything on top of that.
     Neoverse case at all, because Linux runs on Apple cores too -- Asahi is
     exactly why the MIDR check exists -- and forcing it there would trade
     0.18ns for the 31% the split form is worth on those cores.
-  - Emitting the cold form out of line, after the function's tail, is the one
-    clean option: it removes the taken branch from the default path. Its
-    ceiling is half of 0.18ns, it needs deferred emission in a Builder that
-    is linear by design, and the cheap proxy for it (the branch inversion
-    above) measured neutral.
+  - Emitting the cold form out of line is the one clean option, and it **was
+    implemented and measured: neutral, on the branch `xxh64-out-of-line-form`.**
+    `emitBlockLoops` returns a function that emits the other form where the
+    caller has cold code, and `emitSum64` places it just past the jump the
+    long path already makes over the short one -- so the default path falls
+    straight through and pays no taken branch at all, which the naive inline
+    arrangement cannot do. Within one binary Sum64 is identical to three
+    decimals at 31, 32 and 64 bytes, and the sweep leaves 33 and 37 where
+    they were. That is the ceiling this note predicted, half of 0.18ns, under
+    the noise floor. The branch is kept as the worked answer, not merged.
 - **The amd64 tail opens with combined-mask skips** (`TailMaskSkips` in the
   generator): test n against 31, 24, 7 and 3 ahead of the per-bit guards, so
   a trivial tail pays 1-2 taken branches instead of up to 5. Five taken
