@@ -203,6 +203,10 @@ func (x *x86Rapid) SeedMix() {
 // secret word, where the value it always computes is kept.
 func (x *x86Rapid) SeedConst() { x.movSec(x.Seed(), 8) }
 
+// HoldSecret declines: this kernel already arranges its own secret registers
+// around mulx, and has none to spare beyond that.
+func (x *x86Rapid) HoldSecret(...int) {}
+
 func (x *x86Rapid) Round(lane GPR, off, slot int) {
 	// lane = mix(load(in+off) ^ secret[slot], load(in+off+8) ^ lane)
 	//

@@ -56,6 +56,11 @@ type RapidArch interface {
 	// the whole shape of the loop that uses it.
 	Round(lane GPR, off, slot int)
 
+	// HoldSecret keeps the named secret words in registers for the rest of
+	// the kernel, where the backend has registers to spare. Rounds emitted
+	// after it read those instead of the table.
+	HoldSecret(slots ...int)
+
 	// DualMul reports whether the backend has a second multiply form worth
 	// emitting the block loop twice for. On x86 that is BMI2's mulx, which
 	// saves the move mulq's fixed RDX:RAX destination costs -- one
@@ -189,6 +194,11 @@ func emitRapidSum64(a RapidArch, seeded bool) {
 
 	// ---- 17 and up ---------------------------------------------------
 	b.Label(blocks)
+
+	// The two words the ladder is keyed by, held for every path that can
+	// reach a round. Not before the length branch: a 0..16 hash runs none,
+	// and measured slower when it paid for the load.
+	a.HoldSecret(1, 2)
 	a.BranchI(n, 112, LE, tail)
 
 	// lane names the register a block-loop round accumulates into: lane 0 is
@@ -206,6 +216,11 @@ func emitRapidSum64(a RapidArch, seeded bool) {
 	// do. That is the reference's shape, and what guarantees the ladder
 	// below always has something left to read: it exits with i > 16.
 	a.SpreadLanes()
+
+	// And the rest of the words a block-loop round is keyed by: seven loads
+	// an iteration, of words that never change, against a loop whose work is
+	// the multiplier.
+	a.HoldSecret(0, 3, 4, 5, 6)
 	// Allocated in this order so that a backend with one multiply form
 	// regenerates byte for byte, comments included: the alternative loop's
 	// label comes after these and only exists when there is one.

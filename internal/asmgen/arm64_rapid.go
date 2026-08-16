@@ -21,6 +21,9 @@ import "fmt"
 // movk -- against one ldr from a line the kernel is already touching.
 
 type arm64Rapid struct {
+	// held[slot] says that secret word is in a register; see HoldSecret.
+	held [8]bool
+
 	*arm64
 }
 
@@ -184,12 +187,41 @@ func (a *arm64Rapid) SeedMix() {
 // SeedConst is SeedMix with the seed known to be zero; see the x86 face.
 func (a *arm64Rapid) SeedConst() { a.ldrSecret(a.Seed(), 8) }
 
+// secReg is where slot's secret word lives once HoldSecret has loaded it.
+// x14-x17 and x19-x21 are untouched by everything else this kernel does.
+func (a *arm64Rapid) secReg(slot int) GPR {
+	return []GPR{14, 15, 16, 17, 19, 20, 21}[slot]
+}
+
+// HoldSecret loads the named secret words into registers for the rest of the
+// kernel, pairing adjacent slots into one instruction. A round is one
+// multiply and was one load of a word that never changes; arm64 has twelve
+// registers spare here, so it stops being a load at all.
+func (a *arm64Rapid) HoldSecret(slots ...int) {
+	for i := 0; i < len(slots); {
+		if i+1 < len(slots) && slots[i+1] == slots[i]+1 {
+			a.ldp(a.secReg(slots[i]), a.secReg(slots[i]+1), a.TableGPR(), 8*slots[i])
+			i += 2
+			continue
+		}
+		a.ldrSecret(a.secReg(slots[i]), slots[i])
+		i++
+	}
+	for _, s := range slots {
+		a.held[s] = true
+	}
+}
+
 func (a *arm64Rapid) Round(lane GPR, off, slot int) {
 	// lane = mix(load(in+off) ^ secret[slot], load(in+off+8) ^ lane)
 	w0, w1 := a.tmp(), a.A()
 	a.ldp(w0, w1, a.In(), off)
 	s := a.B()
-	a.ldrSecret(s, slot)
+	if a.held[slot] {
+		s = a.secReg(slot)
+	} else {
+		a.ldrSecret(s, slot)
+	}
 	a.eor(w0, w0, s)
 	a.eor(w1, w1, lane)
 	a.mix(lane, w0, w1)
