@@ -60,12 +60,12 @@ var primes = [7]uint64{prime1, prime2, prime3, prime4, prime5}
 
 // Sum64 returns the XXH64 hash of b.
 func Sum64(b []byte) uint64 {
-	return sum64(unsafe.Pointer(unsafe.SliceData(b)), len(b), 0)
+	return sum64NS(unsafe.Pointer(unsafe.SliceData(b)), len(b))
 }
 
 // Sum64String returns the XXH64 hash of s, without copying it.
 func Sum64String(s string) uint64 {
-	return sum64(unsafe.Pointer(unsafe.StringData(s)), len(s), 0)
+	return sum64NS(unsafe.Pointer(unsafe.StringData(s)), len(s))
 }
 
 // Sum64Seed returns the XXH64 hash of b under seed. A seed of zero gives the
