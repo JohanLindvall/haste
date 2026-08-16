@@ -689,6 +689,54 @@ on a Redwood Cove:
   further down and this one do not disagree -- that note measured `mulx`
   alone, on a core where it is slower, and the selection is gated to Intel.
 
+**On arm64 the loop is bound by the multiplier, and it is finished.** x86
+gets both halves of a product from one `mulq`; arm64 needs `mul` and `umulh`,
+so the same 224-byte iteration issues 28 multiplies rather than 14, and an
+Apple M2 retires exactly two per cycle -- probed at 16 independent `mul`, 16
+independent `umulh` and 8 mixed pairs, all 2.00 per cycle, so there is no
+second multiply port to find. That puts a hard floor of 14 cycles under the
+iteration. Three numbers, all on an M2 P-core:
+
+| what | cycles per 7 rounds |
+|---|---|
+| 14 multiplies and nothing else | 7.00 |
+| 7 whole rounds, operands in registers, no loads | 7.78 |
+| the shipped loop, loads, secret and loop overhead | 7.87 |
+
+So the loop runs within 1% of the same arithmetic with every load removed,
+and 11% above the bare multiplies. That 11% is the three xors each round
+wraps its multiply in -- not the loads, not the instruction count, and not
+anything a kernel may change: they are the hash. Removing the fourteen
+secret loads per iteration was worth 2-5% at 100..512 bytes, where the loop
+runs once or twice and the hoist is amortized against less, and **nothing at
+all from 16 KiB up**, which is what the table above predicts. Do not spend
+more on the arm64 block loop; the x86 levers in the bullets above -- `mulx`,
+the paired body, the held secret -- exist because x86 is not at this bound.
+
+**Where arm64 does have slack is the ladder, and it is the hash's shape.**
+At 224 bytes the kernel runs one group of seven lanes and then six ladder
+rungs; at 225 it runs two groups of seven and no rungs. The longer input is
+faster -- 21.6 cycles against 26.1 on an M2 -- because the seven lanes are
+independent and the six rungs are one chain through the seed, five cycles
+each. Nothing can be done about that inside the wire format, and the
+inversion is worth knowing before someone chases the 224-byte number.
+
+Two things tried against those bounds and measured worse, both on an M2:
+
+- **Sourcing the first group's lanes from the seed** instead of spreading the
+  seed into six registers first. It is correct -- every lane holds the seed
+  at that point, and lane 0 has to be emitted last because it *is* the seed
+  register -- and it removes six copies from the 113..224 path. It also
+  needs its own copy of the group, which lands past 500 bytes of loop code
+  and costs a taken branch there and back: 113..224 measured 4.5-5.2%
+  *slower*. The copies were cheaper than the layout.
+- **Letting the short path fall into the fold** rather than jump to it, by
+  emitting a return in the middle of the body. It does not work at all, for
+  a reason worth remembering: an ABI0 kernel returns through a stack slot
+  written by the Go-assembly epilogue that `build.go` appends *after* the
+  body, so a return inside the body skips the store and hands the caller
+  whatever the slot held. The tests reported a pointer.
+
 The measurements that decided its shape, each the mean of both alignment
 phases, medians of nine, against the tree without it:
 
