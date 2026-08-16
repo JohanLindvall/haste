@@ -178,3 +178,14 @@ func (a *arm64Scalar) BranchZero(r GPR, label string) {
 		}
 	}, "cbz %s, %s", a.GPRName(r), label)
 }
+
+func (a *arm64Scalar) BranchMaskClear(r GPR, mask int64, label string) {
+	a.b.emit(func(m *Machine) { m.setCmp(m.R[r]&uint64(mask), 0) },
+		"tst %s, #%d", a.GPRName(r), uint64(mask))
+	a.branch(EQ, label)
+}
+
+// TailMaskSkips is off here, keeping the kernel byte-identical: the M2 was
+// already level with cespare/xxhash at these lengths, and the skips have not
+// been measured on an arm64 core. See the x86 face for what they buy there.
+func (a *arm64Scalar) TailMaskSkips() bool { return false }

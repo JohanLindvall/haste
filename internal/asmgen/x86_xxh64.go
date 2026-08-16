@@ -197,6 +197,16 @@ func (x *x86Scalar) BranchBitClear(r GPR, bit uint, label string) {
 	x.branch(EQ, label)
 }
 
+func (x *x86Scalar) BranchMaskClear(r GPR, mask int64, label string) {
+	x.b.emit(func(m *Machine) { m.setCmp(m.R[r]&uint64(mask), 0) },
+		"testq $%d, %s", uint64(mask), x.GPRName(r))
+	x.branch(EQ, label)
+}
+
+// TailMaskSkips is on here: five taken branches in the dozen instructions of
+// a short hash were most of the gap to cespare/xxhash on a Zen 4.
+func (x *x86Scalar) TailMaskSkips() bool { return true }
+
 func (x *x86Scalar) BranchZero(r GPR, label string) {
 	x.b.emit(func(m *Machine) { m.setCmp(m.R[r], 0) },
 		"testq %s, %s", x.GPRName(r), x.GPRName(r))

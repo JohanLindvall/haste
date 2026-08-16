@@ -141,8 +141,18 @@ type XXH64Arch interface {
 	// BranchBitClear branches if bit b of r is clear: one instruction on
 	// arm64 (tbz), two on x86.
 	BranchBitClear(r GPR, b uint, label string)
+	// BranchMaskClear branches if r & mask is zero: test and jz on x86, tst
+	// and b.eq on arm64.
+	BranchMaskClear(r GPR, mask int64, label string)
 	// BranchZero branches if r is zero: cbz on arm64, test and jz on x86.
 	BranchZero(r GPR, label string)
+
+	// TailMaskSkips reports whether emitTail prefixes the per-bit guards
+	// with combined-mask skips. On for x86, where the win was measured; off
+	// for arm64, whose short hashes were already level with hand-written
+	// assembly on an M2, and whose kernel stays byte-identical until the
+	// skips are measured on one.
+	TailMaskSkips() bool
 }
 
 // EmitXXH64 emits the two kernels into one instruction stream per function.
@@ -279,6 +289,23 @@ func emitTail(a XXH64Arch, h, p, n GPR) {
 	}
 	t8, t4, t2, t1, fin := b.NewLabel("t8"), b.NewLabel("t4"), b.NewLabel("t2"), b.NewLabel("t1"), b.NewLabel("fin")
 
+	// The combined-mask skips ahead of the per-bit guards, where the backend
+	// wants them. A trivial tail then pays one or two taken branches instead
+	// of up to five: a stripe-multiple n goes straight to the finish, a tail
+	// under eight bytes straight to the word-or-less steps, and a tail of
+	// whole words straight out. Each skip costs the lengths that do run the
+	// steps one not-taken test, which fuses with its jump. Worth 2-4 cycles
+	// of a 4..16-byte hash on a Zen 4, where five taken branches in a dozen
+	// instructions were most of the gap to cespare/xxhash.
+	// A tail that skipped the word steps lands past the whole-words test
+	// too: its n & 7 is all of n, and the n == 0 case already left through
+	// the first skip.
+	t4w := t4
+	if a.TailMaskSkips() {
+		t4w = b.NewLabel("t4w")
+		a.BranchMaskClear(n, 31, fin)
+		a.BranchMaskClear(n, 24, t4w)
+	}
 	a.BranchBitClear(n, 4, t8)
 	step8()
 	step8()
@@ -286,6 +313,10 @@ func emitTail(a XXH64Arch, h, p, n GPR) {
 	a.BranchBitClear(n, 3, t4)
 	step8()
 	b.Label(t4)
+	if a.TailMaskSkips() {
+		a.BranchMaskClear(n, 7, fin)
+		b.Label(t4w)
+	}
 	a.BranchBitClear(n, 2, t2)
 	// h = rol(h ^ word32*P1, 23) * P2 + P3
 	a.Load32Adv(x, p, 4)
@@ -294,6 +325,9 @@ func emitTail(a XXH64Arch, h, p, n GPR) {
 	a.Rol(h, 23)
 	a.MulAddPrime(h, 1, 2)
 	b.Label(t2)
+	if a.TailMaskSkips() {
+		a.BranchMaskClear(n, 3, fin)
+	}
 	a.BranchBitClear(n, 1, t1)
 	step1()
 	step1()
