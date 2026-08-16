@@ -21,7 +21,13 @@ under `internal/asmgen` or any `.s` file.
 | `cpu_linux_arm64.go` | SVE2 detection, and the MIDR list gating the hybrid |
 | `xxh64/` | XXH64: API and portable implementation (`xxh64.go`), `Digest`, per-arch dispatch, **generated** stubs and kernels, its own vectors and tests |
 | `ref/gen.c` | emits both packages' reference vectors from the C source |
-| `bench/` | separate module; comparison against zeebo/xxh3 and cespare/xxhash |
+| `bench/` | separate module; comparison against zeebo/xxh3, cespare/xxhash and the C reference |
+| `bench/xxhash.h` | vendored reference C, v0.8.3, compiled in through cgo |
+| `bench/sweep` | every length one at a time |
+| `bench/mdtable` | `go test -bench` output to a markdown table |
+| `bench/mkbenchmarks.sh` | a bench run's artifacts to `benchmarks.md` |
+| `.github/workflows/` | `ci.yml` on every push, `bench.yml` by hand |
+| `benchmarks.md` | **generated** by `bench.yml`; do not edit |
 
 `bench/` is its own module on purpose: the library itself must keep importing
 nothing outside the standard library.
@@ -149,6 +155,73 @@ The simulator proves the *instruction sequence* is correct. It says nothing
 about encodings — those come from the system assembler, and the disassembly
 comments in the `.s` files are the audit trail.
 
+## CI and releases
+
+`ci.yml` runs on every push and pull request: the suite in four build
+configurations on amd64 and arm64 hardware, the SSE2 and AVX2 kernels forced
+under qemu, a minute on each fuzz target, a test-binary build for every
+supported architecture and OS, the generated-assembly check, and the
+cross-implementation comparison.
+
+Two jobs assert something about themselves rather than passing vacuously. The
+cross job exists because `internal/asmgen` is imported by `asmsim_test.go`, so
+a generator-only mistake takes the whole suite down on an architecture nobody
+runs. The generate job fails if a backend *skipped* for want of a
+cross-assembler, because a skip there is indistinguishable from a pass. In the
+same spirit the fuzz job discovers its targets with `go test -list` across
+every package instead of naming them: a hand-kept list stopped covering
+`xxh64` the day it landed.
+
+### Tagging
+
+A green run on `main`, pushed or dispatched, tags the next patch version.
+Three things about it are worth knowing before changing it.
+
+**It measures from the last tag, not from the push.** Rapid pushes supersede
+each other's queued runs, and a superseded run never reaches the tag job.
+Asking what *this push* changed then strands that commit behind the next
+documentation-only push, which is what happened to b8003eb between v0.1.1 and
+v0.1.2. Asking what has not shipped yet is self-healing.
+
+**It creates the tag through the refs API, not `git push`.** A tag whose
+commit's `.github/workflows` content differs from the branch tip's is refused
+for `GITHUB_TOKEN`:
+
+```
+refusing to allow a GitHub App to create or update workflow
+.github/workflows/ci.yml without `workflows` permission
+```
+
+There is no `workflows` key for the `permissions:` block to fix this with. It
+is a platform rule, not a setting: an automatically issued token must not be
+able to rewrite the automation that decides its own privileges. Every tag
+through v0.1.16 predates the workflows changing, which is exactly why this
+only started failing once they did — and why it presents as a bare exit 1 six
+seconds in, with nothing in the annotation. If the API path is refused too,
+the job prints the response and says what it would take: a PAT or App token
+carrying the workflow scope, in a secret, in place of `GITHUB_TOKEN`.
+
+**Only module files earn a version.** A README or workflow edit is not
+something anyone can `go get`.
+
+The line is `v0.x` deliberately. Bump the minor or major by hand
+(`git tag v0.2.0 && git push origin v0.2.0`) and the automation continues from
+wherever that lands.
+
+### The bench workflow
+
+`bench.yml` is dispatched by hand, sweeps every OS/architecture family the
+standard runners offer, renders each log as markdown, and commits the
+aggregate to `benchmarks.md` with `[skip ci]`. Those are shared VMs: good for
+shape and for ratios within one column, not for absolute figures. Everything
+in the performance notes below came from dedicated hardware instead.
+
+It decides cgo by handing the compiler a five-byte program and seeing whether
+a binary comes out. A runner with no C toolchain still has `CGO_ENABLED=1`,
+and then `bench/` does not lose its C columns, it fails to build — which is
+what `windows-11-arm` did. Asking whether `cc` is in `PATH` is a different
+question and gets this wrong on an image that ships a stub.
+
 ## Benchmarking
 
 Every number in the performance notes came out of this procedure; produce
@@ -160,7 +233,23 @@ go test -c -o /tmp/x.test . && taskset -c 12 /tmp/x.test \
   -test.run='^$' -test.bench=<pattern> -test.benchtime=300ms -test.count=6
 cd bench && go test -c -o /tmp/b.test .        # the comparison suite
 go build -o /tmp/sweep ./sweep                 # every length, one at a time
+go test -bench Compare -count 5 . | go run ./mdtable   # any log as a table
 ```
+
+The comparison suite includes the reference C implementation itself:
+`bench/xxhash.h` vendored at v0.8.3 — the revision the vectors came from —
+compiled in through cgo with `XXH_INLINE_ALL`, and `-march=native` on amd64 so
+it gets the same vector width the dispatched kernels pick. `TestSameAsC` holds
+it to bit-identity at every length where any path changes, which closes the
+loop the vectors open: not vectors taken from C once, but C in the same
+process. It appears as the `c` and `c-xxh64` columns.
+
+Read those two columns with one caveat: the one-shot rows cross the cgo
+boundary once per hash, an overhead floor of tens of nanoseconds, so they mean
+something from a few hundred bytes up and nothing below. The streaming rows
+run their whole chunk loop on the C side and are comparable anywhere. Without
+a C compiler the hooks are nil, every row guards on them, and those columns
+simply disappear.
 
 - **Pre-compile, pin, take medians.** Compilation is multi-core noise, so
   benchmark the test binary, not `go test -bench`. Pin with `taskset` to one
