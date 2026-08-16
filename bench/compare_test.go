@@ -153,6 +153,23 @@ func BenchmarkCompareSeed(b *testing.B) {
 				sink64 = xxh3.HashSeed(buf, 42)
 			}
 		})
+		b.Run(fmt.Sprintf("%d/xxhaste-xxh64", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = xxh64.Sum64Seed(buf, 42)
+			}
+		})
+		// cespare/xxhash has no one-shot seeded form; a Digest reset with the
+		// seed is its way, so that is what gets timed.
+		b.Run(fmt.Sprintf("%d/cespare", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			d := cespare.NewWithSeed(42)
+			for i := 0; i < b.N; i++ {
+				d.ResetWithSeed(42)
+				d.Write(buf)
+				sink64 = d.Sum64()
+			}
+		})
 	}
 }
 
