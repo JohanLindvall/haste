@@ -12,21 +12,23 @@ package asmgen
 //	rax h             r8-r11 v1..v4      r12 x (also Tmp)
 //	r13 P1            rbx P2             r14 P4             rcx P5
 //
-// Four of the five primes live in registers, loaded RIP-relative by the
-// prologue; there is no table pointer. That is the whole difference between
-// this kernel and cespare/xxhash's on a 32..256-byte hash. Reaching the
-// primes through a pointer instead -- LEA the table, load off the base --
-// costs 12-16% there on a Redwood Cove. The measurement was made both ways:
-// adding the pointer to a copy of cespare's kernel and taking nothing else
-// away moved it from 30.4 to 34.9 cycles at 64 bytes and 46.8 to 55.0 at
-// 128, and from this side, removing up to twelve instructions elsewhere -- a
-// cheaper tail, a single-block loop, seed-free lanes -- moved not one cycle.
+// Two forms of that plan, chosen by CPUID vendor; see VendorSplit. In the
+// register form, which Intel takes, four of the five primes live in
+// registers loaded RIP-relative by the prologue and there is no table
+// pointer; in the pointer form, which everything else takes, rCX holds the
+// table and P3, P4 and P5 are memory operands off it. On a Redwood Cove the
+// register form is worth 12-16% over 32..256 bytes and on a Zen 3 it costs
+// 5-17% over 8..256. Neither is understood.
 //
-// Why it costs that much is not understood, and the obvious explanation is
-// wrong: it is not the loads waiting on the LEA, because a *dead* LEA in the
-// same place costs the same. See CLAUDE.md before theorizing further, and do
-// not carry the conclusion to other kernels -- XXH3 executes one of these per
-// hash for free.
+// What is known about the Intel half: adding a pointer to a copy of
+// cespare/xxhash's kernel and taking nothing else away moved it from 30.4 to
+// 34.9 cycles at 64 bytes and 46.8 to 55.0 at 128, while removing up to
+// twelve instructions elsewhere -- a cheaper tail, a single-block loop,
+// seed-free lanes -- moved not one cycle. The obvious explanation is wrong:
+// it is not the loads waiting on the LEA, because a LEA that is executed and
+// never used costs the same, while one that is branched over costs nothing.
+// Do not carry the conclusion to other kernels: XXH3 executes one of these
+// per hash for free.
 //
 // R14 is the goroutine pointer only in ABIInternal; see x86.go for why an
 // ABI0 leaf may have it.
@@ -43,28 +45,61 @@ package asmgen
 // integer emitters of x86 and adds the scalar ones the hash needs.
 type x86Scalar struct {
 	*x86
+	// ptrPrimes selects the second form: the primes are reached through a
+	// pointer to the table rather than held in registers. See VendorSplit.
+	ptrPrimes bool
 }
 
 func newX86Scalar() *x86Scalar {
 	return &x86Scalar{x86: &x86{b: &Builder{}, name: "scalar"}}
 }
 
+// VendorSplit is on: Intel and AMD want opposite things from this kernel.
+// Holding the primes in registers is worth 12-16% over 32..256 bytes on a
+// Redwood Cove and costs 5-17% over 8..256 on a Zen 3, so both forms are
+// emitted and dispatch_amd64.go picks by CPUID vendor.
+func (x *x86Scalar) VendorSplit() bool { return true }
+
+// UsePointerPrimes switches this backend to the pointer form. It must be
+// called before anything is emitted.
+func (x *x86Scalar) UsePointerPrimes() { x.ptrPrimes = true }
+
 func (x *x86Scalar) RetGPR() GPR { return rAX }
 
 // LoadSplit is unreachable: this backend has one lane-round form.
 func (x *x86Scalar) LoadSplit(GPR) { panic("asmgen: x86 xxh64 is not dual") }
 
-// TableGPR is -1: the prologue reads the table into registers rather than
-// keeping its address. See TableLoads.
-func (x *x86Scalar) TableGPR() GPR { return -1 }
-func (x *x86Scalar) H() GPR        { return rAX }
-func (x *x86Scalar) V(i int) GPR   { return []GPR{r8, r9, r10, r11}[i] }
-func (x *x86Scalar) X() GPR        { return r12 }
-func (x *x86Scalar) Tmp() GPR      { return r12 }
+// TableGPR is the table pointer in the pointer form and -1 in the register
+// form, where the prologue reads the constants out instead. See TableLoads.
+func (x *x86Scalar) TableGPR() GPR {
+	if x.ptrPrimes {
+		return rCX
+	}
+	return -1
+}
+func (x *x86Scalar) H() GPR      { return rAX }
+func (x *x86Scalar) V(i int) GPR { return []GPR{r8, r9, r10, r11}[i] }
+func (x *x86Scalar) X() GPR      { return r12 }
+func (x *x86Scalar) Tmp() GPR    { return r12 }
 
-// x86PrimeReg is where the primes live. P3 is absent: it is materialized as
-// an immediate at its two uses, both of which have the scratch register free.
+// x86PrimeReg is where the primes live in the register form. P3 is absent: it
+// is materialized as an immediate at its two uses, both of which have the
+// scratch register free.
 var x86PrimeReg = map[int]GPR{0: r13, 1: rBX, 3: r14, 4: rCX}
+
+// x86PrimeRegPtr is where they live in the pointer form: only the two the
+// lane loop multiplies by, the rest being memory operands off rCX, which
+// holds the table. That is one register fewer than the hash has to spare,
+// which is why this form needs no immediate and no R14.
+var x86PrimeRegPtr = map[int]GPR{0: r13, 1: rBX}
+
+// primeReg is the map this backend's form uses.
+func (x *x86Scalar) primeReg() map[int]GPR {
+	if x.ptrPrimes {
+		return x86PrimeRegPtr
+	}
+	return x86PrimeReg
+}
 
 // x86PrimeVal is the value of each prime, for the ones emitted as immediates.
 // It repeats what xxh64.go holds, which is safe only because nothing checks
@@ -80,6 +115,11 @@ var x86PrimeVal = [5]uint64{
 // streaming kernel runs nothing but the lane loop, so it takes only the two
 // primes that loop multiplies by.
 func (x *x86Scalar) TableLoads(def FuncDef) []TableLoad {
+	if x.ptrPrimes {
+		// The pointer form takes the address instead; TableGPR says so, and
+		// LoadPrimes reads P1 and P2 off it in the body.
+		return nil
+	}
 	slots := []int{0, 1}
 	if def.Ret != "" { // the whole-hash kernel: merge, tail and avalanche too
 		slots = []int{0, 1, 3, 4}
@@ -95,8 +135,14 @@ func (x *x86Scalar) TableLoads(def FuncDef) []TableLoad {
 // scratch register first when it has no register of its own. dst must not be
 // that scratch register: the movabs would land on top of it.
 func (x *x86Scalar) withPrime(dst GPR, n int, op func(operand string, val func(*Machine) uint64)) {
-	if r, ok := x86PrimeReg[n]; ok {
+	if r, ok := x.primeReg()[n]; ok {
 		op(x.GPRName(r), func(m *Machine) uint64 { return m.R[r] })
+		return
+	}
+	if x.ptrPrimes {
+		// Off the table pointer, one instruction and an L1-hot load.
+		off := 8 * n
+		op(x.mem(rCX, off), func(m *Machine) uint64 { return m.Load64(m.R[rCX] + uint64(off)) })
 		return
 	}
 	if dst == x.Tmp() {
@@ -116,9 +162,16 @@ var x86GPR32 = map[GPR]string{
 	r10: "%r10d", r11: "%r11d", r12: "%r12d", r13: "%r13d", r14: "%r14d",
 }
 
-// LoadPrimes does nothing here: the prologue has already put them in
-// registers, which is the point. See TableLoads.
-func (x *x86Scalar) LoadPrimes() {}
+// LoadPrimes does nothing in the register form: the prologue has already put
+// them there, which is the point. The pointer form reads the two the lane
+// loop needs off the table.
+func (x *x86Scalar) LoadPrimes() {
+	if !x.ptrPrimes {
+		return
+	}
+	x.Load64(r13, rCX, 0)
+	x.Load64(rBX, rCX, 8)
+}
 
 func (x *x86Scalar) AddPrime(dst GPR, n int) {
 	x.withPrime(dst, n, func(op string, val func(*Machine) uint64) {

@@ -118,6 +118,21 @@ type FuncDef struct {
 	// slot by slot into registers -- see TableLoader.
 	Table string
 	Doc   string
+
+	// FormJump names a kernel this one hands the whole call off to when
+	// FormFlag is nonzero: the prologue tests the flag and, if set, jumps to
+	// that symbol. Both must be ABI0 with the same signature, so the frame
+	// and arguments are already in place and the callee's RET returns to
+	// this one's caller.
+	//
+	// It exists so that a kernel with two forms can still be reached in one
+	// direct call. Selecting in Go instead costs either an indirect call or
+	// a second callee, and a second callee pushes the entry point past the
+	// inliner's budget; see the XXH64 notes in CLAUDE.md. The cost here is a
+	// compare against a byte in memory and a not-taken branch, which measured
+	// nothing on a Redwood Cove.
+	FormJump string
+	FormFlag string
 }
 
 // TableLoad is one constant moved from the table into a register by the

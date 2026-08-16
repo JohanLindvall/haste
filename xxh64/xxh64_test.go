@@ -26,7 +26,7 @@ func testBuffer(n int) []byte {
 // backends is every kernel an assembly build knows about on this
 // architecture; the tests run each one this machine can select.
 var backends = map[string][]string{
-	"amd64": {"scalar"},
+	"amd64": {"scalar", "scalar-ptr"},
 	"arm64": {"madd", "muladd"},
 }
 

@@ -108,8 +108,6 @@ func TestSimulatedBackends(t *testing.T) {
 			split := split
 			t.Run(fmt.Sprintf("%s-%s/split%d", b.Name, b.GOARCH, split), func(t *testing.T) {
 				ks, defs := b.EmitAll(), b.Defs()
-				sum64, blocks := ks[0], ks[1]
-				sumDef, blockDef := defs[0], defs[1]
 				// Every length that changes the tail's path, at every block
 				// count the loop's odd/even split distinguishes, and a spread
 				// beyond.
@@ -118,41 +116,39 @@ func TestSimulatedBackends(t *testing.T) {
 					lens = append(lens, n)
 				}
 				lens = append(lens, 255, 256, 257, 511, 512, 513, 1000, 1024, 2047, 2048, 3000)
-				for _, n := range lens {
-					for _, seed := range []uint64{0, 1, 0x9E3779B185EBCA87, ^uint64(0)} {
-						if got, want := simSum64(t, sum64, sumDef, buf[:n], seed, split), sum64Generic(ptr(buf), n, seed); got != want {
-							t.Fatalf("sum64 len %d seed %#x: %#016x != %#016x", n, seed, got, want)
-						}
-					}
-				}
-				// The unseeded twin, where the backend emits one: the same
-				// lengths against the portable path with a zero seed, and the
-				// unseeded reference vectors. It is a third kernel with its
-				// own instruction stream, so nothing else here covers it.
-				if len(ks) > 2 {
-					nsK, nsDef := ks[2], defs[2]
-					for _, n := range lens {
-						if got, want := simSum64(t, nsK, nsDef, buf[:n], 0, split), sum64Generic(ptr(buf), n, 0); got != want {
-							t.Fatalf("sum64NS len %d: %#016x != %#016x", n, got, want)
-						}
-					}
-					for _, v := range refVecs {
-						if v.Len > 3000 || v.Seed != 0 {
-							continue
-						}
-						if got := simSum64(t, nsK, nsDef, buf[:v.Len], 0, split); got != v.H64 {
-							t.Fatalf("sum64NS vector len %d: %#016x != %#016x", v.Len, got, v.H64)
-						}
-					}
-				}
 
-				// The reference vectors that fit the buffer, too.
-				for _, v := range refVecs {
-					if v.Len > 3000 {
+				// Every kernel the backend emits, found by its definition rather
+				// than by index: x86 now emits a seeded and an unseeded one-shot
+				// and a pointer-form copy of each, and each is its own instruction
+				// stream that nothing else here would reach.
+				var blocksK asmgen.Kernel
+				var blocksDef asmgen.FuncDef
+				for i, k := range ks {
+					d := defs[i]
+					if d.Ret == "" {
+						blocksK, blocksDef = k, d
 						continue
 					}
-					if got := simSum64(t, sum64, sumDef, buf[:v.Len], v.Seed, split); got != v.H64 {
-						t.Fatalf("vector len %d seed %#x: %#016x != %#016x", v.Len, v.Seed, got, v.H64)
+					seeded := len(d.Args) > 2
+					seeds := []uint64{0, 1, 0x9E3779B185EBCA87, ^uint64(0)}
+					if !seeded {
+						seeds = []uint64{0}
+					}
+					for _, n := range lens {
+						for _, seed := range seeds {
+							if got, want := simSum64(t, k, d, buf[:n], seed, split), sum64Generic(ptr(buf), n, seed); got != want {
+								t.Fatalf("%s len %d seed %#x: %#016x != %#016x", d.Name, n, seed, got, want)
+							}
+						}
+					}
+					// The reference vectors that fit the buffer, too.
+					for _, v := range refVecs {
+						if v.Len > 3000 || (!seeded && v.Seed != 0) {
+							continue
+						}
+						if got := simSum64(t, k, d, buf[:v.Len], v.Seed, split); got != v.H64 {
+							t.Fatalf("%s vector len %d seed %#x: %#016x != %#016x", d.Name, v.Len, v.Seed, got, v.H64)
+						}
 					}
 				}
 				rng := rand.New(rand.NewSource(3))
@@ -163,7 +159,7 @@ func TestSimulatedBackends(t *testing.T) {
 					}
 					w = v
 					nb := rng.Intn(20)
-					simBlocks(t, blocks, blockDef, &v, buf[:nb*blockLen], nb, split)
+					simBlocks(t, blocksK, blocksDef, &v, buf[:nb*blockLen], nb, split)
 					blocksGeneric(&w, ptr(buf), nb)
 					if v != w {
 						t.Fatalf("blocks nb %d: %x != %x", nb, v, w)

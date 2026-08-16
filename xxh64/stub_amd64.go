@@ -23,3 +23,13 @@ func blocksScalar(lanes *[4]uint64, in unsafe.Pointer, nbBlocks int)
 //
 //go:noescape
 func sum64ScalarNS(in unsafe.Pointer, n int) uint64
+
+// sum64ScalarPtr hashes the n bytes at in under seed, whatever n is: lanes, merge, tail and avalanche in one call, reaching the primes through a table pointer.
+//
+//go:noescape
+func sum64ScalarPtr(in unsafe.Pointer, n int, seed uint64) uint64
+
+// sum64ScalarNSPtr hashes the n bytes at in with no seed, whatever n is, reaching the primes through a table pointer.
+//
+//go:noescape
+func sum64ScalarNSPtr(in unsafe.Pointer, n int) uint64

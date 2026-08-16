@@ -30,10 +30,8 @@ type Backend struct {
 // Defs returns the functions this backend generates, in emission order.
 func (b Backend) Defs() []FuncDef {
 	if b.New64 != nil {
-		if k := b.New64(); k.UnseededTwin() {
-			return XXH64FuncsNS(b.Suffix, k.Dual())
-		}
-		return XXH64Funcs(b.Suffix, b.New64().Dual())
+		k := b.New64()
+		return XXH64FuncsFor(b.Suffix, k.Dual(), k.UnseededTwin(), k.VendorSplit())
 	}
 	return Funcs(b.Suffix)
 }

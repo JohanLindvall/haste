@@ -176,6 +176,7 @@ type Function struct {
 	Prologue []string // Go assembly that lands the arguments in registers
 	Lines    []string // the generated body, without the RET
 	Epilogue []string // Go assembly that stores the result, if any
+	Tail     []string // Go assembly after the RET: the form hand-off, if any
 }
 
 // Decl renders the Go declaration of a kernel.
@@ -219,7 +220,15 @@ func prologue(k Kernel, def FuncDef) []string {
 		mov = "MOVD"
 	}
 	var out []string
-	// The constants come first: they depend on nothing, where the arguments
+	// The form test comes first, so the form this core did not want jumps
+	// away before loading anything it would only reload. Putting it after
+	// the loads instead, so the flag's fetch overlaps them, measured the
+	// same on a Redwood Cove; so did moving the flag into the table's own
+	// cache line. The cost is the load and the branch, not where they sit.
+	if def.FormJump != "" {
+		out = append(out, fmt.Sprintf("CMPB ·%s(SB), $0", def.FormFlag), "JNE otherform")
+	}
+	// The constants come next: they depend on nothing, where the arguments
 	// are store-to-load forwards from the caller's frame.
 	loads := PrologueLoads(k, def)
 	for _, l := range loads {
@@ -243,6 +252,16 @@ func prologue(k Kernel, def FuncDef) []string {
 		}
 	}
 	return out
+}
+
+// tail is what follows the RET: the jump to this kernel's other form, for a
+// kernel that has one. It is past the RET so that the form the prologue falls
+// through to -- the common one -- pays only a not-taken branch.
+func tail(k Kernel, def FuncDef) []string {
+	if def.FormJump == "" {
+		return nil
+	}
+	return []string{"otherform:", fmt.Sprintf("JMP ·%s(SB)", def.FormJump)}
 }
 
 // epilogue stores the result from the register the kernel left it in.
@@ -284,7 +303,8 @@ func Generate(b Backend) (asm string, err error) {
 		if err != nil {
 			return "", fmt.Errorf("%s.%s: %w", b.Name, defs[i].Name, err)
 		}
-		funcs = append(funcs, Function{Def: defs[i], Prologue: prologue(k, defs[i]), Lines: lines, Epilogue: epilogue(k, defs[i])})
+		funcs = append(funcs, Function{Def: defs[i], Prologue: prologue(k, defs[i]), Lines: lines,
+			Epilogue: epilogue(k, defs[i]), Tail: tail(k, defs[i])})
 	}
 	var buf bytes.Buffer
 	err = asmTemplate.Execute(&buf, struct {
@@ -344,6 +364,9 @@ TEXT ·{{.Def.Name}}(SB), NOSPLIT, $0-{{.ArgSize}}
 	{{.}}
 {{- end}}
 	RET
+{{- range .Tail}}
+	{{.}}
+{{- end}}
 {{end}}`))
 
 // GenerateStubs renders the Go declarations for a set of backends on one

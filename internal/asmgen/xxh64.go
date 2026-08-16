@@ -25,13 +25,19 @@ package asmgen
 // must reach the kernel in one direct call, and a wrapper choosing between
 // two callees is past the inliner's budget while a call through a variable
 // measured two cycles on an M2 -- a fifth of a short hash.
-func XXH64Funcs(suffix string, dual bool) []FuncDef { return xxh64Funcs(suffix, dual, false) }
+func XXH64Funcs(suffix string, dual bool) []FuncDef { return xxh64Funcs(suffix, dual, false, false) }
 
 // XXH64FuncsNS is XXH64Funcs for a backend that also emits the unseeded twin,
 // in the order EmitXXH64 emits them.
-func XXH64FuncsNS(suffix string, dual bool) []FuncDef { return xxh64Funcs(suffix, dual, true) }
+func XXH64FuncsNS(suffix string, dual bool) []FuncDef { return xxh64Funcs(suffix, dual, true, false) }
 
-func xxh64Funcs(suffix string, dual, ns bool) []FuncDef {
+// XXH64FuncsFor is XXH64Funcs for a backend that states both, so the caller
+// does not have to know which combination it is.
+func XXH64FuncsFor(suffix string, dual, ns, split bool) []FuncDef {
+	return xxh64Funcs(suffix, dual, ns, split)
+}
+
+func xxh64Funcs(suffix string, dual, ns, split bool) []FuncDef {
 	// A dual backend used to take its lane-round form as a fourth argument,
 	// which made every caller load a global and every short hash carry a value
 	// it never reads. The form now lives in the sixth slot of the primes
@@ -63,7 +69,35 @@ func xxh64Funcs(suffix string, dual, ns bool) []FuncDef {
 			Doc:   "hashes the n bytes at in with no seed, whatever n is",
 		})
 	}
-	return defs
+	if !split {
+		return defs
+	}
+	// The vendor split: a second copy of each one-shot kernel that reaches
+	// the primes through a pointer instead of holding them in registers.
+	// The two forms are the same hash and the same lane loop; they differ
+	// only in how the constants arrive, which is worth 12-16% one way on
+	// Intel and 5-17% the other way on AMD. See CLAUDE.md.
+	//
+	// The primary of each pair tests primeForm and jumps here when it is
+	// set, so both are reached in one direct call from the entry point and
+	// the common form pays a not-taken branch. blocks has no twin: its body
+	// uses only the two primes that live in registers either way, so the
+	// forms would differ in its prologue alone, and it runs once per block
+	// rather than once per hash.
+	var twins []FuncDef
+	for i := range defs {
+		d := &defs[i]
+		if d.Ret == "" { // blocks
+			continue
+		}
+		twin := *d
+		twin.Name = d.Name + "Ptr"
+		twin.Doc = d.Doc + ", reaching the primes through a table pointer"
+		twin.FormJump, twin.FormFlag = "", ""
+		d.FormJump, d.FormFlag = twin.Name, "primes+48"
+		twins = append(twins, twin)
+	}
+	return append(defs, twins...)
 }
 
 // XXH64Arch is the surface the XXH64 kernels are written against. The
@@ -108,6 +142,16 @@ type XXH64Arch interface {
 	// cespare/xxhash over 1..8 bytes on a Zen 4. Off for arm64 until it is
 	// measured on one.
 	UnseededTwin() bool
+
+	// VendorSplit reports whether this backend emits a second copy of each
+	// one-shot kernel that reaches the primes through a pointer, for the
+	// vendors that prefer it. On for x86, where Intel and AMD want opposite
+	// things; off for arm64, which has one form. UsePointerPrimes puts a
+	// freshly built backend into that second form, and is only called when
+	// VendorSplit is on.
+	VendorSplit() bool
+	UsePointerPrimes()
+
 	MulPrime(dst GPR, n int)
 	MulAddPrime(dst GPR, mul, add int)
 
@@ -195,6 +239,19 @@ func EmitXXH64(new func() XXH64Arch) []Kernel {
 		a3 := new()
 		emitSum64(a3, false)
 		ks = append(ks, a3)
+	}
+	// The pointer-form twins, in the same order as xxh64Funcs appends them.
+	if a1.VendorSplit() {
+		b1 := new()
+		b1.UsePointerPrimes()
+		emitSum64(b1, true)
+		ks = append(ks, b1)
+		if a1.UnseededTwin() {
+			b2 := new()
+			b2.UsePointerPrimes()
+			emitSum64(b2, false)
+			ks = append(ks, b2)
+		}
 	}
 	return ks
 }

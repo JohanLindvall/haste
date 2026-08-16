@@ -280,15 +280,19 @@ go build -o /tmp/sweep ./sweep                 # every length, one at a time
   - **arm64** loads `$·primes(SB)` into a register and reads five words off
     it, because five 64-bit immediates would be four instructions each in
     code with no constant pool.
-  - **amd64** loads four of the primes into registers RIP-relative and keeps
-    no pointer at all. A pointer costs 12-16% of a 32..256-byte hash on a
-    Redwood Cove; see the XXH64 performance notes. P3 has no register left
-    and is a `movabs` at its two cold uses -- one, not the five in the
-    prologue that cost short hashes 6-19% on Zen 3.
+  - **amd64 emits both forms and picks by CPUID vendor.** Intel takes the
+    primes in registers, loaded RIP-relative, with P3 as a `movabs` at its
+    two cold uses; everything else takes the pointer. Neither is better
+    everywhere -- see the vendor-split bullet in the XXH64 notes. The
+    kernel itself tests the form and jumps, so the entry point still
+    reaches it in one direct call.
 
-  `primes` in `xxh64.go` is therefore read-only and must stay `[6]uint64` in
-  that order: the five primes, then the arm64 lane-round form, which
-  setBackend rewrites in tests. A backend that wants constants in registers
+  `primes` in `xxh64.go` must stay `[7]uint64` in that order: the five
+  primes, then the arm64 lane-round form, then the amd64 prime form. Only
+  the last two are ever written, once at init and by setBackend in tests;
+  the primes themselves are read-only. Both flags live here rather than in
+  variables of their own so the kernel that reads one is reading a cache
+  line it already wanted. A backend that wants constants in registers
   implements `TableLoader`; one that wants a pointer sets `TableGPR`. Both go
   through `FuncDef.Table`, and `asmgen.PrologueLoads` reports the register
   form so the simulator test can set up the same state -- the prologue is not
@@ -350,19 +354,35 @@ anything on top of that.
   (2026-08): the long loop runs at 1.01 cycles per imul -- the wall, exactly
   as modelled -- and every length from 33 bytes up is within +/-2% of
   cespare.
-- **Never reach the primes through a pointer on amd64.** The kernel used to
-  load the table's address with `LEAQ ·primes(SB), CX` and read the primes
-  off `CX`; it now loads four of them into registers RIP-relative and keeps
-  no pointer. On a Redwood Cove (Core Ultra 9 185H) that is worth 12-16%
-  over 32..128 bytes -- see the Redwood Cove section for the table and for
-  how it was isolated, which was by adding a pointer to a copy of cespare's
-  kernel and taking nothing else away.
+- **The prime form is a vendor split, and the kernel carries both.** Holding
+  the primes in registers is worth 12-16% over 32..256 bytes on an Intel
+  Redwood Cove and costs a Zen 3 5-17% over 8..256; reaching them through a
+  pointer is the reverse. Neither is understood. The generator emits
+  `sum64<B>Ptr` and `sum64<B>NSPtr` beside the register-form kernels, and
+  `dispatch_amd64.go` writes `primes[6]` from the CPUID vendor string at
+  init: Intel gets registers, everything else gets the pointer, which is the
+  older and more widely measured of the two.
 
-  It cost the Zen 4 nothing either way, which is consistent with the bullet
-  above: that core was already within ±2% of cespare with the pointer in
-  place. Two cores, one that cares and one that does not, and no reading of
-  the mechanism that explains either -- so the register form is kept because
-  it is never worse, not because the model says it should win.
+  The choice is made *inside* the kernel -- `CMPB ·primes+48(SB), $0` and a
+  jump to the other symbol -- for the reason the arm64 lane round is:
+  selecting in Go costs either an indirect call or a second callee, and a
+  second callee pushes the entry points past the inliner's budget, which is
+  more than either form is worth.
+
+  **It is not free.** On the fall-through path it costs, measured against a
+  build with the split compiled out, median of nine, both alignment phases:
+  +3 to +7% at 4..16 bytes, ~1% at 32, nothing from 64 up. Three placements
+  were tried -- the test ahead of the prologue, after it, and with the flag
+  moved into the primes' own cache line -- and all three measure the same,
+  so it is the load and the branch, not where they sit. The trade is a
+  short-hash cost on one vendor against a 5-17% regression across 8..256
+  bytes on the other; if someone with AMD hardware can find which half of
+  the form Zen actually dislikes, a form that suits both would beat this.
+
+  Within one binary, which is the comparison that has no layout in it,
+  `BenchmarkBackends` puts the register form ahead of the pointer form on
+  this Intel core by 13.3% at 32 bytes, 15.3% at 64, 9.3% at 256, 2.9% at a
+  kibibyte and nothing at 64 KiB.
 - **Offloading the four off-chain `in*P2` products to the vector unit is
   worth +20%, and the transfers decide it.** This was the standing "needs an
   Intel core to measure" item; a Redwood Cove has now measured it. The lane

@@ -193,6 +193,16 @@ func (a *arm64Scalar) ScratchGPR() GPR { return a.ArgGPR(2) }
 // been measured with it. See the x86 face.
 func (a *arm64Scalar) UnseededTwin() bool { return false }
 
+// VendorSplit is off here: the primes reach the kernel through a pointer
+// already -- five 64-bit immediates would be four instructions each -- so
+// there is no second form to choose between, and no arm64 core has been
+// measured wanting one.
+func (a *arm64Scalar) VendorSplit() bool { return false }
+
+// UsePointerPrimes is unreachable: this backend has one prime form, and it is
+// the pointer one.
+func (a *arm64Scalar) UsePointerPrimes() { panic("asmgen: arm64 xxh64 has no second prime form") }
+
 func (a *arm64Scalar) BranchMaskClear(r GPR, mask int64, label string) {
 	a.b.emit(func(m *Machine) { m.setCmp(m.R[r]&uint64(mask), 0) },
 		"tst %s, #%d", a.GPRName(r), uint64(mask))
