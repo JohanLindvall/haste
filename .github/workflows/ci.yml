@@ -62,7 +62,7 @@ jobs:
       # Informational: which kernel this runner actually picked. Never fails
       # the job on its own; the real run is the next step.
       - name: which kernel this runner dispatched to
-        run: go test -run TestBackendsNative -v . 2>&1 | grep dispatched || true
+        run: go test -run TestBackendsNative -v ./xxh3 2>&1 | grep dispatched || true
       - run: go test ./...
       - name: purego
         run: go test -tags purego ./...
@@ -90,7 +90,7 @@ jobs:
           set -e
           for a in 386 arm mips mipsle s390x ppc64 ppc64le riscv64 loong64 arm64 amd64; do
             echo "== linux/$a"
-            GOOS=linux GOARCH=$a go test -c -o /dev/null .
+            GOOS=linux GOARCH=$a go test -c -o /dev/null ./xxh3
             GOOS=linux GOARCH=$a go test -c -o /dev/null ./xxh64
           done
           # The other operating systems the assembly and the core detection
@@ -98,7 +98,7 @@ jobs:
           # MIDR is unreadable there -- and nothing else here would build it.
           for t in windows/amd64 windows/arm64 darwin/amd64 darwin/arm64 freebsd/amd64; do
             echo "== $t"
-            GOOS=${t%/*} GOARCH=${t#*/} go test -c -o /dev/null .
+            GOOS=${t%/*} GOARCH=${t#*/} go test -c -o /dev/null ./xxh3
             GOOS=${t%/*} GOARCH=${t#*/} go test -c -o /dev/null ./xxh64
           done
           echo "== js/wasm"
@@ -114,7 +114,7 @@ jobs:
           go-version: stable
           cache: false # nothing to key on: the root module has no go.sum
       - run: sudo apt-get update && sudo apt-get install -y qemu-user-static
-      - run: GOARCH=amd64 go test -c -o /tmp/xxhaste.test .
+      - run: GOARCH=amd64 go test -c -o /tmp/xxhaste.test ./xxh3
       - run: GOARCH=amd64 go test -c -o /tmp/xxh64.test ./xxh64
       # Named CPUs rather than -cpu max: they pin which kernel dispatch has to
       # pick, and neither advertises AVX-512, which qemu's TCG does not
@@ -147,7 +147,7 @@ jobs:
       - name: regenerate and diff against what is checked in
         run: |
           set -o pipefail
-          go test -run TestGeneratedFilesUpToDate -v . 2>&1 | tee /tmp/gen.log
+          go test -run TestGeneratedFilesUpToDate -v ./xxh3 2>&1 | tee /tmp/gen.log
           if grep -q -- "--- SKIP" /tmp/gen.log; then
             echo "::error::a backend skipped; its cross-assembler is missing, so the check did not run"
             exit 1

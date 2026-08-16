@@ -1,4 +1,4 @@
-package xxhaste
+package xxh3
 
 import "testing"
 

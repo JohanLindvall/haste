@@ -54,7 +54,7 @@ for d in "$dir"/bench-*/; do
 		cat "$d/cpu.txt"
 		printf '```\n\n</details>\n\n'
 	fi
-	for f in compare backends xxh64; do
+	for f in compare backends xxh64 rapidhash; do
 		[ -s "$d/$f.md" ] || continue
 		cat "$d/$f.md"
 		printf '\n'

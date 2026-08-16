@@ -2,7 +2,7 @@
 
 //go:build !purego
 
-package xxhaste
+package xxh3
 
 import "unsafe"
 

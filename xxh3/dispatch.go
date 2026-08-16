@@ -1,6 +1,6 @@
 //go:build purego || (!amd64 && !arm64)
 
-package xxhaste
+package xxh3
 
 import "unsafe"
 

@@ -1,6 +1,6 @@
 //go:build 386 || amd64 || arm64 || loong64 || ppc64le || riscv64 || wasm
 
-package xxhaste
+package xxh3
 
 import "unsafe"
 

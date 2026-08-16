@@ -16,22 +16,29 @@ library.
 go get github.com/JohanLindvall/xxhaste
 ```
 
+The module holds three hashes, one package each: `xxh3` (this README's
+subject), `xxh64`, and `rapidhash`. XXH3 lived at the module root until it
+moved to `xxh3/`; an import of the root now needs `/xxh3` appended, and
+nothing else changes.
+
 ## Use
 
 ```go
-h := xxhaste.Sum64(data)              // 64-bit
-h := xxhaste.Sum64String(key)         // no copy, no allocation
-c := xxhaste.Sum128(data)             // 128-bit: c.Lo, c.Hi, c.Bytes()
+import "github.com/JohanLindvall/xxhaste/xxh3"
 
-h := xxhaste.Sum64Seed(data, seed)    // keyed by a seed
-h := xxhaste.Sum64Secret(data, sec)   // keyed by a custom secret
+h := xxh3.Sum64(data)              // 64-bit
+h := xxh3.Sum64String(key)         // no copy, no allocation
+c := xxh3.Sum128(data)             // 128-bit: c.Lo, c.Hi, c.Bytes()
 
-d := xxhaste.New()                    // streaming; implements hash.Hash64
+h := xxh3.Sum64Seed(data, seed)    // keyed by a seed
+h := xxh3.Sum64Secret(data, sec)   // keyed by a custom secret
+
+d := xxh3.New()                    // streaming; implements hash.Hash64
 d.Write(chunk)
 h, c := d.Sum64(), d.Sum128()         // both widths from one pass
 
-h := xxhaste.Sum64Uint64(key)         // fixed-size keys: no call at all
-h := xxhaste.Sum64Uint64Seed(key, s)
+h := xxh3.Sum64Uint64(key)         // fixed-size keys: no call at all
+h := xxh3.Sum64Uint64Seed(key, s)
 ```
 
 For a key whose size is known at compile time there is nothing to switch on
@@ -281,7 +288,7 @@ reading before touching that prologue.
 | XXH64 scalar, amd64 | always available on amd64 | executed natively and under qemu |
 | XXH64 scalar, arm64 | always; the lane round's form by core (`muladd` on Apple, `madd` elsewhere) | executed natively, both forms |
 
-`xxhaste.Backend()` and `xxh64.Backend()` report which one is live.
+`xxh3.Backend()` and `xxh64.Backend()` report which one is live.
 
 SVE2 is generated once per vector length: a stripe is a fixed 64 bytes, and how
 many registers that occupies is exactly what SVE leaves unspecified. At 128

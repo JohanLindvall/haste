@@ -5,7 +5,7 @@ package bench
 import (
 	"testing"
 
-	"github.com/JohanLindvall/xxhaste"
+	"github.com/JohanLindvall/xxhaste/xxh3"
 	"github.com/JohanLindvall/xxhaste/xxh64"
 )
 
@@ -21,14 +21,14 @@ func TestSameAsC(t *testing.T) {
 	for _, n := range []int{0, 1, 3, 4, 8, 9, 16, 17, 31, 32, 33, 63, 64, 65,
 		100, 128, 129, 240, 241, 256, 511, 512, 1024, 1025, 4096, 65535, 65536} {
 		in := buf[:n]
-		if got, want := xxhaste.Sum64(in), cXXH3(in); got != want {
+		if got, want := xxh3.Sum64(in), cXXH3(in); got != want {
 			t.Errorf("len=%d: Sum64 %#016x != C %#016x", n, got, want)
 		}
-		if got, want := xxhaste.Sum64Seed(in, 42), cXXH3Seed(in, 42); got != want {
+		if got, want := xxh3.Sum64Seed(in, 42), cXXH3Seed(in, 42); got != want {
 			t.Errorf("len=%d: Sum64Seed %#016x != C %#016x", n, got, want)
 		}
 		lo, hi := cXXH3128(in)
-		if got := xxhaste.Sum128(in); got.Lo != lo || got.Hi != hi {
+		if got := xxh3.Sum128(in); got.Lo != lo || got.Hi != hi {
 			t.Errorf("len=%d: Sum128 {%#x,%#x} != C {%#x,%#x}", n, got.Lo, got.Hi, lo, hi)
 		}
 		if got, want := xxh64.Sum64(in), cXXH64(in, 0); got != want {

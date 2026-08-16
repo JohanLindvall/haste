@@ -25,10 +25,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JohanLindvall/xxhaste"
+	"github.com/JohanLindvall/xxhaste/xxh3"
 	"github.com/JohanLindvall/xxhaste/xxh64"
 	cespare "github.com/cespare/xxhash/v2"
-	"github.com/zeebo/xxh3"
+	zeebo "github.com/zeebo/xxh3"
 )
 
 var sink uint64
@@ -123,14 +123,14 @@ func main() {
 		{"xxhaste", func(b []byte, n int) uint64 {
 			var s uint64
 			for i := 0; i < n; i++ {
-				s += xxhaste.Sum64(b)
+				s += xxh3.Sum64(b)
 			}
 			return s
 		}},
 		{"zeebo", func(b []byte, n int) uint64 {
 			var s uint64
 			for i := 0; i < n; i++ {
-				s += xxh3.Hash(b)
+				s += zeebo.Hash(b)
 			}
 			return s
 		}},
@@ -151,14 +151,14 @@ func main() {
 		{"xxhaste128", func(b []byte, n int) uint64 {
 			var s uint64
 			for i := 0; i < n; i++ {
-				s += xxhaste.Sum128(b).Lo
+				s += xxh3.Sum128(b).Lo
 			}
 			return s
 		}},
 		{"zeebo128", func(b []byte, n int) uint64 {
 			var s uint64
 			for i := 0; i < n; i++ {
-				s += xxh3.Hash128(b).Lo
+				s += zeebo.Hash128(b).Lo
 			}
 			return s
 		}},

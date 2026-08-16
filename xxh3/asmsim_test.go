@@ -1,8 +1,9 @@
-package xxhaste
+package xxh3
 
 import (
 	"encoding/binary"
 	"os"
+	"path/filepath"
 	"testing"
 	"unsafe"
 
@@ -242,6 +243,28 @@ func TestSimulatedAgainstReference(t *testing.T) {
 	}
 }
 
+// moduleRoot walks up from the test's working directory to the directory
+// holding go.mod. Backend.Filename is relative to the module root, and a test
+// runs in its own package directory, so every path from the generator needs
+// this in front of it.
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("no go.mod above the working directory")
+		}
+		dir = parent
+	}
+}
+
 // TestGeneratedFilesUpToDate regenerates every backend -- the XXH3 ones here
 // and the XXH64 ones in xxh64/ -- and compares it with what is checked in, so
 // that an edit to the generator cannot silently leave the shipped assembly
@@ -250,13 +273,14 @@ func TestGeneratedFilesUpToDate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the system assembler")
 	}
+	root := moduleRoot(t)
 	for _, b := range asmgen.AllBackends() {
 		t.Run(b.Filename(), func(t *testing.T) {
 			got, err := asmgen.Generate(b)
 			if err != nil {
 				t.Skipf("cannot assemble for %s: %v", b.GOARCH, err)
 			}
-			want, err := os.ReadFile(b.Filename())
+			want, err := os.ReadFile(filepath.Join(root, b.Filename()))
 			if err != nil {
 				t.Fatalf("%v (run go generate ./...)", err)
 			}

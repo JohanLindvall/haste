@@ -11,7 +11,7 @@
 // the cost, and every offset used here is already implied by the length switch
 // in sum64 and sum128.
 
-package xxhaste
+package xxh3
 
 import (
 	"encoding/binary"

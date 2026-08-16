@@ -18,11 +18,11 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/JohanLindvall/xxhaste"
 	"github.com/JohanLindvall/xxhaste/rapidhash"
+	"github.com/JohanLindvall/xxhaste/xxh3"
 	"github.com/JohanLindvall/xxhaste/xxh64"
 	cespare "github.com/cespare/xxhash/v2"
-	"github.com/zeebo/xxh3"
+	zeebo "github.com/zeebo/xxh3"
 )
 
 var sizes = []int{4, 8, 16, 32, 64, 128, 240, 256, 512, 1024, 4096, 16384, 65536, 1 << 20}
@@ -39,7 +39,7 @@ func buffer(n int) []byte {
 
 var (
 	sink64  uint64
-	sink128 xxhaste.Uint128
+	sink128 xxh3.Uint128
 )
 
 // TestSameAsZeebo is a cross-implementation check: two independent ports of
@@ -49,17 +49,17 @@ func TestSameAsZeebo(t *testing.T) {
 	for _, n := range []int{0, 1, 3, 4, 8, 9, 16, 17, 32, 64, 128, 129, 240, 241,
 		256, 512, 1024, 1025, 4096, 65535, 65536} {
 		in := buf[:n]
-		if got, want := xxhaste.Sum64(in), xxh3.Hash(in); got != want {
+		if got, want := xxh3.Sum64(in), zeebo.Hash(in); got != want {
 			t.Errorf("len=%d: Sum64 %#016x != zeebo %#016x", n, got, want)
 		}
-		if got, want := xxhaste.Sum64Seed(in, 42), xxh3.HashSeed(in, 42); got != want {
+		if got, want := xxh3.Sum64Seed(in, 42), zeebo.HashSeed(in, 42); got != want {
 			t.Errorf("len=%d: Sum64Seed %#016x != zeebo %#016x", n, got, want)
 		}
-		got, want := xxhaste.Sum128(in), xxh3.Hash128(in)
+		got, want := xxh3.Sum128(in), zeebo.Hash128(in)
 		if got.Lo != want.Lo || got.Hi != want.Hi {
 			t.Errorf("len=%d: Sum128 {%#x,%#x} != zeebo {%#x,%#x}", n, got.Lo, got.Hi, want.Lo, want.Hi)
 		}
-		g2, w2 := xxhaste.Sum128Seed(in, 42), xxh3.Hash128Seed(in, 42)
+		g2, w2 := xxh3.Sum128Seed(in, 42), zeebo.Hash128Seed(in, 42)
 		if g2.Lo != w2.Lo || g2.Hi != w2.Hi {
 			t.Errorf("len=%d: Sum128Seed {%#x,%#x} != zeebo {%#x,%#x}", n, g2.Lo, g2.Hi, w2.Lo, w2.Hi)
 		}
@@ -129,13 +129,13 @@ func BenchmarkCompare64(b *testing.B) {
 		b.Run(fmt.Sprintf("%d/xxhaste", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
-				sink64 = xxhaste.Sum64(buf)
+				sink64 = xxh3.Sum64(buf)
 			}
 		})
 		b.Run(fmt.Sprintf("%d/zeebo", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
-				sink64 = xxh3.Hash(buf)
+				sink64 = zeebo.Hash(buf)
 			}
 		})
 		b.Run(fmt.Sprintf("%d/xxhaste-xxh64", n), func(b *testing.B) {
@@ -187,14 +187,14 @@ func BenchmarkCompare128(b *testing.B) {
 		b.Run(fmt.Sprintf("%d/xxhaste", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
-				sink128 = xxhaste.Sum128(buf)
+				sink128 = xxh3.Sum128(buf)
 			}
 		})
 		b.Run(fmt.Sprintf("%d/zeebo", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
-				h := xxh3.Hash128(buf)
-				sink128 = xxhaste.Uint128{Lo: h.Lo, Hi: h.Hi}
+				h := zeebo.Hash128(buf)
+				sink128 = xxh3.Uint128{Lo: h.Lo, Hi: h.Hi}
 			}
 		})
 		if cXXH3128 != nil {
@@ -202,7 +202,7 @@ func BenchmarkCompare128(b *testing.B) {
 				b.SetBytes(int64(n))
 				for i := 0; i < b.N; i++ {
 					lo, hi := cXXH3128(buf)
-					sink128 = xxhaste.Uint128{Lo: lo, Hi: hi}
+					sink128 = xxh3.Uint128{Lo: lo, Hi: hi}
 				}
 			})
 		}
@@ -215,13 +215,13 @@ func BenchmarkCompareSeed(b *testing.B) {
 		b.Run(fmt.Sprintf("%d/xxhaste", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
-				sink64 = xxhaste.Sum64Seed(buf, 42)
+				sink64 = xxh3.Sum64Seed(buf, 42)
 			}
 		})
 		b.Run(fmt.Sprintf("%d/zeebo", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
-				sink64 = xxh3.HashSeed(buf, 42)
+				sink64 = zeebo.HashSeed(buf, 42)
 			}
 		})
 		b.Run(fmt.Sprintf("%d/xxhaste-xxh64", n), func(b *testing.B) {
@@ -280,7 +280,7 @@ func BenchmarkCompareStreamChunk(b *testing.B) {
 	for _, chunk := range []int{16, 64, 256, 1024, 4096, 16384, 65536} {
 		b.Run(fmt.Sprintf("%d/xxhaste", chunk), func(b *testing.B) {
 			b.SetBytes(n)
-			d := xxhaste.New()
+			d := xxh3.New()
 			for i := 0; i < b.N; i++ {
 				d.Reset()
 				for off := 0; off < n; off += chunk {
@@ -291,7 +291,7 @@ func BenchmarkCompareStreamChunk(b *testing.B) {
 		})
 		b.Run(fmt.Sprintf("%d/zeebo", chunk), func(b *testing.B) {
 			b.SetBytes(n)
-			d := xxh3.New()
+			d := zeebo.New()
 			for i := 0; i < b.N; i++ {
 				d.Reset()
 				for off := 0; off < n; off += chunk {
@@ -344,7 +344,7 @@ func BenchmarkCompareStream(b *testing.B) {
 	buf := buffer(n)
 	b.Run("xxhaste", func(b *testing.B) {
 		b.SetBytes(n)
-		d := xxhaste.New()
+		d := xxh3.New()
 		for i := 0; i < b.N; i++ {
 			d.Reset()
 			for off := 0; off < n; off += 4096 {
@@ -355,7 +355,7 @@ func BenchmarkCompareStream(b *testing.B) {
 	})
 	b.Run("zeebo", func(b *testing.B) {
 		b.SetBytes(n)
-		d := xxh3.New()
+		d := zeebo.New()
 		for i := 0; i < b.N; i++ {
 			d.Reset()
 			for off := 0; off < n; off += 4096 {

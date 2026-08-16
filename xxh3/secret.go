@@ -1,7 +1,7 @@
 // Code generated from the reference xxHash v0.8.3 XXH3_kSecret. DO NOT EDIT.
 // Source: github.com/Cyan4973/xxHash xxhash.h, XXH3_kSecret.
 
-package xxhaste
+package xxh3
 
 // secretDefaultSize is the length of the default secret, and the minimum size
 // accepted for a custom one that is used verbatim by the long-input path.

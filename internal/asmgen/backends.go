@@ -50,9 +50,6 @@ func (b Backend) EmitAll() []Kernel {
 
 // Package is the Go package the generated files belong to.
 func (b Backend) Package() string {
-	if b.Dir == "" {
-		return "xxhaste"
-	}
 	return path.Base(b.Dir)
 }
 
@@ -74,26 +71,26 @@ func XXH64Backends() []Backend {
 	}
 }
 
-// Backends lists the XXH3 backends.
+// Backends lists the XXH3 backends, which live in the xxh3 package.
 func Backends() []Backend {
 	return []Backend{
 		{Name: "sse2", Suffix: "SSE2", GOARCH: "amd64",
-			New: func() Arch { return newX86("sse2", modeSSE2, 4) }},
+			Dir: "xxh3", New: func() Arch { return newX86("sse2", modeSSE2, 4) }},
 		{Name: "avx2", Suffix: "AVX2", GOARCH: "amd64",
-			New: func() Arch { return newX86("avx2", modeAVX2, 8) }},
+			Dir: "xxh3", New: func() Arch { return newX86("avx2", modeAVX2, 8) }},
 		{Name: "avx512", Suffix: "AVX512", GOARCH: "amd64",
-			New: func() Arch { return newX86("avx512", modeAVX, 4) }},
+			Dir: "xxh3", New: func() Arch { return newX86("avx512", modeAVX, 4) }},
 		{Name: "neon", Suffix: "NEON", GOARCH: "arm64",
-			New: func() Arch { return newNEON(4) }},
+			Dir: "xxh3", New: func() Arch { return newNEON(4) }},
 		{Name: "neonhybrid", Suffix: "NEONHybrid", GOARCH: "arm64",
-			New: func() Arch { return newNEONHybrid("neonhybrid", 4, 4) }},
+			Dir: "xxh3", New: func() Arch { return newNEONHybrid("neonhybrid", 4, 4) }},
 		{Name: "neonhybrid2", Suffix: "NEONHybrid2", GOARCH: "arm64",
-			New: func() Arch { return newNEONHybrid("neonhybrid2", 8, 2) }},
-		{Name: "sve2vl128", Suffix: "SVE2VL128", GOARCH: "arm64", VL: 16,
+			Dir: "xxh3", New: func() Arch { return newNEONHybrid("neonhybrid2", 8, 2) }},
+		{Name: "sve2vl128", Suffix: "SVE2VL128", GOARCH: "arm64", VL: 16, Dir: "xxh3",
 			New: func() Arch { return newSVE2(16, 2) }},
-		{Name: "sve2vl256", Suffix: "SVE2VL256", GOARCH: "arm64", VL: 32,
+		{Name: "sve2vl256", Suffix: "SVE2VL256", GOARCH: "arm64", VL: 32, Dir: "xxh3",
 			New: func() Arch { return newSVE2(32, 4) }},
-		{Name: "sve2vl512", Suffix: "SVE2VL512", GOARCH: "arm64", VL: 64,
+		{Name: "sve2vl512", Suffix: "SVE2VL512", GOARCH: "arm64", VL: 64, Dir: "xxh3",
 			New: func() Arch { return newSVE2(64, 4) }},
 	}
 }

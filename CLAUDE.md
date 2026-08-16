@@ -1,26 +1,29 @@
 # Working in this repository
 
-xxhaste is an XXH3 implementation whose assembly kernels are generated, with
-XXH64 as a subpackage built the same way. Read this before changing anything
+xxhaste is a module of three hashes, each its own package, whose assembly
+kernels are generated: `xxh3/` (XXH3, 64- and 128-bit), `xxh64/` (XXH64), and
+`rapidhash/` (rapidhash, portable so far). The module root holds no code. Read this before changing anything
 under `internal/asmgen` or any `.s` file.
 
 ## Layout
 
 | path | what it is |
 |---|---|
-| `xxhaste.go` | public API; `sum64`/`sum128` hold the 0..16-byte cases inline |
-| `fixed.go` | call-free entry points for compile-time-known sizes |
-| `generic.go` | portable implementation: mid-size ladders, accumulator loop, convergence |
-| `digest.go` | streaming `Digest`; same output as `XXH3_update`, different staging |
-| `dispatch_{amd64,arm64}.go` | CPU detection and backend selection |
-| `dispatch.go` | the same three entry points for purego / other architectures |
-| `stub_{amd64,arm64}.go` | **generated** Go declarations for the kernels |
-| `xxh_*_{amd64,arm64}.s` | **generated** kernels |
+| `xxh3/xxhaste.go` | public API; `sum64`/`sum128` hold the 0..16-byte cases inline |
+| `xxh3/fixed.go` | call-free entry points for compile-time-known sizes |
+| `xxh3/generic.go` | portable implementation: mid-size ladders, accumulator loop, convergence |
+| `xxh3/digest.go` | streaming `Digest`; same output as `XXH3_update`, different staging |
+| `xxh3/dispatch_{amd64,arm64}.go` | CPU detection and backend selection |
+| `xxh3/dispatch.go` | the same three entry points for purego / other architectures |
+| `xxh3/stub_{amd64,arm64}.go` | **generated** Go declarations for the kernels |
+| `xxh3/xxh_*_{amd64,arm64}.s` | **generated** kernels |
 | `internal/asmgen` | the generator, for both hashes |
 | `internal/cpu` | MIDR_EL1 on Linux/arm64, and "is this an Apple core"; used by both dispatchers |
-| `cpu_linux_arm64.go` | SVE2 detection, and the MIDR list gating the hybrid |
+| `xxh3/cpu_linux_arm64.go` | SVE2 detection, and the MIDR list gating the hybrid |
 | `xxh64/` | XXH64: API and portable implementation (`xxh64.go`), `Digest`, per-arch dispatch, **generated** stubs and kernels, its own vectors and tests |
-| `ref/gen.c` | emits both packages' reference vectors from the C source |
+| `ref/gen.c` | emits xxh3's and xxh64's reference vectors from the C source |
+| `ref/rapidgen.c` | the same for rapidhash |
+| `rapidhash/` | rapidhash: API, portable implementation, vectors, tests |
 | `bench/` | separate module; comparison against zeebo/xxh3, cespare/xxhash and the C reference |
 | `bench/xxhash.h` | vendored reference C, v0.8.3, compiled in through cgo |
 | `bench/sweep` | every length one at a time |
@@ -126,8 +129,8 @@ Four things check the kernels, and they do not overlap as much as they look:
 | test | runs | oracle |
 |---|---|---|
 | `TestBackendsNative` | the linked `.s`, through the public API | C-derived vectors |
-| `TestKernelsMatchPortable` | the linked `.s`, called directly | `generic.go` |
-| `TestSimulatedBackends` | the generator's instruction stream | `generic.go` |
+| `TestKernelsMatchPortable` | the linked `.s`, called directly | `xxh3/generic.go` |
+| `TestSimulatedBackends` | the generator's instruction stream | `xxh3/generic.go` |
 | `TestGeneratedFilesUpToDate` | the generator, both packages' backends | the checked-in `.s` |
 
 `TestKernelsMatchPortable` is the only one that reaches `accumBlocks` under a

@@ -1,6 +1,6 @@
 //go:build arm64 && linux && !purego
 
-package xxhaste
+package xxh3
 
 import (
 	"encoding/binary"

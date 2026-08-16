@@ -86,22 +86,23 @@ jobs:
           sysctl -n machdep.cpu.brand_string 2>/dev/null | sed 's/^/brand=/' | tee -a cpu.txt
           (gcc --version 2>/dev/null || cc --version 2>/dev/null) | head -1 | sed 's/^/cc=/' | tee -a cpu.txt
           go version | tee -a cpu.txt
-          go test -run 'TestBackendName|TestBackendsNative' -v . ./xxh64 2>&1 | grep -E 'dispatched|Backend' | tee -a cpu.txt
+          go test -run 'TestBackendName|TestBackendsNative' -v ./xxh3 ./xxh64 ./rapidhash 2>&1 | grep -E 'dispatched|Backend' | tee -a cpu.txt
       - name: comparison benchmarks (bench module)
         run: |
           cd bench
           go test -run xxx -bench 'Compare' -count ${{ inputs.count || 3 }} -cpu 1 -timeout 60m . 2>&1 | tee ../compare.txt
       - name: kernel-level backend benchmarks
         run: |
-          go test -run xxx -bench 'BenchmarkBackends|BenchmarkSum64Seed|BenchmarkFixed|BenchmarkDigest' -count ${{ inputs.count || 3 }} -cpu 1 -timeout 60m . 2>&1 | tee backends.txt
+          go test -run xxx -bench 'BenchmarkBackends|BenchmarkSum64Seed|BenchmarkFixed|BenchmarkDigest' -count ${{ inputs.count || 3 }} -cpu 1 -timeout 60m ./xxh3 2>&1 | tee backends.txt
           go test -run xxx -bench 'BenchmarkBackends|BenchmarkDigest' -count ${{ inputs.count || 3 }} -cpu 1 -timeout 60m ./xxh64 2>&1 | tee xxh64.txt
+          go test -run xxx -bench 'BenchmarkSum64|BenchmarkBackends' -count ${{ inputs.count || 3 }} -cpu 1 -timeout 60m ./rapidhash 2>&1 | tee rapidhash.txt
       - name: per-length sweep 0..255
         run: |
           cd bench && go run ./sweep -max 255 2>&1 | tee ../sweep.csv
       - name: markdown tables
         run: |
           cd bench
-          for f in compare backends xxh64; do
+          for f in compare backends xxh64 rapidhash; do
             if [ -s "../$f.txt" ]; then
               go run ./mdtable < "../$f.txt" > "../$f.md"
             fi
@@ -121,6 +122,8 @@ jobs:
             backends.md
             xxh64.txt
             xxh64.md
+            rapidhash.txt
+            rapidhash.md
             sweep.csv
 
   publish:
