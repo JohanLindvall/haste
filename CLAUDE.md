@@ -188,9 +188,24 @@ go build -o /tmp/sweep ./sweep                 # every length, one at a time
   Two 2-3x spikes have been chased to nothing this way (lengths 130 and 154
   in one run, 32 in another); they are the same lottery wearing a different
   hat. The sweep warms the core up first -- see the M2 note -- so early
-  lengths are safe, but its function-pointer harness adds ~1 ns to every
-  implementation equally: use it for shapes and ratios, the compare suite
-  for absolute claims.
+  lengths are safe, but its function-pointer harness adds a call to every
+  implementation, and **not equally**: use it for shapes, the compare suite
+  for any claim about who is faster. Two measured asymmetries, both in
+  XXH64 at short lengths:
+  - Our entry points are built to inline, so a direct call reaches the
+    kernel in one call while a call through a function value takes two --
+    the wrapper, then the kernel. cespare/xxhash's `Sum64` *is* the assembly
+    symbol, so it pays one either way. Measured on an M2: our 12-byte hash
+    2.15 ns direct, 2.71 through a function value; on Zen 3 and Zen 4 the
+    sweep therefore reads 0.83-0.85x of cespare over 9..32 bytes where the
+    compare suite reads 1.13x. The trade is deliberate -- the common case is
+    the direct call -- but it makes the sweep's XXH64 column pessimistic on
+    x86 by about one call.
+  - On Apple silicon cespare's arm64 assembly costs 9-14 ns through a
+    function value at any length needing two or more tail steps (12 bytes:
+    10.42 ns against 2.46 direct), which makes the sweep's cespare column
+    optimistic there by 4x. Not reproduced on Neoverse N2, Zen 3, Zen 4 or
+    Ice Lake, and not diagnosed.
 - **perf works here** (`perf_event_paranoid=2` allows user-space counting of
   own processes). Two traps: `perf stat -o FILE` truncates FILE when perf
   exits, so redirect the benchmark's stdout somewhere else or lose the
@@ -619,6 +634,41 @@ What that makes of the kernels:
   to ~0.95 GHz, so only the ratios mean anything): ~2 vector operations per
   cycle, ~6.5-wide, `umaddl` at 1.2 per cycle. NEON and the two-lane split
   tie all-in; the four-lane split loses.
+
+### amd64 on Intel, measured on GitHub runners (shared VMs)
+
+Two Intel cores have been sampled, both on four-vCPU GitHub runner VMs, so
+the ratios are usable and the absolute numbers are not. They agree on the
+one finding that matters and disagree on its cause:
+
+- **XXH3 is behind zeebo/xxh3 from 16 KiB up on both.** Ice Lake-SP (Xeon
+  8370C, current build): 0.92x / 0.89x / 0.87x at 16 KiB / 64 KiB / 1 MiB.
+  Granite Rapids (Xeon 6973P-C, the build of 465276d): 0.85x / 0.76x /
+  0.72x. Below 4 KiB both are ahead of it, up to 1.40x, and every other core
+  measured -- M2, N2, Zen 3, Zen 4 -- is ahead at every size. This is the
+  open performance item in the repository.
+- **It is not a dispatch mistake on Ice Lake.** There our AVX-512 kernel is
+  the fastest of ours (1,152 ns at 64 KiB against AVX2's 1,207), and
+  zeebo's AVX2 still beats it at 1,024: 2.8 cycles per stripe against our
+  3.15, on a core with three vector ports.
+- **On Granite Rapids it is**, but only there: AVX2 1,061 against AVX-512
+  1,168. So preferring AVX2 on Intel in `pickBackend` would help that core
+  and cost 4% on Ice Lake; a CPUID-model check would be needed, and neither
+  core has been measured on hardware we control.
+- Candidates for why zeebo's AVX2 loop wins on Intel while ours wins on
+  both AMD cores, none of them tested: 512-bit licence downclocking on the
+  fast-block path, our extra secret load per stripe against whatever it
+  keeps in registers, and Intel's three-port 256-bit issue against Zen's
+  four. This wants an afternoon on real Intel hardware, not another runner.
+- XXH64 on Ice Lake is 5-8% behind cespare between 32 and 256 bytes and
+  exactly level elsewhere -- the one x86 window the combined-mask tail did
+  not reach. On Zen 3 and Zen 4 that window is level or ahead.
+
+Which physical CPU an amd64 runner gives you is a lottery: the pool has
+served Zen 3 (EPYC 7763), Zen 4 (EPYC 9V74, with AVX-512 masked off by the
+host, so it dispatches to AVX2) and both Intel cores above. Dispatch
+`bench.yml` twice if a particular vendor is wanted, and read `cpu.txt` in
+the artifact before trusting which core produced a number.
 
 ### amd64, measured on Zen 4 (Ryzen 7 8840HS)
 
