@@ -2,6 +2,12 @@
 // length rather than one per size class, so that cliffs and anomalies between
 // the class boundaries are visible.
 //
+// rapidhash has no second implementation to sit beside it here -- the only
+// other one is the C reference, which cannot be called this way without cgo's
+// overhead swamping a two-nanosecond hash -- so its column is read against
+// itself: a cliff between two adjacent lengths is the thing this tool is for,
+// and rapidhash has one at 224/225 that no size-class benchmark would show.
+//
 // Methodology: per length and implementation, iterations are calibrated to
 // ~1ms of work, run in 9 repetitions, and the per-op time is the median of
 // the repetitions. The input is read from a fixed, 64-byte-aligned buffer at
@@ -121,6 +127,13 @@ func main() {
 		name string
 		f    runner
 	}{
+		{"haste-rapid", func(b []byte, n int) uint64 {
+			var s uint64
+			for i := 0; i < n; i++ {
+				s += rapidhash.Sum64(b)
+			}
+			return s
+		}},
 		{"haste-xxh3", func(b []byte, n int) uint64 {
 			var s uint64
 			for i := 0; i < n; i++ {
