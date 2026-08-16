@@ -20,6 +20,11 @@ import (
 // 0.3%, and which was taking the plain NEON kernel because nothing here
 // could name it: 3,149 ns against 2,297 for the hybrid at 64 KiB, a quarter
 // of the throughput of every large hash on the platform.
+//
+// Confirmed on that runner rather than argued from here. It now reports
+// neon-hybrid, and XXH3 through the public API moved +15.6% at 1 KiB, +31.0%
+// at 4 KiB, +36.3% at 16 KiB, +37.0% at 64 KiB and +25.7% at a mebibyte,
+// with the three kernels themselves timing identically either side.
 const (
 	midrKey   = `HARDWARE\DESCRIPTION\System\CentralProcessor\0`
 	midrValue = "CP 4000"

@@ -360,6 +360,36 @@ simply disappear.
 
   Practically: quote arm64-Linux figures, treat macOS ones as shape, and
   never diff two amd64 fleet runs without checking they ran on the same part.
+- **What the fleet is actually for is catching the platform you cannot run.**
+  Its numbers are worse than dedicated hardware's, so the case for it is not
+  measurement -- it is that a build tag can disable a kernel on an operating
+  system nobody here runs, and nothing but that operating system will say so.
+  `windows-11-arm` is a Neoverse N2 whose three NEON kernels time within 0.3%
+  of the Linux N2's, and it was taking the plain one, because the file naming
+  the cores that want the hybrid was compiled only on Linux. Reading MIDR_EL1
+  from the registry and moving the gate to a file every arm64 build compiles
+  measured, through the public API on that runner:
+
+  | bytes | before | after | |
+  |---|---|---|---|
+  | 1 Ki | 51 | 44 | +15.6% |
+  | 4 Ki | 198 | 151 | +31.0% |
+  | 16 Ki | 785 | 576 | +36.3% |
+  | 64 Ki | 3,149 | 2,298 | +37.0% |
+  | 1 Mi | 59,354 | 47,218 | +25.7% |
+
+  The three kernels themselves time identically across the two runs, so all
+  of it is the choice and none is the code. Two smaller things came out of
+  the same platform: `bench/` failed to build there because a runner with no
+  C toolchain still has `CGO_ENABLED=1`, and bench/sweep reported hashes
+  costing nothing because its timed block was shorter than that image's clock
+  tick. Three defects, all invisible from every other runner, and none of
+  them found by a benchmark number being surprising.
+- **The dispatch decision is printed, so read it before believing a column.**
+  Each job logs which kernel each package chose (`dispatched to ...` in
+  `cpu.txt`); the N2-on-Windows quarter went unnoticed while the log only
+  said which runner it was. A fleet row is two facts -- the hardware and the
+  code path -- and the second is the one that changes without telling you.
 - **Backends only diverge from 241 bytes** -- below that no kernel is
   entered, and the portable path measures identical to the assembly build.
   That makes the three backends a free noise gauge: forcing each in turn over
