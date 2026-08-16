@@ -13,9 +13,10 @@
 // 9.94). Both are the same miss -- one byte short of another loop pass, six
 // serial ladder rungs in its place.
 //
-// Methodology: per length and implementation, iterations are calibrated to
-// ~1ms of work, run in 9 repetitions, and the per-op time is the median of
-// the repetitions. The input is read from a fixed, 64-byte-aligned buffer at
+// Methodology: per length and implementation, iterations are calibrated to a
+// block of work -- a millisecond, or a thousand clock ticks where the clock
+// is coarser than a microsecond -- run in 9 repetitions, and the per-op time
+// is the median of the repetitions. The input is read from a fixed, 64-byte-aligned buffer at
 // offset 0, matching the other benchmarks.
 //
 // Each implementation owns its whole iteration loop, so the hash inside it is
@@ -50,15 +51,46 @@ var sink uint64
 // so the call is direct; see the package comment.
 type runner func(in []byte, iters int) uint64
 
+// block is how long one timed run should take. It is a thousand times the
+// clock's own granularity, or a millisecond, whichever is larger.
+//
+// A millisecond is plenty on Linux and macOS, where time.Now resolves to
+// tens of nanoseconds. It is not plenty everywhere: on a windows-latest
+// runner the whole 0..255 matrix came back mostly 0.000, with the odd real
+// number scattered through it, because the timed block was under the clock's
+// step and most deltas read as zero. Silence would have been better than
+// that -- a column of zeros looks like a hash that costs nothing -- so the
+// granularity is measured here rather than assumed.
+var block = calibrateBlock()
+
+func calibrateBlock() time.Duration {
+	// The smallest non-zero delta the clock will admit, best of five.
+	tick := time.Hour
+	for i := 0; i < 5; i++ {
+		t := time.Now()
+		var d time.Duration
+		for d == 0 {
+			d = time.Since(t)
+		}
+		if d < tick {
+			tick = d
+		}
+	}
+	if b := tick * 1000; b > time.Millisecond {
+		return b
+	}
+	return time.Millisecond
+}
+
 func measure(f runner, in []byte) float64 {
-	// Calibrate to ~1ms.
+	// Calibrate to one block.
 	iters := 1000
 	for {
 		t := time.Now()
 		sink += f(in, iters)
 		d := time.Since(t)
-		if d > 200*time.Microsecond {
-			iters = int(float64(iters) * float64(time.Millisecond) / float64(d))
+		if d > block/5 {
+			iters = int(float64(iters) * float64(block) / float64(d))
 			if iters < 1000 {
 				iters = 1000
 			}
