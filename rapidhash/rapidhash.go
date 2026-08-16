@@ -37,13 +37,11 @@ import (
 // a random constant like the rest -- upstream gives it as 0xaaaa..., the
 // alternating bit pattern -- and it keys only the final mix.
 //
-// The ninth word is not a secret. It is the amd64 kernel's multiply form,
-// written once at package init (see dispatch_amd64.go) and read by the block
-// loop only, on the path that runs it. It lives here because the kernel
-// already holds a pointer to this table, so the branch costs no load of its
-// own -- and a generated body cannot name a Go symbol, which is the other
-// reason a flag has to be reachable through that pointer.
-var secret = [9]uint64{
+// The two words after them are not secrets, and are here rather than in
+// variables of their own because the kernel holds a pointer to this table
+// already -- and because a generated body cannot name a Go symbol, so
+// anything it must read has to be reachable through that pointer.
+var secret = [10]uint64{
 	0x2d358dccaa6c78a5,
 	0x8bb84b93962eacc9,
 	0x4b33a62ed433d4a3,
@@ -52,7 +50,19 @@ var secret = [9]uint64{
 	0xe7037ed1a0b428db,
 	0x90ed1765281c388c,
 	0xaaaaaaaaaaaaaaaa,
-	0, // the amd64 multiply form; not part of the hash
+
+	// [8] is what the prologue's seed ^= mix(seed^secret[2], secret[1])
+	// evaluates to when the seed is zero, which is every call through Sum64
+	// and Sum64String. The unseeded kernels load it instead of computing it,
+	// which removes a multiply -- and a serial one, at the head of every
+	// hash. nsStart in the tests derives it from the words above, so the two
+	// cannot drift.
+	0x422765567d8fbfd6,
+
+	// [9] is the amd64 kernel's multiply form, written once at package init
+	// (see dispatch_amd64.go) and read only by the block loop, on the path
+	// that runs it.
+	0,
 }
 
 // The four entry points are wrappers around one call into the kernel, so that
@@ -61,12 +71,12 @@ var secret = [9]uint64{
 
 // Sum64 returns the rapidhash of b.
 func Sum64(b []byte) uint64 {
-	return sum64(unsafe.Pointer(unsafe.SliceData(b)), len(b), 0)
+	return sum64NS(unsafe.Pointer(unsafe.SliceData(b)), len(b))
 }
 
 // Sum64String returns the rapidhash of s, without copying it.
 func Sum64String(s string) uint64 {
-	return sum64(unsafe.Pointer(unsafe.StringData(s)), len(s), 0)
+	return sum64NS(unsafe.Pointer(unsafe.StringData(s)), len(s))
 }
 
 // Sum64Seed returns the rapidhash of b under seed. A seed of zero gives the
@@ -118,7 +128,18 @@ func rdb(p unsafe.Pointer, off int) byte { return *(*byte)(unsafe.Add(p, off)) }
 // longer runs a seven-lane block loop first. All three converge on the same
 // two words a and b, and the same final fold.
 func sum64Generic(p unsafe.Pointer, n int, seed uint64) uint64 {
-	seed ^= mix(seed^secret[2], secret[1])
+	return sum64Mixed(p, n, seed^mix(seed^secret[2], secret[1]))
+}
+
+// sum64GenericNS is sum64Generic with the seed known to be zero, so that the
+// prologue's mix is the constant in secret[8] rather than a multiply. It is
+// what the portable build's Sum64 and Sum64String reach.
+func sum64GenericNS(p unsafe.Pointer, n int) uint64 {
+	return sum64Mixed(p, n, secret[8])
+}
+
+// sum64Mixed is the hash proper, taking the seed the prologue already mixed.
+func sum64Mixed(p unsafe.Pointer, n int, seed uint64) uint64 {
 
 	var a, b uint64
 	i := n

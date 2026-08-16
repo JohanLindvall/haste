@@ -169,7 +169,10 @@ func (a *arm64Rapid) SeedMix() {
 	a.eor(a.Seed(), a.Seed(), t)
 }
 
-func (a *arm64Rapid) Round(lane GPR, off, slot int, _ bool) {
+// SeedConst is SeedMix with the seed known to be zero; see the x86 face.
+func (a *arm64Rapid) SeedConst() { a.ldrSecret(a.Seed(), 8) }
+
+func (a *arm64Rapid) Round(lane GPR, off, slot int) {
 	// lane = mix(load(in+off) ^ secret[slot], load(in+off+8) ^ lane)
 	w0, w1 := a.tmp(), a.A()
 	a.ldp(w0, w1, a.In(), off)

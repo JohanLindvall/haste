@@ -593,11 +593,12 @@ anything on top of that.
   `Sum64String` reach it in one direct call and `Sum64Seed` still reaches the
   seeded kernel, so which one a caller gets is settled at compile time and
   costs no branch -- the same trade the parent package makes with `sum64NS`.
-  Measured on a Zen 4, every length 1..40, four relinked layouts: **+1.0 to
-  +1.9%, and every length sampled improved**, which is what removing one to
-  three instructions from a 2.6 ns hash looks like. It does not move the
-  standing against cespare/xxhash, because the gap there is guards rather
-  than instructions -- see below. Gated on `UnseededTwin`, off for arm64
+  The "+1.0 to +1.9% at every length" once recorded here was measured on a
+  build where `Sum64` still called the seeded kernel, so the twin was
+  unreachable and that number was rebuild drift -- its flatness across
+  lengths was the tell, since folding a seed can only pay where the hash is
+  short. See fc5d086 for the wiring that was missing. Re-measure before
+  quoting anything here. Gated on `UnseededTwin`, off for arm64
   until an arm64 is measured: three-operand adds make its lane setup cheaper
   already, so the twin has less to win there.
 - **The amd64 tail's combined-mask skips are generated but off.**
@@ -660,46 +661,55 @@ anything on top of that.
 
 rapidhash has one primitive -- the two halves of a 64x64 multiply, xored --
 and no rotates, shifts or additions to hide behind it. That makes its bounds
-easy to state and unusually easy to get wrong from first principles. On a
-Redwood Cove, measured:
+easy to state and unusually easy to get wrong from first principles. Measured
+on a Redwood Cove:
 
 - **Every length class is instruction-bound at the short end.** 16 bytes
   retires 88.6% of its slots (55.6 instructions, 5.4 IPC against a 6-wide
-  machine), 64 bytes 87.8%. There is nothing to hide there and nothing to
-  overlap; instructions removed are cycles removed, roughly one for six.
-- **The block loop is not.** It looks instruction-bound -- 78% retiring --
-  and is not: removing 4,100 instructions from a 64 KiB hash left the cycles
-  where they were and turned the freed slots into backend-bound ones
-  (15.7% to 29.0%), total slots unchanged. Anything that costs no execution
-  port is free to remove and buys nothing.
-
-  What it *is* bound by was found by taking one kind of work out at a time,
+  machine), 64 bytes 87.8%. Instructions removed there are cycles removed,
+  roughly one for six. The short paths accordingly read at `in + n - k`
+  through `disp(base,index,1)` rather than computing the index first: three
+  instructions become one, twice a hash, and 1..16 bytes is 3% quicker for
+  it.
+- **The block loop is not, though it looks it.** It retires 78% of its slots
+  and is still not instruction-bound: removing 4,100 instructions from a
+  64 KiB hash left the cycles where they were and turned the freed slots
+  into backend-bound ones (15.7% to 29.0%), total slots unchanged.
+- **What it is bound by was found by removing one kind of work at a time**,
   wrong results and all, in a standalone copy of the loop. Per 224-byte
-  iteration, against 22.3 cycles shipped: dropping the multiply entirely is
-  worth 1.8 cycles, dropping the lane xor 0.8, and **dropping the secret xor
-  2.6** -- the largest single lever, and the multiply is nearly the smallest.
-  The loop reloads all seven secret words twice an iteration, fourteen L1
-  loads it is short of ports for.
-- **What was taken from that.** mulx frees rax, which mulq's fixed
-  destination occupies; rax then holds a lane's secret word across both of
-  that lane's rounds, halving the secret loads. Isolated, mulx alone is 10.8%
-  and the held secret another 6.7%. mulx alone in the shipped kernel is about
-  1%: worth having only for the register it frees.
-- **The two loops must be ordered so the baseline one falls through** into
-  the code both forms share. Emitted the other way round, with 500 bytes of
-  alternative loop in between, 225..384 bytes lost 2-3% -- lengths that take
-  the baseline path either way. That artifact also produced a false result:
-  a minimum-iteration threshold looked necessary to stop one iteration
-  regressing, and once the order was fixed it was not, and dropping it made
-  256..448 bytes 1-6% faster instead. Reorder before thresholding.
-- **The short paths compute `in + n - k` in an addressing mode**, not in a
-  register. mov, sub and a load is three instructions where `disp(base,idx,1)`
-  is one, and at 10 cycles a hash that is 2-5%.
+  iteration against 22.3 cycles: dropping the multiply entirely is worth 1.8
+  cycles, dropping the lane xor 0.8, and **dropping the secret xor 2.6** --
+  the largest lever, and the multiply nearly the smallest. The loop reloads
+  all seven secret words twice an iteration.
+- **So the second form is not `mulx` for its own sake.** `mulx` frees the
+  register `mulq`'s fixed destination occupies; that register then holds a
+  lane's secret word across both of the lane's rounds, halving the secret
+  loads. Isolated: `mulx` alone 10.8%, the held secret another 6.7%. `mulx`
+  alone in the shipped kernel is about 1%, which is why the Zen 4 note
+  further down and this one do not disagree -- that note measured `mulx`
+  alone, on a core where it is slower, and the selection is gated to Intel.
 
-Against the state before this round, cycles per hash, median of nine, both
-alignment phases: 1..16 bytes −0.7 to −5.0%, 17..128 level, 224..448 −1.7 to
-−5.9%, 512 bytes and up −8.8 to −15.1%. 225..232 changes sign between the two
-phases and is the lottery rather than a result.
+The measurements that decided its shape, each the mean of both alignment
+phases, medians of nine, against the tree without it:
+
+| bytes | with the paired loop |
+|---|---|
+| 232..256 | +6-7% in one phase, 0 to −1% in the other |
+| 320..448 | level |
+| 449..512 | −6 to −8% |
+| 1 Ki..64 Ki | −8 to −14% |
+
+Two things had to be right at once, and each hid the other while it was
+wrong: **the loops must be ordered so the form this machine does not take is
+the one that jumps**, and **the alternative form needs a minimum iteration
+count**. With the order wrong, the threshold looked unnecessary and removing
+it measured as an improvement; it was not, and 232..320 bytes lost 4-20% as
+soon as the tree moved under it. Change one of those at a time.
+
+The 232..256 cost is phase-dependent and by this file's own standard is not a
+result: it is under 8% and does not survive relinking. It is recorded because
+the code that made it possible is the code that wins above 449, and because
+this box cannot settle it.
 
 ### arm64, measured on Neoverse N2 (2 vector pipes, 3.4 GHz)
 
@@ -1195,6 +1205,42 @@ So the rung inlining is worth keeping on its own merits, and the Zen 3 losses
 are still owed the three relinked layouts on an AMD box -- this only shows
 they do not follow the change onto other hardware.
 
+### rapidhash
+
+- **The prologue's mix is a constant when the seed is zero, and Sum64 takes
+  it that way.** rapidhash opens every hash with
+  `seed ^= mix(seed ^ secret[2], secret[1])`, which for an unseeded call is
+  always `0x422765567d8fbfd6`. The secret table carries it as a ninth word
+  and the generator emits a second kernel, `sum64RapidNS`, whose prologue
+  loads it instead of multiplying; `Sum64` and `Sum64String` reach that one
+  and `Sum64Seed` the original, so the choice is the entry point's and costs
+  no branch. It removes a multiply, and a serial one that stands at the head
+  of every hash before any input is read. Measured on a Zen 4, three
+  relinked layouts: **+6.0% at 1..16 bytes, +2.1% at 17..32, +14.7% at
+  33..112, +11.5% at 113..224, +3.6% at 225..1024** and nothing from 4 KiB
+  up, where one multiply is lost in the block loop. The portable path gains
+  far more -- 46% at 4 bytes, 41% at 17..32 -- because the kernel was
+  already overlapping the multiply that the Go code could not.
+- **mulx does not help this kernel on Zen 4, and the evidence is now in.**
+  The x86 face notes that `mulq`'s fixed rdx:rax pair costs a move per lane
+  round and that BMI2's `mulx` would lift it. It does, and the loop is
+  slower for it: a seven-lane round measures 13.57 cycles with `mulq` and
+  15.58 with `mulx` on this core, and raw throughput is 1.57 cycles per
+  multiply against 1.62. Seven multiplies at 1.57 is 11 cycles, so the
+  shipped loop at 13.57 is within 23% of the multiplier bound with the
+  instruction count doing the rest. No second kernel, no CPUID check.
+- **The short path is a call, not arithmetic.** An empty kernel call with
+  this signature is 1.28 ns on a Zen 4 against 2.01 for a whole 8-byte hash,
+  so under a nanosecond of it is the hash. Moving the 0..16 case into Go so
+  it inlines into the caller would remove the call -- and does not fit: the
+  case costs 190 inliner nodes against a budget of 80, and even the 8..16
+  branch alone costs 106, which takes `Sum64` itself from inlinable to a
+  call at 148. Tried, measured, reverted.
+- **224 bytes is slower than 225** (8.56 against 7.50 ns), because 224 does
+  not enter the 224-byte block loop: it runs one 112-byte block of seven
+  parallel lanes and then all six ladder rungs, which are serial, where 225
+  runs fourteen parallel lanes and no rungs. Wire format, not a bug.
+
 ### amd64, measured on Zen 4 (Ryzen 7 8840HS)
 
 The core retires **four 256-bit vector ALU operations per cycle**, and an
@@ -1400,6 +1446,21 @@ core barring a wider one.
   Fixing it needs the specialization that was already measured and rejected
   above -- the guard compares cost more than the L1-hot loads they remove --
   so it stands.
+
+### The other Go rapidhash
+
+[vkudryk/rapidhash-go](https://github.com/vkudryk/rapidhash-go) implements the
+**original** rapidhash, not the one in `rapidhash/`. Its secret is three words
+where the current algorithm's is eight, it folds the length into the prologue
+rather than the final mix, and its default seed is nonzero rather than zero.
+The two disagree at every length, zero included; the reference C agrees with
+this package at all of them.
+
+The first three secret words are byte-identical between the two, which is what
+makes them easy to confuse and worth writing down. It was briefly added to
+`bench/` and then removed: benchmarking two different algorithms beside each
+other reads as a like-for-like comparison however the rows are labelled, and
+it forced `bench/go.mod` from Go 1.22 to 1.24.2 for the privilege.
 
 ## Reference vectors
 

@@ -300,21 +300,37 @@ It is bit-identical to the reference C, over 640 vectors generated from it by
 `ref/rapidgen.c`, and both kernels are generated the same way the other two
 packages' are.
 
+**If you are comparing against another Go rapidhash, check which version it
+is.** [vkudryk/rapidhash-go](https://github.com/vkudryk/rapidhash-go)
+implements the *original* rapidhash: three secret words where the current
+algorithm has eight, the length folded into the prologue rather than the final
+mix, and a nonzero default seed. It produces different hashes from this
+package at every length, including zero — verified against the reference C,
+which agrees with this package throughout. Neither is wrong; they are
+different versions of the algorithm, and the first three secret words are
+identical, which is what makes the two easy to mistake for each other. It is
+not in `bench/`, because timing two different algorithms side by side invites
+exactly that mistake.
+
 The kernel is worth **32-36% over 225 bytes and up** against the portable Go,
 on a Zen 4 — and nothing measurable below that, where the cost is the call
 rather than the hashing. That is the opposite of what the other two hashes
 gain from assembly, and the reason is the seven lanes: Go will not keep them
 all in registers across the block loop, and the kernel does.
 
-On amd64 the block loop has a second form, taken when CPUID reports BMI2.
+On amd64 the block loop has a second form, taken on Intel cores with BMI2.
 `mulx` has no fixed destination, which frees the register `mulq` occupies;
 that register then holds a lane's secret word across both of the lane's
-rounds, halving the loop's secret loads. The choice is made inside the kernel
-and only by inputs long enough to run the loop, so a short hash never
-executes the test. Measured on a Core Ultra 9 185H against the same kernel
-without it: **−9 to −15% from 512 bytes up**, level below. Short inputs are
-2-5% quicker for an unrelated reason — their `in + n - k` reads are one
-addressing mode now rather than three instructions.
+rounds, halving the loop's secret loads — which is where the win is, rather
+than in `mulx` itself. The choice is made inside the kernel, and only by
+inputs long enough to run the loop twice, so shorter ones never execute the
+test. Measured on a Core Ultra 9 185H: **6-14% from 449 bytes up**, level
+between 320 and 448. It is gated to Intel because a Zen 4 measures `mulx`
+alone slower than `mulq` and the paired form has not been measured there.
+
+Short inputs are about 3% quicker for an unrelated reason: their
+`in + n - k` reads are one addressing mode now rather than three
+instructions.
 
 ## Backends
 

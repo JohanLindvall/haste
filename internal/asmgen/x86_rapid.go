@@ -199,26 +199,17 @@ func (x *x86Rapid) SeedMix() {
 	x.xor(x.Seed(), rAX)
 }
 
-func (x *x86Rapid) Round(lane GPR, off, slot int, mulx bool) {
+// SeedConst is SeedMix with the seed known to be zero: one load of the ninth
+// secret word, where the value it always computes is kept.
+func (x *x86Rapid) SeedConst() { x.movSec(x.Seed(), 8) }
+
+func (x *x86Rapid) Round(lane GPR, off, slot int) {
 	// lane = mix(load(in+off) ^ secret[slot], load(in+off+8) ^ lane)
 	//
 	// The second operand is built in r14, the one scratch register the plan
 	// keeps free, and the secret is an operand of the xor rather than a load
-	// of its own.
-	if mulx {
-		// mulx names both destinations, so the low half lands in the lane
-		// directly and the high half goes back into r14 -- which mulx may do
-		// even though r14 is also its source, since the source is read before
-		// either destination is written. Six instructions against seven.
-		x.load64(rDX, x.In(), off)
-		x.xorSec(rDX, slot)
-		x.load64(r14, x.In(), off+8)
-		x.xor(r14, lane)
-		x.mulx(r14, lane, r14)
-		x.xor(lane, r14)
-		return
-	}
-	// The first operand goes to rax because mulq demands it.
+	// of its own. The first goes to rax because mulq demands it; the
+	// alternative form does not use this round at all, see AltBlockBody.
 	x.load64(rAX, x.In(), off)
 	x.xorSec(rAX, slot)
 	x.load64(r14, x.In(), off+8)
@@ -274,12 +265,13 @@ func (x *x86Rapid) roundHeldSecret(lane GPR, off int, sec GPR) {
 	x.xor(lane, r14)
 }
 
-// BranchNotAltMul branches to label when secret[8] says the machine has no
-// BMI2. The flag is in the table because a generated body cannot name a Go
-// symbol, and because the kernel is holding that pointer anyway.
+// BranchNotAltMul branches to label when secret[9] says this machine does not
+// want the alternative form. The flag is in the table because a generated
+// body cannot name a Go symbol, and because the kernel holds that pointer
+// anyway.
 func (x *x86Rapid) BranchNotAltMul(label string) {
-	x.b.emit(func(m *Machine) { m.setCmp(m.Load64(m.R[rCX]+64), 0) },
-		"cmpq $0, %s", x.mem(rCX, 64))
+	x.b.emit(func(m *Machine) { m.setCmp(m.Load64(m.R[rCX]+72), 0) },
+		"cmpq $0, %s", x.mem(rCX, 72))
 	x.branch(EQ, label)
 }
 

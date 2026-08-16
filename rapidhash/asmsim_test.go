@@ -23,7 +23,7 @@ type simRegion struct {
 	inAt, tableAt uint64
 }
 
-func newSimRegion(in []byte) *simRegion { return newSimRegionForm(in, secret[8]) }
+func newSimRegion(in []byte) *simRegion { return newSimRegionForm(in, secret[9]) }
 
 // newSimRegionForm lays the region out with a chosen multiply-form word, so
 // that a kernel carrying both block loops can be run either way. The word is
@@ -51,7 +51,7 @@ func newSimRegionForm(in []byte, form uint64) *simRegion {
 // Go assembly around the generated body does first: the table's address into
 // its register, then the arguments.
 func simSum64(t *testing.T, k asmgen.Kernel, def asmgen.FuncDef, in []byte, seed uint64) uint64 {
-	return simSum64Form(t, k, def, in, seed, secret[8])
+	return simSum64Form(t, k, def, in, seed, secret[9])
 }
 
 func simSum64Form(t *testing.T, k asmgen.Kernel, def asmgen.FuncDef, in []byte, seed uint64, form uint64) uint64 {
@@ -66,6 +66,28 @@ func simSum64Form(t *testing.T, k asmgen.Kernel, def asmgen.FuncDef, in []byte, 
 	r.m.R[k.ArgGPR(0)] = r.inAt
 	r.m.R[k.ArgGPR(1)] = uint64(len(in))
 	r.m.R[k.ArgGPR(2)] = seed
+	if err := r.m.Run(k.Build().Insts()); err != nil {
+		t.Fatal(err)
+	}
+	return r.m.R[k.RetGPR()]
+}
+
+// simSum64NS is simSum64 for the unseeded twin, which takes no seed.
+func simSum64NS(t *testing.T, k asmgen.Kernel, def asmgen.FuncDef, in []byte) uint64 {
+	return simSum64NSForm(t, k, def, in, secret[9])
+}
+
+func simSum64NSForm(t *testing.T, k asmgen.Kernel, def asmgen.FuncDef, in []byte, form uint64) uint64 {
+	t.Helper()
+	r := newSimRegionForm(in, form)
+	if k.TableGPR() >= 0 {
+		r.m.R[k.TableGPR()] = r.tableAt
+	}
+	for _, l := range asmgen.PrologueLoads(k, def) {
+		r.m.R[l.Reg] = r.m.Load64(r.tableAt + uint64(8*l.Slot))
+	}
+	r.m.R[k.ArgGPR(0)] = r.inAt
+	r.m.R[k.ArgGPR(1)] = uint64(len(in))
 	if err := r.m.Run(k.Build().Insts()); err != nil {
 		t.Fatal(err)
 	}
@@ -111,6 +133,32 @@ func TestSimulatedBackends(t *testing.T) {
 							t.Fatalf("form=%d len=%d seed=%#x: kernel %#016x != portable %#016x",
 								form, n, seed, got, want)
 						}
+					}
+				}
+			}
+
+			// The unseeded twin is a second instruction stream with its
+			// own prologue, so nothing above touches it: run it over the
+			// same lengths against the portable path with a zero seed, and
+			// over the unseeded vectors.
+			// It carries the multiply forms too, so it is walked the same
+			// way: its block loop is a fourth instruction stream.
+			nsK, nsDef := ks[1], defs[1]
+			for _, form := range forms {
+				for _, n := range lens {
+					want := sum64Generic(ptr(buf), n, 0)
+					if got := simSum64NSForm(t, nsK, nsDef, buf[:n], form); got != want {
+						t.Fatalf("NS form=%d len=%d: kernel %#016x != portable %#016x",
+							form, n, got, want)
+					}
+				}
+				for _, v := range refVecs {
+					if v.Len > 2048 || v.Seed != 0 {
+						continue
+					}
+					if got := simSum64NSForm(t, nsK, nsDef, buf[:v.Len], form); got != v.H64 {
+						t.Fatalf("NS form=%d vector len=%d: %#016x != %#016x",
+							form, v.Len, got, v.H64)
 					}
 				}
 			}
