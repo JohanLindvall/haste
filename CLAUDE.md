@@ -713,6 +713,29 @@ all from 16 KiB up**, which is what the table above predicts. Do not spend
 more on the arm64 block loop; the x86 levers in the bullets above -- `mulx`,
 the paired body, the held secret -- exist because x86 is not at this bound.
 
+**The short classes are call-bound and multiply-bound together, and every
+length is within a couple of cycles of the sum.** Measured on an M2 P-core
+against a floor of the multiplies each length performs, at the two per cycle
+this core issues, plus the three cycles an empty Go call with the kernel's
+signature costs (0.86 ns, measured):
+
+| bytes | cycles | multiplies | floor + call | slack |
+|---|---|---|---|---|
+| 16 | 6.6 | 4 | 5.0 | 1.6 |
+| 17..32 | 7.2 | 6 | 6.0 | 1.2 |
+| 64 | 9.4 | 10 | 8.0 | 1.4 |
+| 112 | 14.2 | 16 | 11.0 | 3.2 |
+| 224 | 26.1 | 30 | 18.0 | 8.1 |
+| 225 | 21.6 | 32 | 19.0 | 2.6 |
+
+The slack at 100..113 is the ladder's tests -- two instructions a rung, six
+rungs, and no way to fold them without an indirect branch that a varying key
+length would mispredict. The slack at 224 is the serial ladder itself, which
+is the entry above. Everything else is the call, and that is what `fixed.go`
+is for: `Sum64Uint64` measures 0.43 ns against the kernel's 1.62 for the
+same eight bytes, because three of those cycles are the call and the rest
+overlap between iterations.
+
 **Where arm64 does have slack is the ladder, and it is the hash's shape.**
 At 224 bytes the kernel runs one group of seven lanes and then six ladder
 rungs; at 225 it runs two groups of seven and no rungs. The longer input is
