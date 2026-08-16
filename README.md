@@ -315,7 +315,11 @@ unrecognised, so an unknown core simply keeps the kernel it had.
 - **Fuzzing** over input, seed, secret, chunk size, backend and marshalled
   state: `go test -fuzz FuzzStreamingMatchesOneShot`.
 - **Cross-implementation**: results are compared against zeebo/xxh3 and, for
-  XXH64, cespare/xxhash -- independent ports -- in `bench/`.
+  XXH64, cespare/xxhash -- independent ports -- in `bench/`. Where a C
+  compiler is present, the reference C implementation itself is compiled in
+  through cgo (vendored `xxhash.h`, pinned to v0.8.3, the revision the
+  vectors came from), checked for bit-identity, and benchmarked alongside;
+  `bench/mdtable` turns any benchmark run into a markdown table.
 
 All of it runs in CI on every push and pull request, on amd64 and on arm64
 hardware, against the current Go and the 1.21 that `go.mod` declares: the suite

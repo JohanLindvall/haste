@@ -27,15 +27,27 @@ jobs:
     name: bench ${{ matrix.runner }}
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'bench-')
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
-        # ubuntu-22.04 used to be the third row; its image starts brownouts on
+        # Every OS/architecture family the standard runners offer.
+        # ubuntu-22.04 used to be a row; its image starts brownouts on
         # 2026-09-17 (actions/runner-images#14254), and it was the same x86
-        # pool as 24.04 under an older image anyway. macOS is Apple silicon,
-        # which is hardware the Linux runners cannot show: the M-series is
-        # exactly the wide-vector core the NEON hybrid gating declines.
-        runner: [ubuntu-24.04-arm, ubuntu-24.04, macos-latest]
+        # pool as 24.04 under an older image anyway. macos-latest is Apple
+        # silicon -- the wide-vector core the NEON hybrid gating declines --
+        # and macos-15-intel is the one x86 pool that is not an Azure VM.
+        # The windows rows run under bash; a row whose image has no C
+        # compiler just loses the C reference columns, nothing else.
+        runner:
+          - ubuntu-24.04-arm
+          - ubuntu-24.04
+          - macos-latest
+          - macos-15-intel
+          - windows-latest
+          - windows-11-arm
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -53,6 +65,7 @@ jobs:
           lscpu 2>/dev/null | grep -E 'Model name|Vendor|Flags|Features|Architecture|MHz|Thread|Core|Socket' | tee -a cpu.txt
           cat /sys/devices/system/cpu/cpu0/regs/identification/midr_el1 2>/dev/null | sed 's/^/midr_el1=/' | tee -a cpu.txt
           sysctl -n machdep.cpu.brand_string 2>/dev/null | sed 's/^/brand=/' | tee -a cpu.txt
+          (gcc --version 2>/dev/null || cc --version 2>/dev/null) | head -1 | sed 's/^/cc=/' | tee -a cpu.txt
           go version | tee -a cpu.txt
           go test -run 'TestBackendName|TestBackendsNative' -v . ./xxh64 2>&1 | grep -E 'dispatched|Backend' | tee -a cpu.txt
       - name: comparison benchmarks (bench module)
@@ -66,12 +79,27 @@ jobs:
       - name: per-length sweep 0..255
         run: |
           cd bench && go run ./sweep -max 255 2>&1 | tee ../sweep.csv
+      - name: markdown tables
+        run: |
+          cd bench
+          for f in compare backends xxh64; do
+            if [ -s "../$f.txt" ]; then
+              go run ./mdtable < "../$f.txt" > "../$f.md"
+            fi
+          done
+          if [ -s ../compare.md ]; then
+            echo "## bench ${{ matrix.runner }}" >> "$GITHUB_STEP_SUMMARY"
+            cat ../compare.md >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: bench-${{ matrix.runner }}
           path: |
             cpu.txt
             compare.txt
+            compare.md
             backends.txt
+            backends.md
             xxh64.txt
+            xxh64.md
             sweep.csv

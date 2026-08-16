@@ -5,7 +5,9 @@
 // port, with hand-written AVX2 and SSE2 kernels on amd64 and pure Go
 // elsewhere. cespare/xxhash is XXH64, included both because it is what most
 // Go code actually calls today and because xxhaste/xxh64 computes the same
-// hash.
+// hash. When a C compiler is present, the reference C implementation itself
+// joins both comparisons through cgo (see cref.go), pinned to v0.8.3, the
+// revision the test vectors came from.
 package bench
 
 import (
@@ -116,6 +118,20 @@ func BenchmarkCompare64(b *testing.B) {
 				sink64 = cespare.Sum64(buf)
 			}
 		})
+		if cXXH3 != nil {
+			b.Run(fmt.Sprintf("%d/c", n), func(b *testing.B) {
+				b.SetBytes(int64(n))
+				for i := 0; i < b.N; i++ {
+					sink64 = cXXH3(buf)
+				}
+			})
+			b.Run(fmt.Sprintf("%d/c-xxh64", n), func(b *testing.B) {
+				b.SetBytes(int64(n))
+				for i := 0; i < b.N; i++ {
+					sink64 = cXXH64(buf, 0)
+				}
+			})
+		}
 	}
 }
 
@@ -135,11 +151,20 @@ func BenchmarkCompare128(b *testing.B) {
 				sink128 = xxhaste.Uint128{Lo: h.Lo, Hi: h.Hi}
 			}
 		})
+		if cXXH3128 != nil {
+			b.Run(fmt.Sprintf("%d/c", n), func(b *testing.B) {
+				b.SetBytes(int64(n))
+				for i := 0; i < b.N; i++ {
+					lo, hi := cXXH3128(buf)
+					sink128 = xxhaste.Uint128{Lo: lo, Hi: hi}
+				}
+			})
+		}
 	}
 }
 
 func BenchmarkCompareSeed(b *testing.B) {
-	for _, n := range []int{8, 64, 1024, 65536} {
+	for _, n := range sizes {
 		buf := buffer(n)
 		b.Run(fmt.Sprintf("%d/xxhaste", n), func(b *testing.B) {
 			b.SetBytes(int64(n))
@@ -170,6 +195,20 @@ func BenchmarkCompareSeed(b *testing.B) {
 				sink64 = d.Sum64()
 			}
 		})
+		if cXXH3Seed != nil {
+			b.Run(fmt.Sprintf("%d/c", n), func(b *testing.B) {
+				b.SetBytes(int64(n))
+				for i := 0; i < b.N; i++ {
+					sink64 = cXXH3Seed(buf, 42)
+				}
+			})
+			b.Run(fmt.Sprintf("%d/c-xxh64", n), func(b *testing.B) {
+				b.SetBytes(int64(n))
+				for i := 0; i < b.N; i++ {
+					sink64 = cXXH64(buf, 42)
+				}
+			})
+		}
 	}
 }
 
@@ -178,7 +217,7 @@ func BenchmarkCompareSeed(b *testing.B) {
 func BenchmarkCompareStreamChunk(b *testing.B) {
 	const n = 1 << 20
 	buf := buffer(n)
-	for _, chunk := range []int{16, 64, 256, 1024, 4096} {
+	for _, chunk := range []int{16, 64, 256, 1024, 4096, 16384, 65536} {
 		b.Run(fmt.Sprintf("%d/xxhaste", chunk), func(b *testing.B) {
 			b.SetBytes(n)
 			d := xxhaste.New()
@@ -223,6 +262,20 @@ func BenchmarkCompareStreamChunk(b *testing.B) {
 				sink64 = d.Sum64()
 			}
 		})
+		if cXXH3Stream != nil {
+			b.Run(fmt.Sprintf("%d/c", chunk), func(b *testing.B) {
+				b.SetBytes(n)
+				for i := 0; i < b.N; i++ {
+					sink64 = cXXH3Stream(buf, chunk)
+				}
+			})
+			b.Run(fmt.Sprintf("%d/c-xxh64", chunk), func(b *testing.B) {
+				b.SetBytes(n)
+				for i := 0; i < b.N; i++ {
+					sink64 = cXXH64Stream(buf, chunk)
+				}
+			})
+		}
 	}
 }
 
@@ -273,4 +326,18 @@ func BenchmarkCompareStream(b *testing.B) {
 			sink64 = d.Sum64()
 		}
 	})
+	if cXXH3Stream != nil {
+		b.Run("c", func(b *testing.B) {
+			b.SetBytes(n)
+			for i := 0; i < b.N; i++ {
+				sink64 = cXXH3Stream(buf, 4096)
+			}
+		})
+		b.Run("c-xxh64", func(b *testing.B) {
+			b.SetBytes(n)
+			for i := 0; i < b.N; i++ {
+				sink64 = cXXH64Stream(buf, 4096)
+			}
+		})
+	}
 }
