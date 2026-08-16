@@ -121,3 +121,21 @@ func (m *Machine) jump(label string) {
 	m.PC = i
 	m.jumped = true
 }
+
+// mulHigh is the high half of a 64x64 product: what arm64's umulh returns and
+// what x86's mulq leaves in RDX. Go's own bits.Mul64 would do, but the
+// simulator states every instruction's semantics in one place, and this is
+// that place for the multiply.
+func mulHigh(a, b uint64) uint64 {
+	const mask = 0xffffffff
+	al, ah := a&mask, a>>32
+	bl, bh := b&mask, b>>32
+	t := al * bl
+	w0 := t & mask
+	k := t >> 32
+	t = ah*bl + k
+	w1, w2 := t&mask, t>>32
+	t = al*bh + w1
+	_ = w0
+	return ah*bh + w2 + (t >> 32)
+}

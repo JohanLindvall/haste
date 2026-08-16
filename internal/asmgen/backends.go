@@ -21,14 +21,22 @@ type Backend struct {
 	// Dir is the package directory the generated files belong to, relative
 	// to the module root; empty is the root package.
 	Dir string
+	// Prefix begins the generated assembly's filename. It defaults to "xxh",
+	// which is what both xxHash packages use; rapidhash is not an xxHash and
+	// says so.
+	Prefix string
 	// Exactly one of these is set: New builds an XXH3 vector backend, New64
-	// an XXH64 scalar one.
-	New   func() Arch
-	New64 func() XXH64Arch
+	// an XXH64 scalar one, NewRapid a rapidhash one.
+	New      func() Arch
+	New64    func() XXH64Arch
+	NewRapid func() RapidArch
 }
 
 // Defs returns the functions this backend generates, in emission order.
 func (b Backend) Defs() []FuncDef {
+	if b.NewRapid != nil {
+		return RapidFuncs(b.Suffix)
+	}
 	if b.New64 != nil {
 		k := b.New64()
 		return XXH64FuncsFor(b.Suffix, k.Dual(), k.UnseededTwin(), k.VendorSplit())
@@ -38,6 +46,9 @@ func (b Backend) Defs() []FuncDef {
 
 // EmitAll emits every function of this backend.
 func (b Backend) EmitAll() []Kernel {
+	if b.NewRapid != nil {
+		return EmitRapid(b.NewRapid)
+	}
 	if b.New64 != nil {
 		return EmitXXH64(b.New64)
 	}
@@ -53,10 +64,23 @@ func (b Backend) Package() string {
 	return path.Base(b.Dir)
 }
 
-// AllBackends is everything the generator produces: the XXH3 backends and the
-// XXH64 ones.
+// AllBackends is everything the generator produces: the XXH3 backends, the
+// XXH64 ones and the rapidhash ones.
 func AllBackends() []Backend {
-	return append(Backends(), XXH64Backends()...)
+	all := append(Backends(), XXH64Backends()...)
+	return append(all, RapidBackends()...)
+}
+
+// RapidBackends lists the rapidhash kernels, which live in the rapidhash
+// package: one per architecture, and no forms to choose between -- the hash
+// has one shape and both architectures take it the same way.
+func RapidBackends() []Backend {
+	return []Backend{
+		{Name: "scalar", Suffix: "Rapid", GOARCH: "amd64", Dir: "rapidhash", Prefix: "rapid",
+			NewRapid: func() RapidArch { return newX86Rapid() }},
+		{Name: "scalar", Suffix: "Rapid", GOARCH: "arm64", Dir: "rapidhash", Prefix: "rapid",
+			NewRapid: func() RapidArch { return newARM64Rapid() }},
+	}
 }
 
 // XXH64Backends lists the scalar XXH64 kernels, which live in the xxh64
@@ -99,5 +123,9 @@ func Backends() []Backend {
 // root. The architecture suffix is what constrains the build, so it has to be
 // last.
 func (b Backend) Filename() string {
-	return path.Join(b.Dir, fmt.Sprintf("xxh_%s_%s.s", b.Name, b.GOARCH))
+	prefix := b.Prefix
+	if prefix == "" {
+		prefix = "xxh"
+	}
+	return path.Join(b.Dir, fmt.Sprintf("%s_%s_%s.s", prefix, b.Name, b.GOARCH))
 }

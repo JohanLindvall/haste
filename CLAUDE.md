@@ -2,7 +2,7 @@
 
 haste is a module of three hashes, each its own package, whose assembly
 kernels are generated: `xxh3/` (XXH3, 64- and 128-bit), `xxh64/` (XXH64), and
-`rapidhash/` (rapidhash, portable so far). The module root holds no code. Read this before changing anything
+`rapidhash/` (rapidhash). The module root holds no code. Read this before changing anything
 under `internal/asmgen` or any `.s` file.
 
 ## Layout
@@ -23,7 +23,7 @@ under `internal/asmgen` or any `.s` file.
 | `xxh64/` | XXH64: API and portable implementation (`xxh64.go`), `Digest`, per-arch dispatch, **generated** stubs and kernels, its own vectors and tests |
 | `ref/gen.c` | emits xxh3's and xxh64's reference vectors from the C source |
 | `ref/rapidgen.c` | the same for rapidhash |
-| `rapidhash/` | rapidhash: API, portable implementation, vectors, tests |
+| `rapidhash/` | rapidhash: API, portable implementation, **generated** kernels, vectors, tests |
 | `bench/` | separate module; comparison against zeebo/xxh3, cespare/xxhash and the C reference |
 | `bench/xxhash.h` | vendored reference C, v0.8.3, compiled in through cgo |
 | `bench/sweep` | every length one at a time |

@@ -10,7 +10,7 @@ kernels that are generated rather than written:
 |---|---|---|
 | `xxh3` | XXH3, 64- and 128-bit, one-shot and streaming | SSE2, AVX2, AVX-512, NEON, SVE2 |
 | [`xxh64`](#xxh64) | XXH64, the older scalar member of the family | amd64, arm64 |
-| [`rapidhash`](#rapidhash) | rapidhash, wyhash's successor | portable so far |
+| [`rapidhash`](#rapidhash) | rapidhash, wyhash's successor | amd64, arm64 |
 
 Each is bit-identical to its reference C implementation on every path — seeds
 and custom secrets included — and is checked against vectors taken from that
@@ -296,10 +296,15 @@ There is no streaming form. rapidhash reads the tail of its input before it has
 finished with the head and needs the length before it starts, so there is
 nothing to feed in pieces; use `xxh3.Digest` when input arrives incrementally.
 
-The implementation is portable Go so far — assembly is what its only mixing
-primitive waits on, a 64x64 multiply keeping both halves, which the generator
-does not yet emit. It is bit-identical to the reference C, over 640 vectors
-generated from it by `ref/rapidgen.c`.
+It is bit-identical to the reference C, over 640 vectors generated from it by
+`ref/rapidgen.c`, and both kernels are generated the same way the other two
+packages' are.
+
+The kernel is worth **32-36% over 225 bytes and up** against the portable Go,
+on a Zen 4 — and nothing measurable below that, where the cost is the call
+rather than the hashing. That is the opposite of what the other two hashes
+gain from assembly, and the reason is the seven lanes: Go will not keep them
+all in registers across the block loop, and the kernel does.
 
 ## Backends
 
