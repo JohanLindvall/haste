@@ -3,14 +3,13 @@
 // library.
 module github.com/JohanLindvall/haste/bench
 
-go 1.24.2
+go 1.22
 
 replace github.com/JohanLindvall/haste => ../
 
 require (
 	github.com/JohanLindvall/haste v0.0.0-00010101000000-000000000000
 	github.com/cespare/xxhash/v2 v2.3.0
-	github.com/vkudryk/rapidhash-go v0.0.0-20250522125531-a03e5539e1bf
 	github.com/zeebo/xxh3 v1.1.0
 )
 

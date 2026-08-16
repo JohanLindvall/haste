@@ -300,13 +300,17 @@ It is bit-identical to the reference C, over 640 vectors generated from it by
 `ref/rapidgen.c`, and both kernels are generated the same way the other two
 packages' are.
 
-Note that [vkudryk/rapidhash-go](https://github.com/vkudryk/rapidhash-go), the
-other Go port, implements the *original* rapidhash: three secret words where
-the current algorithm has eight, a different prologue, and a nonzero default
-seed. The two do not produce the same hash, and neither is wrong — they are
-different versions. `bench/` measures both and labels its rows accordingly;
-`TestRapidhashPortsDiffer` pins the divergence so it cannot be mistaken for
-agreement later.
+**If you are comparing against another Go rapidhash, check which version it
+is.** [vkudryk/rapidhash-go](https://github.com/vkudryk/rapidhash-go)
+implements the *original* rapidhash: three secret words where the current
+algorithm has eight, the length folded into the prologue rather than the final
+mix, and a nonzero default seed. It produces different hashes from this
+package at every length, including zero — verified against the reference C,
+which agrees with this package throughout. Neither is wrong; they are
+different versions of the algorithm, and the first three secret words are
+identical, which is what makes the two easy to mistake for each other. It is
+not in `bench/`, because timing two different algorithms side by side invites
+exactly that mistake.
 
 The kernel is worth **32-36% over 225 bytes and up** against the portable Go,
 on a Zen 4 — and nothing measurable below that, where the cost is the call
