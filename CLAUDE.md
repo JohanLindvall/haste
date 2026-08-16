@@ -572,13 +572,14 @@ worth nothing.
      below 64 bytes and worse at 256 and above, which is the trade this note
      originally recorded against going past 512.
 
-     **Two caveats, both open.** That trade was measured on the N2 and has
-     not been repeated, so measure 512 against 1024 there before trusting
-     this on arm64. And the small-write drain above is gated on
-     `len(p) < internalBufferSize-63`, a bound tuned when this was 512: the
-     drain now takes writes up to 961 bytes rather than 449, which is a
-     larger re-stage than it was measured with. The Zen 4 numbers in that
-     bullet predate this change.
+     **One caveat left.** That trade was measured on the N2 and has not been
+     repeated, so measure 512 against 1024 there before trusting this on
+     arm64. The interaction with the small-write drain -- whose
+     `len(p) < internalBufferSize-63` gate now admits writes up to 961 bytes
+     rather than 449 -- was checked on the Redwood Cove and costs nothing
+     (−14.1% at 64-byte writes, −13.5% at 256, −0.5% at a kibibyte with the
+     drain in place), but the Zen 4 numbers in that bullet were taken at 512
+     and have not been repeated at 1024.
 - Costs of entering a kernel, measured with sum64's signature on this machine:
   an empty Go call is 1.77ns, `accumBlocks` with nbStripes=0 is 5.02ns, and
   with one stripe 7.70ns. So a call is 1.77ns of Go plus 3.25ns of kernel
@@ -922,25 +923,57 @@ core barring a wider one.
   calls and 125 nodes; duplicating the switch into a fused long-path function
   per architecture means six copies of the convergence. Worth revisiting if
   the inliner's treatment of calls changes.
-- **The convergence is written out in `sum128NS`** rather than reached
-  through `mergeAccs` (287 nodes, never inlinable). Removing its two calls is
-  worth 8.9% at 256 bytes, 4.9% at a kibibyte, 2.9% at 4 KiB. The same change
-  in `sum64NS` removes one call and measures neutral, within a percent either
-  way; it is written the same way there for symmetry, not because it pays.
-- **Streaming**, cycles per MiB against zeebo/xxh3 after the staging size
-  went to a block: +8.7% at 16-byte writes, −7.4% at 64, +0.8% at 256, +7.0%
-  at 1 KiB, +41% at 4 KiB. The residual loss at 64-byte writes is call
-  depth: `Write` -> `write` -> `absorb` -> `accumBlocks` -> kernel against
-  zeebo's `Write` -> `updateString` -> kernel, and zeebo gets there by
-  putting its backend dispatch inline in `updateString` as a chain of `if
-  hasAVX2` on package-level bools instead of behind a wrapper. The same
-  inliner budget that blocks the `hashLong` fix blocks this one.
-- Against the reference implementations at the sizes `bench/compare_test.go`
-  measures: XXH3-64 is ahead of zeebo/xxh3 everywhere except 9..16 bytes
-  (−5%) and 0..3 (−4 to −9%, the signature cost the custom-secret support
-  carries); XXH3-128 is ahead from 17 bytes up, by 13-28% over 128..256 and
-  5-15% beyond; XXH64 is level with cespare/xxhash from 32 bytes up and 4-13%
-  ahead below it.
+- **The three changes this core motivated, each re-measured on the merged
+  tree at both alignment phases.** Every one was taken as before/after
+  binaries of the same commit pair, medians of five, and repeated with a
+  live `//go:noinline` pad ahead of `main.main` to move it from phase 32 to
+  phase 0. Go aligns functions to 32 bytes, so those two *are* the lottery's
+  modes; a result that holds in both is not a layout draw.
+
+  Primes in registers rather than through a table pointer, cycles per hash:
+
+  | bytes | phase 32 | phase 0 |
+  |---|---|---|
+  | 16 | −6.0% | −6.3% |
+  | 32 | −14.6% | −14.2% |
+  | 64 | −14.5% | −13.7% |
+  | 128 | −16.0% | −15.7% |
+  | 240 | −8.0% | −8.3% |
+  | 256 | −9.7% | −9.5% |
+  | 512 | −5.3% | −5.3% |
+  | 1024 | −3.0% | −2.6% |
+
+  The two phases agree to within 0.6 points at every length. At 4 and 8
+  bytes they do not agree and the sign flips (+0.7%/−2.5%, +0.2%/−1.9%),
+  which is the lottery and not a result either way -- the kernel does not
+  enter its block loop there.
+
+  The convergence written out in `sum128NS` (removing two `mergeAccs` calls;
+  287 nodes, never inlinable): −8.7%/−8.6% at 256 bytes, −4.9%/−5.1% at a
+  kibibyte, −2.2%/−2.7% at 4 KiB. The same change in `sum64NS` removes one
+  call and measures neutral -- −0.2%/−1.5% at 256, −0.6%/−0.4% at 1024 --
+  and is written that way for symmetry, not because it pays.
+
+  Staging a block instead of half of one, cycles per MiB, measured with the
+  small-write drain in place: −6.4% at 16-byte writes, −14.1% at 64, −13.5%
+  at 256, −0.5% at a kibibyte, −1.4% at 4 KiB. The drain's `len(p) <
+  internalBufferSize-63` gate now admits writes up to 961 bytes rather than
+  449, and that costs nothing here; it has not been re-checked on the Zen 4
+  it was tuned on.
+- Against the reference implementations, `bench/compare_test.go`, median of
+  six, pinned: XXH3-64 is ahead of zeebo/xxh3 at every size except 16 bytes
+  (−6%), by +17% at 64, +20% at 128, +36% at 256 and +5-12% beyond; XXH3-128
+  is ahead everywhere from 32 bytes (+7% at 32, +14% at 128, +21% at 256,
+  +5-14% beyond) and level at 16; XXH64 is within +0 to +3% of
+  cespare/xxhash at every size. Streaming a mebibyte: +16% at 16-byte
+  writes, +1% at 64, −2% at 256, +17% at 1 KiB, +66% at 4 KiB.
+
+  The residual at 64- and 256-byte writes is call depth: `Write` -> `write`
+  -> `absorb` -> `accumBlocks` -> kernel against zeebo's `Write` ->
+  `updateString` -> kernel, which it reaches by putting its backend dispatch
+  inline as a chain of `if hasAVX2` on package-level bools instead of behind
+  a wrapper. The same inliner budget that blocks the `hashLong` fix blocks
+  this one.
 - **XXH3-128 of an empty input costs 9.5 cycles against zeebo's 6.0**, 62
   instructions against 38, because zeebo compiles the default secret's
   bitflips in as constants and xxhaste loads them through the secret pointer.

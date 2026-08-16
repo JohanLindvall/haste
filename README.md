@@ -149,28 +149,29 @@ which has **no AVX-512** and therefore exercises the AVX2 kernel:
 
 | size | xxhaste | zeebo/xxh3 | cespare (XXH64) |
 |-----:|--------:|-----------:|----------------:|
-| 4 | **1.54** | 1.75 | 1.89 |
-| 8 | **1.56** | 1.77 | 2.00 |
-| 16 | 1.66 | 1.56 | 2.34 |
-| 32 | **1.99** | 2.08 | 4.63 |
-| 64 | **2.94** | 3.12 | 6.16 |
-| 128 | **4.28** | 5.08 | 9.54 |
-| 240 | **8.50** | 9.62 | 15.64 |
-| 256 | **9.80** | 13.4 | 16.1 |
-| 512 | **13.5** | 16.1 | 29.1 |
-| 1 Ki | **20.2** | 22.4 | 56.2 |
-| 4 Ki | **64.1** | 70.2 | 214 |
-| 16 Ki | **235** | 251 | 826 |
-| 64 Ki | **1033** | 1087 | 3303 |
-| 1 Mi | **16458** | 17392 | 53132 |
+| 4 | **1.61** | 1.77 | 1.91 |
+| 8 | **1.69** | 1.77 | 2.02 |
+| 16 | 1.68 | 1.58 | 2.35 |
+| 32 | **2.00** | 2.10 | 4.64 |
+| 64 | **2.68** | 3.13 | 6.21 |
+| 128 | **4.23** | 5.10 | 9.56 |
+| 240 | **8.67** | 9.67 | 15.75 |
+| 256 | **9.87** | 13.4 | 16.2 |
+| 512 | **13.5** | 16.1 | 29.3 |
+| 1 Ki | **20.3** | 22.6 | 56.3 |
+| 4 Ki | **64.4** | 70.9 | 217 |
+| 16 Ki | **237** | 254 | 838 |
+| 64 Ki | **1044** | 1108 | 3341 |
+| 1 Mi | **16586** | 17492 | 53677 |
 
-**63.7 GB/s** at a mebibyte against 60.3, and ahead at every length except
-9..16 bytes, where the other port compiles the default secret's keying in as
+**63.2 GB/s** at a mebibyte against 59.9, and ahead at every length except
+16 bytes, where the other port compiles the default secret's keying in as
 constants and this one loads it — the price of supporting a custom secret on
-the same path. The 128-bit hash is ahead from 17 bytes up: +14% at 128, +22%
-at 256, +15% at a kibibyte. Streaming a mebibyte: 4.4 GB/s at 16-byte writes
-against 3.8, 24.4 at 256 bytes against 23.1, 34.9 at 1 KiB against 29.7,
-**52.5 at 4 KiB against 31.7**.
+the same path. The 128-bit hash is ahead from 32 bytes up: +14% at 128, +21%
+at 256, +14% at a kibibyte. Streaming a mebibyte: 4.4 GB/s at 16-byte writes
+against 3.8, 34.5 at 1 KiB against 29.5, **52.4 at 4 KiB against 31.5**; at
+64 and 256 bytes the two are within 2% of each other, where the staging path
+is most of the cost.
 
 Below 256 bytes the two are now level or better at every length from 4 up --
 an exhaustive per-length sweep (bench/sweep) puts only 0..3 bytes more than
@@ -242,24 +243,26 @@ Nanoseconds per hash: level through 16 bytes, within 4% at 32 and 64, ahead
 from 128 up and **31% ahead from a kibibyte** (20.9 GB/s against 15.9).
 
 On amd64 the kernel is the same shape as cespare's, imul-bound at eight
-multiplies per 32-byte block, and now measures level with it — on a Core
-Ultra 9 185H, within 2% at every size from 32 bytes up and 4-5% ahead at 8
-and 16:
+multiplies per 32-byte block, and measures level with it — on a Core Ultra 9
+185H, within 0 to 3% at every size:
 
 | size | xxh64 | cespare | | size | xxh64 | cespare |
 |-----:|------:|--------:|-|-----:|------:|--------:|
-| 4 | 1.88 | 1.89 | | 256 | 16.0 | 16.1 |
-| 8 | **1.91** | 2.00 | | 1 Ki | **54.9** | 56.2 |
-| 16 | **2.25** | 2.34 | | 4 Ki | **209** | 214 |
-| 32 | 4.66 | 4.63 | | 16 Ki | 821 | 826 |
-| 64 | 6.27 | 6.16 | | 64 Ki | 3288 | 3303 |
-| 128 | 9.55 | 9.54 | | 1 Mi | 52934 | 53132 |
+| 4 | 1.88 | 1.91 | | 256 | 16.1 | 16.2 |
+| 8 | **1.95** | 2.02 | | 1 Ki | **55.3** | 56.3 |
+| 16 | **2.30** | 2.35 | | 4 Ki | **211** | 217 |
+| 32 | 4.59 | 4.64 | | 16 Ki | 827 | 838 |
+| 64 | 6.18 | 6.21 | | 64 Ki | 3320 | 3341 |
+| 128 | 9.55 | 9.56 | | 1 Mi | 53431 | 53677 |
 
-Getting there was one change and it was not in the lane loop: the kernel used
-to reach its primes through a pointer to a table, and on this core that costs
-12-16% of a 32..256-byte hash. It loads them into registers instead. See
-CLAUDE.md — the effect is reproducible and strange enough to be worth reading
-about before touching that prologue.
+Two changes got it there and neither was in the lane loop. The tail opens
+with combined-mask skips, so a trivial tail pays one taken branch instead of
+five. And the kernel used to reach its primes through a pointer to a table:
+on this core that costs 12-16% over 32..128 bytes, so it holds them in
+registers instead — measured at both of the two code-alignment phases the
+linker can produce, which agree to within 0.6 points. See CLAUDE.md; the
+effect is reproducible, absent on Zen 4, and unexplained, which is worth
+reading before touching that prologue.
 
 ## Backends
 
