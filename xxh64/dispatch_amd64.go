@@ -16,6 +16,14 @@ import "unsafe"
 // both forms and this picks between them, the way the arm64 kernel carries
 // two lane rounds and picks by core.
 //
+// The vendor is coarser than the evidence: only Zen 3 loses, and Zen 4-class
+// parts measure level either way. It is free to be coarse for exactly that
+// reason -- handing Zen 4 the pointer form costs it nothing -- and the
+// alternative is not a family check but a model list, because Zen 3 and Zen 4
+// share CPUID family 0x19 and differ only below it. If a Zen 4 ever turns up
+// that does care, that list is what it will take, on the evidence the arm64
+// MIDR list demands.
+//
 // The choice is a byte the kernel itself tests, not a branch here: a second
 // callee in these wrappers would push the public entry points past the
 // inliner's budget and cost every hash a call level, which is more than
