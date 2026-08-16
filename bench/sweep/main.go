@@ -127,13 +127,6 @@ func main() {
 		name string
 		f    runner
 	}{
-		{"haste-rapid", func(b []byte, n int) uint64 {
-			var s uint64
-			for i := 0; i < n; i++ {
-				s += rapidhash.Sum64(b)
-			}
-			return s
-		}},
 		{"haste-xxh3", func(b []byte, n int) uint64 {
 			var s uint64
 			for i := 0; i < n; i++ {
