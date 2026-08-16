@@ -13,7 +13,10 @@
 // # Choosing an entry point
 //
 // [Sum64] and [Sum64String] hash a whole slice or string; [Sum64Seed] and
-// [Sum64SeedString] key the hash with a seed at no extra cost. There is no
+// [Sum64SeedString] key the hash with a seed at no extra cost. For a key
+// that is already an integer, [Sum64Uint32], [Sum64Uint64] and
+// [Sum64Uint128] hash its little-endian bytes without a call at all, which
+// is about twice as fast as passing the same bytes as a slice. There is no
 // streaming form: rapidhash reads the tail of its input before it has
 // finished with the head, and needs the length before it starts, so it cannot
 // be fed in pieces. Use the parent package's [github.com/JohanLindvall/haste/xxh3.Digest]

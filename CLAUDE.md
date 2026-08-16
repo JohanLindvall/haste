@@ -1325,13 +1325,24 @@ they do not follow the change onto other hardware.
   multiply against 1.62. Seven multiplies at 1.57 is 11 cycles, so the
   shipped loop at 13.57 is within 23% of the multiplier bound with the
   instruction count doing the rest. No second kernel, no CPUID check.
-- **The short path is a call, not arithmetic.** An empty kernel call with
-  this signature is 1.28 ns on a Zen 4 against 2.01 for a whole 8-byte hash,
-  so under a nanosecond of it is the hash. Moving the 0..16 case into Go so
-  it inlines into the caller would remove the call -- and does not fit: the
-  case costs 190 inliner nodes against a budget of 80, and even the 8..16
-  branch alone costs 106, which takes `Sum64` itself from inlinable to a
-  call at 148. Tried, measured, reverted.
+- **The short path is a call, not arithmetic, so the integer keys got their
+  own entry points.** An empty kernel call with this signature is 1.28 ns on
+  a Zen 4 against 1.80 for a whole 8-byte hash, so under a nanosecond of it
+  is the hash. Moving the 0..16 case into Go so it inlines into the caller
+  would remove the call and does not fit: the case costs 190 inliner nodes
+  against a budget of 80, the 8..16 branch alone 106, and even `n == 8`
+  alone takes `Sum64` from inlinable to 141. Written without the `mum` and
+  `mix` helpers the 8..16 case comes down to 76, which still leaves nothing
+  for the kernel call beside it.
+  What does fit is `fixed.go`, the same answer the parent package reached:
+  `Sum64Uint32`, `Sum64Uint64` and `Sum64Uint128` take the key by value, so
+  the length is a constant, the length switch disappears and the whole hash
+  folds into the caller. Measured: 4 bytes 1.776 -> 0.867 ns, 8 bytes 1.790
+  -> 0.975, 16 bytes 1.801 -> 0.894 -- about twice as fast, which is the
+  call. They are unseeded only: a seed puts its own mix back at the head of
+  the hash, which is what `sum64RapidNS` exists to avoid, and the result no
+  longer fits the budget. TestFixedMatchesSum64 holds them to `Sum64` over
+  the whole 32-bit space and 200k random wider samples.
 - **224 bytes is slower than 225** (8.56 against 7.50 ns), because 224 does
   not enter the 224-byte block loop: it runs one 112-byte block of seven
   parallel lanes and then all six ladder rungs, which are serial, where 225
