@@ -816,9 +816,21 @@ wraps its multiply in -- not the loads, not the instruction count, and not
 anything a kernel may change: they are the hash. Removing the fourteen
 secret loads per iteration was worth 2-5% at 100..512 bytes, where the loop
 runs once or twice and the hoist is amortized against less, and **nothing at
-all from 16 KiB up**, which is what the table above predicts. Do not spend
-more on the arm64 block loop; the x86 levers in the bullets above -- `mulx`,
-the paired body, the held secret -- exist because x86 is not at this bound.
+all from 16 KiB up**, which is what the table above predicts. The x86 levers
+in the bullets above -- `mulx`, the paired body, the held secret -- exist
+because x86 is not at this bound.
+
+The 1% between the shipped loop and the load-free sequence is real, and it
+is what the paired passes and the pointer bound went and got: measured on
+this M2 as **+0.5% at 4 KiB, +0.4-0.5% at 16 KiB and +0.3-0.5% at 64 KiB**,
+six samples a side against 4a71853. That is a third of what the same change
+measured on the arm64 core it was written on (+1.7%, +1.4%, +1.0%), which is
+worth knowing before the next iteration of it: **the slack this loop has is
+about a percent, and it is nearly spent.** The 256-byte cost that change
+traded away does not appear here either -- an M2 reads +0.9 to +1.1% at 256,
+where the other core read -0.9% -- so the trade it describes is a win at both
+ends on this one. Two arm64 cores, two different numbers, same direction
+above 4 KiB.
 
 **The short classes are call-bound and multiply-bound together, and every
 length is within a couple of cycles of the sum.** Measured on an M2 P-core
