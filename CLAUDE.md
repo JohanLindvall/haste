@@ -413,6 +413,20 @@ simply disappear.
   form so the simulator test can set up the same state -- the prologue is not
   part of the instruction stream, so without that the simulated kernel would
   run on zeroed primes.
+- **XXH64 has fixed-size entry points too**, for the same reason rapidhash
+  and XXH3 do: an eight-byte hash is one tail step and an avalanche, and
+  reaching the kernel costs a large share of that again. `Sum64Uint32`,
+  `Sum64Uint64`, `Sum64Uint128` and a seeded form of each take the key by
+  value, so the length is a constant and the block loop and the tail's bit
+  tests fold away. Measured on a Zen 4: 4 bytes 3.26 -> 1.39 ns, 8 bytes
+  3.06 -> 1.63, 16 bytes 3.51 -> 2.15, and seeded 8 bytes 3.49 -> 1.76 --
+  roughly half, which is the call. Unlike rapidhash's, these have seeded
+  forms: XXH64 takes its seed as one add at the head of the hash rather than
+  a multiply, so the seeded bodies still fit. `Sum64Uint128` is written out
+  rather than calling its seeded form with a zero, which is what put it two
+  nodes over the budget; all six must stay inlinable, and
+  TestFixedMatchesSum64 holds them to Sum64 and Sum64Seed over a large part
+  of the input space under five seeds.
 - **XXH64's public wrappers must inline into their callers**, and reach the
   kernel in one direct call: `go build -gcflags=-m ./xxh64` must list
   `Sum64`, `Sum64String`, `Sum64Seed`, `Sum64SeedString`, `sum64` and
