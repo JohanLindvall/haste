@@ -56,24 +56,41 @@ jobs:
           # The root module has no go.sum; the cache keys on the bench
           # module's, which every step here builds against.
           cache-dependency-path: bench/go.sum
-      # A runner with no C toolchain still has CGO_ENABLED=1 by default, and
-      # then every build of bench/ fails outright instead of dropping the C
-      # reference columns -- which is what windows-11-arm did. Decide it once,
-      # here, by actually asking the compiler to build something: "is cc in
-      # PATH" is not the same question and gets this wrong on images that ship
-      # a stub.
-      - name: is there a C compiler
+      # A runner with no usable C toolchain still has CGO_ENABLED=1 by
+      # default, and then every build of bench/ fails outright instead of
+      # dropping the C reference columns.
+      #
+      # The probe builds an actual cgo package, because the cheaper questions
+      # are all the wrong one. "Is cc in PATH" passes on an image shipping a
+      # stub. "Does cc compile a C file" passes on windows-11-arm, whose
+      # compiler targets x86: it built the probe happily and then the real
+      # build died assembling Go's own runtime/cgo for arm64
+      # ("gcc_arm64.S: no such instruction: stp"). Only cgo itself exercises
+      # the compiler, the assembler and the target architecture together,
+      # which is what has to work.
+      - name: can this runner build cgo
         run: |
-          cc=$(go env CC)
-          printf 'int main(void){return 0;}\n' > probe.c
-          if "$cc" probe.c -o probe 2>/dev/null; then
+          d=$(mktemp -d)
+          cat > "$d/main.go" <<'PROBE'
+          package main
+
+          /*
+          #include <stdint.h>
+          static uint64_t probe(uint64_t x) { return x + 1; }
+          */
+          import "C"
+
+          func main() { _ = C.probe(1) }
+          PROBE
+          (cd "$d" && go mod init probe >/dev/null 2>&1)
+          if (cd "$d" && CGO_ENABLED=1 go build -o probe . >/dev/null 2>&1); then
             echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
-            echo "cgo enabled via $cc; the C reference columns will be present"
+            echo "cgo builds here ($(go env CC)); the C reference columns will be present"
           else
             echo "CGO_ENABLED=0" >> "$GITHUB_ENV"
-            echo "no working C compiler ($cc); the C reference columns will be absent"
+            echo "cgo does not build here ($(go env CC)); the C reference columns will be absent"
           fi
-          rm -f probe.c probe probe.exe
+          rm -rf "$d"
       - name: what this runner is
         run: |
           set +e
