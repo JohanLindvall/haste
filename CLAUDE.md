@@ -929,6 +929,34 @@ one -- and Zen 3 is Milan, which is most of the AMD cloud fleet, so it is
 not nothing. Nothing else regressed: XXH3 is level or better at every size
 on both cores, and the streaming and long paths are untouched.
 
+**The vendor pick costs this Zen 4 a third of a short hash.** Measured on the
+shipped tree against 1c7d6ea, the commit before it, three relinked layouts
+each, cespare/xxhash's rows in the same binaries as the control (4.4% mean
+drift, 9.4% worst):
+
+| bytes | before | shipped | vs cespare, before -> after |
+|---|---|---|---|
+| 4 | 2.71 ns | 3.57 ns (+31.8%) | -10.4% -> -33.1% |
+| 8 | 2.63 ns | 3.42 ns (+30.2%) | -7.7% -> -24.0% |
+| 16 | 3.02 ns | 3.63 ns (+20.4%) | +1.6% -> -12.9% |
+| 32..256 | | -6..+1% | -1..-4% -> +4..+6% |
+
+Every layout agrees at 4 bytes (2.84 -> 3.76, 2.71 -> 3.52, 2.63 -> 3.55), so
+it is not the caller-alignment lottery. It is not the prime form either:
+forcing the register form on the same shipped tree gives back 33% at 4 bytes,
+23% at 8 and 18% at 16, while leaving 32..256 alone. What costs is the
+dispatch itself -- the taken branch out of `sum64Scalar` into
+`sum64ScalarPtr`, which a 2.6 ns hash cannot amortize and a 6 ns one can.
+Intel takes the fall-through and pays nothing, so this is AMD-only, and it is
+larger than the 5-17% at 32..256 the split exists to fix.
+
+The shape that would keep both: the two forms differ only in how the lane
+loop reaches the primes, and the vendor difference was only ever measured
+from 32 bytes up, so the test belongs *after* the kernel's own `n < 32`
+branch rather than before it. Short inputs would then run one shared,
+branch-free tail and never see the dispatch. That costs the short path
+nothing and leaves the block path exactly as it is now.
+
 **Confirmed on a Zen 4 directly**, and as the change itself rather than as a
 ratio against cespare: the current tree against the same tree with only the
 prime placement reverted, three relinked layouts each, cespare's rows as a
