@@ -589,6 +589,34 @@ worth nothing.
   is 8 vector operations for 20 scalar ones, which only pays where vector
   pipes are scarcer than integer pipes by more than 2.5x. See
   cpu_linux_arm64.go for the list and the evidence required to extend it.
+- **Every kernel this machine can run is at a bound, and the counters say
+  which.** A sweep of all reachable profiles at 64 KiB, `perf stat` on each:
+
+  | profile | GB/s | IPC | be-stall | cyc/stripe | instr/stripe | bound |
+  |---|---|---|---|---|---|---|
+  | neon | 20.76 | 3.51 | 12.5% | 10.48 | 36.8 | vector pipes: 16 ops / 1.5 = 10.7 |
+  | neon-hybrid | 28.53 | 4.07 | 6.4% | 7.63 | 31.0 | dispatch: 31 / 4 = 7.75 |
+  | neon-hybrid2 | 25.90 | 3.70 | 12.0% | 8.40 | 31.1 | vector pipes: 13 ops = 8.7 |
+  | sve2-vl128 | 20.88 | 2.88 | 24.6% | 10.42 | 30.0 | vector pipes, NEON's 16-op floor |
+  | purego | 15.11 | 5.12 | 3.2% | 14.40 | 73.7 | dispatch, 5-wide saturated |
+  | xxh64 madd | 26.88 | 3.84 | 12.4% | 4.05/block | -- | lane chain, 4.0 modelled |
+
+  Each row lands within 3% of the model in the same line, so there is no
+  headroom to find on this core: a backend stall here is a pipe at its
+  throughput, not a latency to hide. SVE2's 24.6% is the clearest case -- it
+  issues the *fewest* instructions of any vector kernel and is still the same
+  speed as NEON, because at VL=128 both sit on the algorithm's 16-vector-op
+  floor. purego is the mirror image: 3.2% stalls at 5.12 IPC is a path that
+  never waits and simply issues 2.4x the instructions.
+- **purego cannot shed its truncation from Go source.** Its lane is `eor`,
+  `lsr`, `movwu`, `madd` where the kernel's is `eor`, `lsr`, `umaddl` -- the
+  `movwu` is 8 instructions a stripe, 15% of the loop, and it is there because
+  Go will not match `uint64(uint32(k)) * uint64(uint32(k>>32))` to UMULL,
+  whose operands are already the W views. It does emit UMULL when both
+  operands *arrive* as uint32 (verified on go1.26), so the fix is a compiler
+  rule, not a spelling: every source form tried here -- explicit uint32
+  locals, a mask instead of a conversion, a uint32-argument helper -- still
+  goes through MOVWU once the value comes from a uint64.
 - llvm-mca is how the untestable backends get analysed. It models an
   optimistic port bound -- it predicts 8.04 cycles/stripe for NEON on
   neoverse-n2 where the hardware gives 10.85 -- so use it for comparing two
@@ -726,6 +754,12 @@ worth nothing.
   critical path, while the loads they remove are L1-hot kSecret words that
   ran in parallel all along. The same constants pay in fixed.go because the
   call disappears with them, not because the loads do.
+- Regrouping an accumulator chain has now lost three times on this core, and
+  the reason is the table above: at 4 IPC with a full out-of-order window
+  those adds were never the critical path. Tree-summing the 17..128 ladder was
+  2% slower, a two-accumulator tail in the 129..240 ladder 1.4% slower
+  (16.00 -> 16.22ns at 240 bytes), and only mergeAccs -- which runs once, with
+  nothing after it to overlap -- gained from it.
 - Two more streaming ideas measured and dropped, both in the staging path:
   replacing the short-write `copy` with inline word moves is worth nothing
   (memmove was not the cost), and Write's fast path cannot be inlined at all.
