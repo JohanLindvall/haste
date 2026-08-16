@@ -309,6 +309,20 @@ anything on top of that.
   transfers are the unknown, and an all-vector loop is out (Intel's `vpmullq`
   is a 15-cycle latency, and the chain would eat it). Needs a Zen 4 and an
   Intel core to measure before it goes anywhere near dispatch.
+- **The dual kernel costs about a cycle where a single block cannot amortize
+  it.** A per-length sweep on the N2 leaves xxh64 3% behind cespare/xxhash at
+  exactly 33 and 37 bytes -- one 32-byte block plus a short tail -- and the
+  deficit survives four relinked layouts, so it is a result rather than the
+  caller-alignment lottery. Generating the arm64 kernel with `Dual()` false
+  halves it at 33 (3.2% -> 1.4%) and does nothing at 37: the form load and its
+  branch are the price of shipping both lane rounds in one kernel, which is
+  what buys +31% on Apple cores, and the rest is a couple of instructions in a
+  ~34-cycle hash. By 64 bytes it is gone (-1%), and from 200 bytes up the
+  kernel is 5-6% ahead. Two things were tried and are not worth keeping:
+  turning `TailMaskSkips` on for arm64 (33 unchanged, 37 slightly better, 88
+  worse -- branch cost on this core is not what it is on x86), and hoisting
+  the form load above `InitLanes` to cover its latency (neutral; the
+  out-of-order window was already covering it).
 - **The amd64 tail opens with combined-mask skips** (`TailMaskSkips` in the
   generator): test n against 31, 24, 7 and 3 ahead of the per-bit guards, so
   a trivial tail pays 1-2 taken branches instead of up to 5. Five taken
