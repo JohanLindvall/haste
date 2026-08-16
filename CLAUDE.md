@@ -929,6 +929,17 @@ one -- and Zen 3 is Milan, which is most of the AMD cloud fleet, so it is
 not nothing. Nothing else regressed: XXH3 is level or better at every size
 on both cores, and the streaming and long paths are untouched.
 
+**Confirmed on a Zen 4 directly**, and as the change itself rather than as a
+ratio against cespare: the current tree against the same tree with only the
+prime placement reverted, three relinked layouts each, cespare's rows as a
+within-binary control that moved 0.6% on average. Registers read +2.3% at
+32 bytes, +1.9% at 64, 0.0% at 128, +4.5% at 256 -- **+2.2% over the 32..256
+window where Zen 3 reads -6.5%** -- and -1..-3% at 512 and a kibibyte, which
+is where the control's own drift lives. So a desktop Zen 4 agrees with the
+EPYC samples: the register form is right for it, and only Zen 3 pays. A
+CPUID vendor split would put this core on the slower form to rescue that
+one, so any fix wants a family check.
+
 Two notes for whoever measures this next. The `bench/sweep` harness changed
 in the same range of commits, so its before-and-after across that boundary
 is meaningless -- it shows cespare 34% "faster" at 0..8 bytes because each

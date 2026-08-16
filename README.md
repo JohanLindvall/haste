@@ -126,23 +126,24 @@ implementations:
 
 | size | xxhaste | zeebo/xxh3 | cespare (XXH64) |
 |-----:|--------:|-----------:|----------------:|
-| 4 | **2.13** | 2.32 | 2.45 |
-| 8 | 2.17 | 2.22 | 2.46 |
-| 16 | 1.99 | 2.00 | 3.12 |
-| 32 | **2.34** | 2.41 | 6.11 |
-| 64 | 3.55 | 3.52 | 8.16 |
-| 128 | 5.53 | 5.47 | 11.6 |
-| 240 | **9.38** | 10.6 | 18.0 |
-| 256 | **9.70** | 13.8 | 18.6 |
-| 512 | **11.5** | 16.4 | 32.0 |
-| 1 Ki | **16.1** | 21.6 | 57.9 |
-| 4 Ki | **47.2** | 53.1 | 222 |
-| 16 Ki | **163** | 191 | 873 |
-| 64 Ki | **645** | 756 | 3468 |
-| 1 Mi | **11144** | 12751 | 55008 |
+| 4 | **2.19** | 2.39 | 2.46 |
+| 8 | **2.17** | 2.39 | 2.46 |
+| 16 | 1.99 | 1.98 | 3.10 |
+| 32 | **2.42** | 2.47 | 6.04 |
+| 64 | **3.19** | 3.54 | 8.00 |
+| 128 | **5.18** | 5.45 | 11.4 |
+| 240 | **9.34** | 10.7 | 17.7 |
+| 256 | **9.28** | 13.5 | 18.0 |
+| 512 | **11.3** | 16.2 | 31.2 |
+| 1 Ki | **15.7** | 21.8 | 57.6 |
+| 4 Ki | **46.9** | 52.3 | 217 |
+| 16 Ki | **160** | 186 | 847 |
+| 64 Ki | **635** | 741 | 3418 |
+| 1 Mi | **11248** | 12632 | 55476 |
 
-**102 GB/s** at 64 KiB against 87, and 94 GB/s at a mebibyte. Streaming one in
-4 KiB pieces: **63.8 GB/s** against 35.7 and 18.7.
+**103 GB/s** at 64 KiB against 88, and 93 GB/s at a mebibyte. Streaming one in
+4 KiB pieces: **64.7 GB/s** against 35.8 and 18.7. Ahead of the other XXH3
+port at every size except 16 bytes, where the two are within a percent.
 
 The same benchmark on a Core Ultra 9 185H (Redwood Cove P-core, Meteor Lake),
 which has **no AVX-512** and therefore exercises the AVX2 kernel:
