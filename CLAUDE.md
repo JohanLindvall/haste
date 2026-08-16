@@ -790,10 +790,10 @@ What that makes of the kernels:
   cycle, ~6.5-wide, `umaddl` at 1.2 per cycle. NEON and the two-lane split
   tie all-in; the four-lane split loses.
 
-### amd64 on Intel, measured on GitHub runners (shared VMs)
+### amd64 at scale, measured on GitHub runners (shared VMs)
 
-Three Intel server cores have been sampled, all on four-vCPU GitHub runner
-VMs. The VMs turn out to be steady for this workload -- across four
+Eight cores have been sampled across three instruction sets, the x86 ones on
+four-vCPU GitHub runner VMs. The VMs turn out to be steady for this workload -- across four
 independent Zen 3 allocations both our numbers and zeebo's repeat to +-0.3%
 up to 64 KiB -- so the ratios below are real, and only the absolute
 nanoseconds carry the VM's clock.
@@ -809,14 +809,23 @@ nanoseconds carry the VM's clock.
   current choice is right**: an EPYC 9V74 runner that exposed AVX-512
   (another had it masked off by the host) runs our AVX-512 kernel 11% faster
   than our AVX2, 825 ns against 929.
-- **XXH3 is behind zeebo/xxh3 from 16 KiB up on all three Intel cores, and
-  nowhere else.** Emerald Rapids 0.85x / 0.83x / 0.77x at 16 KiB / 64 KiB /
-  1 MiB, Ice Lake 0.92x / 0.89x / 0.87x, Granite Rapids 0.85x / 0.76x /
-  0.72x. Below 4 KiB the same cores have us ahead by up to 2.08x, and every
-  non-Intel core -- M2, N2, Zen 3, Zen 4 -- is ahead at every size. Choosing
-  AVX2 there would close part of the gap (Emerald Rapids 0.83x to 0.88x at
-  64 KiB) and not all of it: zeebo's AVX2 loop still beats our AVX2 loop on
-  that core, 1,022 ns against 1,159. This is the open performance item.
+- **XXH3 is behind zeebo/xxh3 from 16 KiB up on four of the eight cores
+  sampled, and it is not an Intel property.** Ratios at 16 KiB / 64 KiB /
+  1 MiB: Granite Rapids 0.85x / 0.76x / 0.72x, Emerald Rapids 0.85x / 0.83x
+  / 0.77x, Ice Lake-SP 0.92x / 0.88x / 0.86x -- **and EPYC 9V45 1.06x /
+  0.87x / 0.81x**, an AMD part. Ahead everywhere at those sizes: M2 1.66x,
+  N2 2.06-2.28x, Zen 3 1.05-1.12x, EPYC 9V74 1.14-1.15x. Below 4 KiB every
+  one of the eight has us ahead, by up to 2.47x.
+
+  What the four have in common is not a vendor but a fast kernel: the 9V45
+  runs our AVX-512 at 640 ns per 64 KiB, the quickest of any sample, and
+  loses anyway because zeebo's AVX2 does it in 552. Where our kernel is
+  slower in absolute terms -- Zen 3 at 1,097, the 9V74 at 825 -- we are
+  ahead. The crossover sits between 4 and 16 KiB, which is also where the
+  input stops fitting L1. Choosing AVX2 on the two Intel parts that want it
+  closes part of the gap and not all of it (Emerald Rapids 0.83x to 0.88x at
+  64 KiB), and on the 9V45 AVX-512 is already our better kernel. This is the
+  open performance item, and "Intel" was the wrong frame for it.
 - Candidates for the remainder, none tested: 512-bit licence behaviour on
   the fast-block path, our per-stripe secret load against whatever zeebo
   keeps in registers, and Intel's three-port 256-bit issue against Zen's
@@ -871,10 +880,13 @@ precedent is there -- generate both x86 forms and pick by CPUID vendor at
 init, as `pickBackend` already does for feature bits -- and the cost is a
 second amd64 XXH64 kernel to verify.
 
-**Zen 4 has not been sampled since the change** (the runner pool served Zen
-3, Ice Lake-SP and the N2 that day), so whether this is AMD-wide or Zen 3's
-alone is open. Nothing else regressed: XXH3 on both cores is level or better
-at every size, and the streaming and long paths are untouched.
+**It is Zen 3's alone.** An EPYC 9V45 sampled after the change sits at
+0.94-1.04x of cespare over 4..4096 bytes, and the EPYC 9V74 sampled before
+it was 0.94-1.04x too, so the Zen 4-class parts are level either way and
+only Zen 3 pays. That narrows any fix to a family check rather than a vendor
+one -- and Zen 3 is Milan, which is most of the AMD cloud fleet, so it is
+not nothing. Nothing else regressed: XXH3 is level or better at every size
+on both cores, and the streaming and long paths are untouched.
 
 Two notes for whoever measures this next. The `bench/sweep` harness changed
 in the same range of commits, so its before-and-after across that boundary
