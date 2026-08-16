@@ -734,52 +734,67 @@ on a Redwood Cove:
   alone, on a core where it is slower, and the selection is gated to Intel.
 
 **Three regimes, and top-down names each one.** Per hash, differenced against
-a zero-iteration run, medians of five, `Backend()` reporting `mulx`:
+a zero-iteration run, medians of five, `Backend()` reporting `mulx`, measured
+after the lane-round fold:
 
-| bytes | cyc | instr | IPC | retiring | backend | bound by |
-|---|---|---|---|---|---|---|
-| 0..16 | 7.6 | 44 | 5.8 | 86-93% | <=5% | the machine's width |
-| 17..64 | 9.4-11.8 | 52-70 | 5.5-5.9 | 88-92% | 3-10% | width |
-| 96..112 | 16.3-18.8 | 88-95 | 5.1-5.4 | 79-84% | 14-15% | the ladder |
-| 224 / 225 | 33.3 / 30.5 | 162 / 163 | 4.9 / 5.4 | 77% / 87% | 19% / 11% | the ladder, isolated |
-| 336..448 | 46-60 | 215-266 | 4.4-4.7 | 72-76% | 21-27% | the ladder |
-| 4 Ki..64 Ki | -- | -- | 4.6 | 68-69% | 22-27% | the block loop |
+| bytes | cyc | instr | retiring | backend | bound by |
+|---|---|---|---|---|---|
+| 8..64 | 7.7-12.2 | 44-70 | 90-93% | 1-4% | the machine's width |
+| 96..112 | 16.5-19.7 | 88-95 | 78-83% | 11-17% | the ladder |
+| 128 | 20.1 | 103 | 90% | 3% | width again -- no rungs |
+| 224..448 | 34-60 | 155-245 | 71-76% | 17-24% | the ladder |
+| 1 Ki..16 Ki | -- | -- | 67-73% | 20-22% | the block loop |
 
-The 224-against-225 pair is the experiment worth keeping: the same
-instruction count to within one, ten points of retiring apart. That is the
-six serial ladder rungs 224 runs and 225 does not, with nothing else moving.
+**112 against 128 is the pair that isolates the ladder.** 112 bytes runs six
+serial rungs and no block group; 128 runs one group of seven independent
+lanes and no rungs. 128 issues *more* instructions -- 103 against 95 -- and
+retires 90% of its slots against 78%, in about the same time (20.1 cycles
+against 19.7). More work, same wall clock, because one shape is parallel and
+the other is a chain. (224-against-225 used to make this point more sharply,
+and no longer does: the fold took 14 instructions off 225 and 7 off 224, and
+both now read 76% retiring. The pair is still a 10% step in cycles, but it is
+an instruction-count step now, not a stall.)
 
-**The block loop is 29% above every bound that can be computed for it, and it
-is not waiting on anything.** Per 224-byte iteration at 64 KiB: 19.85 cycles,
-95.2 instructions, 82.3 issued µops, 107.6 executed. Ports, and how busy each
-is against those 19.85 cycles:
+**The block loop is close to its multiplier port, not adrift from it.** Fit
+over two L1-resident sizes that end the same way -- 4096 at 18 iterations,
+16384 at 73 -- gives **17.27 cycles per 224-byte iteration**, against 14 for
+the fourteen multiplies at one a cycle. Ports, as a direct ratio against
+cycles in the same run at 16 KiB:
 
-| port | µops/iter | busy |
-|---|---|---|
-| 1 (the multiplier) | 15.43 | 78% |
-| 5+11 | 28.77 | 72% |
-| 6 | 14.29 | 72% |
-| 0 | 13.91 | 70% |
-| 2/3/10 (loads) | 35.14 | 59% |
+| port | busy |
+|---|---|
+| 1 (the multiplier) | 85.3% |
+| 6 | 80.0% |
+| 5+11 | 79.1% each |
+| 0 | 77.6% |
+| 2/3/10 (loads) | 65.6% each |
 
-Fourteen multiplies at one per cycle is 14; the ALU µops spread over five
-ports is 14.5; a lane's two dependent rounds are 12. The highest is 15.4 and
-it runs at 19.85. **`exe_activity.exe_bound_0_ports` is 0.0%**, so the
-scheduler is never empty and none of that gap is a dependency stall -- which
-is also why the subtractive study above found no single dominant term. The
-largest named component is `bound_on_loads` at 8.8%, and it is not cache
-capacity: the L1 miss rate is 0.2% even at 64 KiB, and the figure sits at
-5-9% at 1 KiB, 4 KiB and 16 KiB alike, all L1-resident. It is the loop's 35
-loads an iteration, not where they come from. Whatever closes this gap is
-about issuing fewer loads, and `HoldSecret` is the lever that has already
-been pulled.
+`exe_activity.exe_bound_0_ports` is 0.3% and `bound_on_loads` 3.9%, so
+nothing is waiting: five ALU ports at 78-85% with the multiplier port highest
+is what a loop at its throughput looks like. That is the answer the older
+subtractive study was circling -- no single term dominates because the loop
+is near-balanced across every port it uses.
 
-Two figures from the same run, for calibration. The seed still costs what the
-unseeded twin exists to avoid: 9.00 cycles against 7.65 at 8 bytes, +18%. And
-against the vendored C reference in the same process, where the cgo call is
-amortized and the comparison means something, rapidhash is **1.13x at both
-64 KiB and 1 MiB** (55.2 GB/s against 49.0). Below a few hundred bytes that
-column is cgo overhead and says nothing -- it reads 5.1x at 256 bytes.
+**Do not measure this loop at 64 KiB on this core.** Five runs of the same
+binary at that length spread 5201 to 6149 cycles, 18%, with instruction
+counts identical to within 0.2% and the core at a steady 4.9 GHz -- 64 KiB
+exceeds the 48 KB L1 and the result becomes an L2 and prefetch measurement.
+4 KiB and 16 KiB repeat to 2.4%. An earlier pass took the port percentages
+from a single 64 KiB run and read the loop as 29% above every bound it could
+compute; it is 23% above the multiplier bound and 85% of the way to port 1.
+Fit the slope across two stable, L1-resident sizes instead.
+
+And watch the warmup. A fixed *iteration* count for it is a fixed byte count
+only at one length: 2M iterations is 32 GB at 16 KiB, which swamps both the
+measurement and the zero-iteration baseline it is differenced against, and
+returns negative cycle counts. Warm on a byte budget.
+
+Two figures for calibration. The seed still costs what the unseeded twin
+exists to avoid: 9.00 cycles against 7.65 at 8 bytes, +18%. And against the
+vendored C reference in the same process, where the cgo call is amortized,
+rapidhash is **1.13x at 64 KiB and 1 MiB** (55.2 GB/s against 49.0). Below a
+few hundred bytes that column is cgo overhead and says nothing -- it reads
+5.1x at 256 bytes.
 
 **On arm64 the loop is bound by the multiplier, and it is finished.** x86
 gets both halves of a product from one `mulq`; arm64 needs `mul` and `umulh`,
