@@ -363,15 +363,40 @@ anything on top of that.
   place. Two cores, one that cares and one that does not, and no reading of
   the mechanism that explains either -- so the register form is kept because
   it is never worse, not because the model says it should win.
-- What could move amd64 further, and is deliberately not shipped unmeasured:
-  offloading
-  the four off-chain `in*P2` products to the vector unit -- `vpmullq` on
-  AVX-512DQ, or the three-`vpmuludq` emulation on AVX2 -- and moving them back
-  with `vmovq`/`vpextrq`, which would leave four scalar imuls per block and
-  make the 5-cycle chain the bound: up to +60% on Zen 4 in the model, but the
-  transfers are the unknown, and an all-vector loop is out (Intel's `vpmullq`
-  is a 15-cycle latency, and the chain would eat it). Needs a Zen 4 and an
-  Intel core to measure before it goes anywhere near dispatch.
+- **Offloading the four off-chain `in*P2` products to the vector unit is
+  worth +20%, and the transfers decide it.** This was the standing "needs an
+  Intel core to measure" item; a Redwood Cove has now measured it. The lane
+  loop alone, cycles per 32-byte block, median of five, pinned, over 2048
+  blocks (32 blocks in brackets):
+
+  | lane loop | cyc/block |
+  |---|---|
+  | shipped, eight `imul` | 8.35 [8.46] |
+  | four `imul`, products from AVX2, back via `vmovq`/`vpextrq` | 8.16 [8.23] |
+  | four `imul`, products from AVX2, back through memory | **6.98** [7.56] |
+  | eight `imul`, AVX2 products computed and thrown away | 8.26 [8.36] |
+
+  Three things fall out. The **emulation is free**: seven vector operations
+  per block on top of the full scalar loop cost nothing at all, because they
+  hide behind the eight-`imul` bound. The **register extracts are not**:
+  `vmovq` + `vpextrq` + `vextracti128` give back almost the whole gain, which
+  is the unknown this note flagged, and the answer is that they are the wrong
+  transfer. **Through memory it lands**, 8.35 to 6.98, +20%.
+
+  Not +60%: 6.98 is still two cycles above the 5-cycle chain the model says
+  should then bind, and where those go has not been chased. An all-vector
+  loop remains out (Intel's `vpmullq` is 15-cycle latency and the chain would
+  eat it), and AVX-512's single `vpmullq` for the products is untested --
+  this box has none.
+
+  What it would cost to ship, none of it measured: a 32-byte scratch slot,
+  so the kernel stops being `NOSPLIT` with a zero frame; runtime AVX2
+  detection, so `sum64` stops being one direct call to one kernel, which is
+  the property the whole XXH64 design is built around and which the arm64
+  form choice was pushed into the primes table to preserve; and a short-hash
+  path that must not pay for any of it, since the offload loses below a
+  handful of blocks. Worth it only if someone wants XXH64 long-input
+  throughput badly enough to spend that, and it still wants a Zen 4 reading.
 - **The dual kernel costs 1-2% where a single block cannot amortize it**, and
   that is the whole of it: measured with direct calls on the N2, the form load
   and its branch are 2.1% at 33 bytes and 1.3% at 37 -- one 32-byte block plus
