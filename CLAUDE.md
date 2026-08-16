@@ -609,9 +609,13 @@ worth nothing.
      below 64 bytes and worse at 256 and above, which is the trade this note
      originally recorded against going past 512.
 
-     **One caveat left.** That trade was measured on the N2 and has not been
-     repeated, so measure 512 against 1024 there before trusting this on
-     arm64. The interaction with the small-write drain -- whose
+     **Measured on arm64 since**: on an M2 P-core, 1024 against 512 with
+     everything else current is +7.6% at 16-byte writes, +9.5% at 256, and
+     -4.0% at 64, with a kibibyte and above unchanged -- back to back, six
+     samples each. So the trade holds there too except at exactly 64-byte
+     writes, which is the one write size where staging a block rather than
+     half of one costs anything on that core. The N2 has still not been
+     re-measured. The interaction with the small-write drain -- whose
      `len(p) < internalBufferSize-63` gate now admits writes up to 961 bytes
      rather than 449 -- was checked on the Redwood Cove and costs nothing
      (−14.1% at 64-byte writes, −13.5% at 256, −0.5% at a kibibyte with the
@@ -827,6 +831,49 @@ off by the host, in which case it dispatches to AVX2 and says nothing about
 AVX-512) and the three Intel cores above. Dispatch `bench.yml` a few times
 if a particular vendor is wanted, and read `cpu.txt` in the artifact before
 trusting which core produced a number.
+
+### The x86 XXH64 primes: registers win on Intel, lose on AMD
+
+Holding the primes in registers rather than behind a table pointer is worth
+12-16% at 32..256 bytes on a Redwood Cove, and it is a regression of the
+same shape and size on AMD. Measured as 2518092 against 32598bc, one build
+per side, on GitHub runners whose competitor rows moved by at most 0.1% in
+the same binaries:
+
+| bytes | Ice Lake-SP | Zen 3 |
+|---|---|---|
+| 4 | -9.4% | -7.3% |
+| 8 | -0.2% | -13.3% |
+| 16 | +4.5% | -16.6% |
+| 32 | +14.6% | -8.8% |
+| 64 | +13.0% | -6.4% |
+| 128 | +12.7% | -5.5% |
+| 256 | +7.9% | -5.2% |
+| 512 | +4.2% | -3.4% |
+| 1024 | +2.2% | -1.6% |
+| 4096 and up | level | level |
+
+Against cespare/xxhash that moves Ice Lake from 0.85-0.95x to 1.01-1.10x
+over 32..256 bytes -- the Intel window this file lists as open, now closed --
+and Zen 3 from 1.00-1.15x to 0.91-1.00x over 4..512. Both cannot be had from
+one kernel: the two vendors want opposite things from the same code, the way
+the two arm64 cores want opposite lane rounds. If it is worth fixing, the
+precedent is there -- generate both x86 forms and pick by CPUID vendor at
+init, as `pickBackend` already does for feature bits -- and the cost is a
+second amd64 XXH64 kernel to verify.
+
+**Zen 4 has not been sampled since the change** (the runner pool served Zen
+3, Ice Lake-SP and the N2 that day), so whether this is AMD-wide or Zen 3's
+alone is open. Nothing else regressed: XXH3 on both cores is level or better
+at every size, and the streaming and long paths are untouched.
+
+Two notes for whoever measures this next. The `bench/sweep` harness changed
+in the same range of commits, so its before-and-after across that boundary
+is meaningless -- it shows cespare 34% "faster" at 0..8 bytes because each
+implementation got its own loop, and it flatters us more than cespare
+because our inlinable wrapper was the one paying two calls. Use the compare
+suite across builds. And the whole XXH64 effect is in the one-shot kernel:
+`Digest` streaming moved 0.2% at every write size on Zen 3.
 
 ### The 33..128 inlining is not free on Zen 3
 
