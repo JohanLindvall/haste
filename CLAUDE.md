@@ -1826,6 +1826,32 @@ makes them easy to confuse and worth writing down. It was briefly added to
 other reads as a like-for-like comparison however the rows are labelled, and
 it forced `bench/go.mod` from Go 1.22 to 1.24.2 for the privilege.
 
+## The efficiency cores rank the hashes differently
+
+Measured on an M2's Blizzard cores under background QoS, which also clocks
+them to about 0.95 GHz -- so the ratio to the performance core is the number,
+not the nanoseconds. `Sum64`, minimum of three:
+
+| bytes | XXH3 P/E | XXH64 P/E | rapidhash P/E |
+|---|---|---|---|
+| 16 | 7.5x | 8.1x | 6.6x |
+| 64 | 7.2x | 8.8x | 9.2x |
+| 256 | 7.1x | 7.7x | 8.3x |
+| 1 Ki | 7.2x | 6.3x | 7.6x |
+| 64 Ki | 7.7x | 5.6x | 7.1x |
+
+The ranking moves with the core. At 64 KiB the P-core has XXH3 and rapidhash
+level -- 1,329 ns against 1,316 -- and the E-core has rapidhash ahead by 8%,
+10,204 against 9,387. A narrow core has less vector width to give XXH3 and
+proportionally more multiplier to give rapidhash, and XXH64 is the one that
+scales best of the three onto the small core because it was never using the
+width in the first place.
+
+Worth knowing for two reasons: a big.LITTLE scheduler can move a goroutine
+between the two mid-hash, and "which hash is fastest" has a different answer
+on a phone or a laptop on battery than it does on the core the numbers in
+this file were taken on.
+
 ## What the assembly is worth
 
 Measured on an M2 P-core against a `-tags purego` build of each package,
