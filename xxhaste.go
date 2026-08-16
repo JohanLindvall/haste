@@ -181,7 +181,24 @@ func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) ui
 		if n > midsizeMax {
 			acc := initAcc
 			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
-			return mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1)
+			// The convergence is written out rather than reached through
+			// mergeAccs, which costs 287 nodes against the inliner's budget of
+			// 80 and is therefore always a real call. mix2Accs is the largest
+			// piece that does inline, so the four folds have to be named here.
+			//
+			// One call is all this saves, and on a Redwood Cove that measured
+			// neutral -- within a percent either way at 256 and 512 bytes,
+			// where the next hash's stripes overlap it. It is written this way
+			// to match sum128NS, where the same change removes two calls and
+			// is worth 9% at 256 bytes; see there. The seeded twins keep the
+			// call: past 240 bytes a seed derives a 192-byte secret first,
+			// which costs far more than either.
+			s := add(sec, secretMergeAccsStart)
+			m0 := mix2Accs(&acc, 0, s)
+			m1 := mix2Accs(&acc, 2, add(s, 16))
+			m2 := mix2Accs(&acc, 4, add(s, 32))
+			m3 := mix2Accs(&acc, 6, add(s, 48))
+			return avalanche((uint64(n)*prime64_1 + m0) + (m1 + m2) + m3)
 		}
 		if n <= 128 {
 			// The 17..32 rung is spelled out here rather than called: it is
@@ -397,10 +414,24 @@ func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) U
 		if n > midsizeMax {
 			acc := initAcc
 			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
+			// Both convergences written out, for the reason given in sum64NS.
+			// Here it removes two calls rather than one, and unlike there it
+			// pays: 8.9% at 256 bytes on a Redwood Cove, 4.9% at a kibibyte
+			// and 2.9% at 4 KiB. Two of these back to back are a long enough
+			// serial tail that the next hash cannot hide them.
+			s := add(sec, secretMergeAccsStart)
+			l0 := mix2Accs(&acc, 0, s)
+			l1 := mix2Accs(&acc, 2, add(s, 16))
+			l2 := mix2Accs(&acc, 4, add(s, 32))
+			l3 := mix2Accs(&acc, 6, add(s, 48))
+			t := add(sec, uintptr(secretLen-8*accNB-secretMergeAccsStart))
+			h0 := mix2Accs(&acc, 0, t)
+			h1 := mix2Accs(&acc, 2, add(t, 16))
+			h2 := mix2Accs(&acc, 4, add(t, 32))
+			h3 := mix2Accs(&acc, 6, add(t, 48))
 			return Uint128{
-				Lo: mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1),
-				Hi: mergeAccs(&acc, add(sec, uintptr(secretLen-8*accNB-secretMergeAccsStart)),
-					^(uint64(n) * prime64_2)),
+				Lo: avalanche((uint64(n)*prime64_1 + l0) + (l1 + l2) + l3),
+				Hi: avalanche((^(uint64(n) * prime64_2) + h0) + (h1 + h2) + h3),
 			}
 		}
 		if n <= 128 {

@@ -6,6 +6,14 @@
 // ~1ms of work, run in 9 repetitions, and the per-op time is the median of
 // the repetitions. The input is read from a fixed, 64-byte-aligned buffer at
 // offset 0, matching the other benchmarks.
+//
+// Each implementation owns its whole iteration loop, so the hash inside it is
+// a *direct* call that the entry point can inline into. Timing one call at a
+// time through a func value instead was worth 0.65ns to xxhaste and 0.15ns to
+// zeebo/xxh3 on a Redwood Cove, which is enough to invert the comparison: it
+// reported xxhaste 9% behind over 33..64 bytes where a direct call has it 6%
+// ahead. An indirection is exactly what these entry points are shaped to
+// avoid, so measuring through one measures the wrong thing.
 package main
 
 import (
@@ -25,14 +33,17 @@ import (
 
 var sink uint64
 
-func measure(f func([]byte) uint64, in []byte) float64 {
+// runner hashes in exactly iters times, accumulating the results so nothing
+// is optimized away. One per implementation, each with the hash spelled out
+// so the call is direct; see the package comment.
+type runner func(in []byte, iters int) uint64
+
+func measure(f runner, in []byte) float64 {
 	// Calibrate to ~1ms.
 	iters := 1000
 	for {
 		t := time.Now()
-		for i := 0; i < iters; i++ {
-			sink += f(in)
-		}
+		sink += f(in, iters)
 		d := time.Since(t)
 		if d > 200*time.Microsecond {
 			iters = int(float64(iters) * float64(time.Millisecond) / float64(d))
@@ -46,9 +57,7 @@ func measure(f func([]byte) uint64, in []byte) float64 {
 	reps := make([]float64, 9)
 	for r := range reps {
 		t := time.Now()
-		for i := 0; i < iters; i++ {
-			sink += f(in)
-		}
+		sink += f(in, iters)
 		reps[r] = float64(time.Since(t).Nanoseconds()) / float64(iters)
 	}
 	sort.Float64s(reps)
@@ -99,14 +108,50 @@ func main() {
 
 	impls := []struct {
 		name string
-		f    func([]byte) uint64
+		f    runner
 	}{
-		{"xxhaste", xxhaste.Sum64},
-		{"zeebo", xxh3.Hash},
-		{"xxhaste64", xxh64.Sum64},
-		{"cespare", cespare.Sum64},
-		{"xxhaste128", func(b []byte) uint64 { return xxhaste.Sum128(b).Lo }},
-		{"zeebo128", func(b []byte) uint64 { return xxh3.Hash128(b).Lo }},
+		{"xxhaste", func(b []byte, n int) uint64 {
+			var s uint64
+			for i := 0; i < n; i++ {
+				s += xxhaste.Sum64(b)
+			}
+			return s
+		}},
+		{"zeebo", func(b []byte, n int) uint64 {
+			var s uint64
+			for i := 0; i < n; i++ {
+				s += xxh3.Hash(b)
+			}
+			return s
+		}},
+		{"xxhaste64", func(b []byte, n int) uint64 {
+			var s uint64
+			for i := 0; i < n; i++ {
+				s += xxh64.Sum64(b)
+			}
+			return s
+		}},
+		{"cespare", func(b []byte, n int) uint64 {
+			var s uint64
+			for i := 0; i < n; i++ {
+				s += cespare.Sum64(b)
+			}
+			return s
+		}},
+		{"xxhaste128", func(b []byte, n int) uint64 {
+			var s uint64
+			for i := 0; i < n; i++ {
+				s += xxhaste.Sum128(b).Lo
+			}
+			return s
+		}},
+		{"zeebo128", func(b []byte, n int) uint64 {
+			var s uint64
+			for i := 0; i < n; i++ {
+				s += xxh3.Hash128(b).Lo
+			}
+			return s
+		}},
 	}
 
 	// Warm up before the first measurement. A core takes a few milliseconds
@@ -115,7 +160,7 @@ func main() {
 	// against 2.4ns warm.
 	for t := time.Now(); time.Since(t) < 200*time.Millisecond; {
 		for _, im := range impls {
-			sink += im.f(buf[:64])
+			sink += im.f(buf[:64], 1000)
 		}
 	}
 

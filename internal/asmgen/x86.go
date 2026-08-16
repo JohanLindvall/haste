@@ -29,17 +29,26 @@ const (
 	r11 GPR = 11
 	r12 GPR = 12
 	r13 GPR = 13
+	r14 GPR = 14
 )
 
 var x86GPRNames = map[GPR]string{
 	rAX: "%rax", rCX: "%rcx", rDX: "%rdx", rBX: "%rbx",
 	rSI: "%rsi", rDI: "%rdi", r8: "%r8", r9: "%r9",
 	r10: "%r10", r11: "%r11", r12: "%r12", r13: "%r13",
+	r14: "%r14",
 }
 
-// Go's amd64 ABI keeps R14 for the goroutine pointer, R15 for dynamic linking
-// and X15 as a zero register, so none of them appear above or in the vector
-// pools below.
+// R14 holds the goroutine pointer in ABIInternal, but these kernels are ABI0,
+// where it is undefined: the compiler re-establishes R14 (and X15) after every
+// ABI0 call it makes, so an ABI0 leaf may clobber both. See
+// cmd/compile/abi-internal.md, "transitions from ABIInternal to ABI0 can
+// ignore these registers", and the code that does it in
+// cmd/compile/internal/amd64/ssa.go. Only the XXH64 kernel takes R14 up on
+// that; the vector pools below leave it, R15 and X15 alone.
+//
+// R15 is reserved under dynamic linking and X15 is the zero register, so
+// neither appears above or in the vector pools below.
 var x86ArgGPR = []GPR{rDI, rSI, rDX, rCX, r8, r9}
 
 // rAX is last: Setup uses it to stage the broadcast constant, and does so

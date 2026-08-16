@@ -339,6 +339,12 @@ var errBadState = errors.New("xxhaste: invalid hash state")
 // restored, and d is left as it was. The counters are checked before anything
 // is written, and as unsigned: bufUsed indexes buf, and a value that wrapped
 // negative on a 32-bit int would index it out of range.
+//
+// A state carries the whole staging buffer, whose size is a tuning parameter
+// this package reserves the right to change; a state written by a build with
+// a different internalBufferSize fails the length check here rather than
+// being misread. It last changed when the staging size went from 512 bytes to
+// a block.
 func (d *Digest) UnmarshalBinary(b []byte) error {
 	if len(b) != marshaledSize || string(b[:len(magic)]) != magic {
 		return errBadState

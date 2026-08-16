@@ -73,10 +73,24 @@ const (
 	// at or above midsizeMax rounded up to a stripe gives the same hash.
 	//
 	// Its job is to amortize the cost of entering the kernel over more than
-	// one write. Doubling it from the reference's 256 bytes was worth 17% on
-	// 64-byte writes and 19% on 256-byte ones; going further traded small
-	// writes against large ones and doubled the state again.
-	internalBufferSize = 512
+	// one write: a Write that does not fill it costs one copy, and only the
+	// one that overflows pays for absorb, the secret pointer, the block
+	// position and the kernel's own prologue. Doubling it from the
+	// reference's 256 bytes was worth 17% on 64-byte writes and 19% on
+	// 256-byte ones on a Neoverse N2.
+	//
+	// A block is what it is now, which is also what zeebo/xxh3 stages. On a
+	// Redwood Cove that was worth another 17.7% at 64-byte writes, 11.6% at
+	// 256 and 3.5% at 4 KiB, and cost nothing at a kibibyte; a further
+	// doubling was better again below 64 bytes but lost at 256 and above,
+	// which is the trade CLAUDE.md records against going past 512 on the N2.
+	// That measurement predates this value and has not been repeated -- see
+	// the streaming notes there before changing it back.
+	//
+	// It is the one tuning parameter that shows outside the package:
+	// marshaledSize counts it, so a state marshalled by a build with a
+	// different value is rejected by UnmarshalBinary rather than restored.
+	internalBufferSize = 1024
 )
 
 // Uint128 is a 128-bit hash value. Lo and Hi are the low and high halves as

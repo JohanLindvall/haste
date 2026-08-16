@@ -112,11 +112,48 @@ type FuncDef struct {
 	// Ret is the result type, or empty for none. A kernel that returns a
 	// value leaves it in the register RetGPR names.
 	Ret string
-	// Table names a package-level variable whose address the prologue loads
-	// into TableGPR, for a kernel that reads constants from memory rather
-	// than materializing them. Empty means none.
+	// Table names a package-level variable the prologue reads constants
+	// from, for a kernel that does not materialize them. Empty means none.
+	// How it is reached is the architecture's: by address in TableGPR, or
+	// slot by slot into registers -- see TableLoader.
 	Table string
 	Doc   string
+}
+
+// TableLoad is one constant moved from the table into a register by the
+// prologue, named by its slot index in 64-bit words.
+type TableLoad struct {
+	Slot int
+	Reg  GPR
+}
+
+// TableLoader is implemented by a backend whose prologue lifts the table's
+// constants straight into registers instead of keeping a pointer to it.
+//
+// It exists because on x86 the pointer is not free. A RIP-relative load has
+// its address in the instruction, so it issues as soon as it is allocated; a
+// load through a table pointer has to wait for the LEA that produced the
+// pointer, and every multiply in the hash waits behind the prime it loads.
+// Measured on Redwood Cove, moving the two lane-loop primes off the pointer
+// was worth 5-15% of a 32..256-byte XXH64, and moving the rest off it the
+// same again. See CLAUDE.md.
+type TableLoader interface {
+	// TableLoads is the slots this kernel's prologue loads, which may
+	// differ per function: the streaming kernel needs only the two primes
+	// its lane loop multiplies by.
+	TableLoads(def FuncDef) []TableLoad
+}
+
+// PrologueLoads reports the constants k's prologue lands in registers before
+// the body runs. A simulator has to set the same registers up, because the
+// prologue is hand-written Go assembly and not part of the instruction
+// stream.
+func PrologueLoads(k Kernel, def FuncDef) []TableLoad {
+	tl, ok := k.(TableLoader)
+	if !ok || def.Table == "" {
+		return nil
+	}
+	return tl.TableLoads(def)
 }
 
 // Kernel is what the renderer needs from an emitted function: which

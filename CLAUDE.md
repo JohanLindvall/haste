@@ -188,10 +188,18 @@ go build -o /tmp/sweep ./sweep                 # every length, one at a time
   Two 2-3x spikes have been chased to nothing this way (lengths 130 and 154
   in one run, 32 in another); they are the same lottery wearing a different
   hat. The sweep warms the core up first -- see the M2 note -- so early
-  lengths are safe, but its function-pointer harness adds a call to every
-  implementation, and **not equally**: use it for shapes, the compare suite
-  for any claim about who is faster. Two measured asymmetries, both in
-  XXH64 at short lengths:
+  lengths are safe.
+
+  **The function-pointer harness that made the sweep's comparisons
+  untrustworthy is gone**: each implementation now runs its own iteration
+  loop, so the hash inside it is a direct call and the indirection is paid
+  once per millisecond of work rather than once per hash. The two asymmetries
+  below are what it used to cost, and are kept because they are the reason a
+  sweep run from before that change cannot be compared with one after it --
+  re-run it rather than trusting old output. On a Redwood Cove the harness
+  cost xxhaste 0.65 ns per hash against zeebo/xxh3's 0.15, enough to report
+  xxhaste 9% behind over 33..64 bytes where a direct call has it 6% ahead.
+  Both measured asymmetries were in XXH64 at short lengths:
   - Our entry points are built to inline, so a direct call reaches the
     kernel in one call while a call through a function value takes two --
     the wrapper, then the kernel. cespare/xxhash's `Sum64` *is* the assembly
@@ -233,9 +241,18 @@ go build -o /tmp/sweep ./sweep                 # every length, one at a time
 - **Wire format**: every constant in `generic.go` marked as such changes the
   hash if touched. `stripeLen`, `secretConsumeRate`, `midsizeStartOffset`,
   `secretLastAccStart`, `secretMergeAccsStart`, and the primes.
-- **Go ABI, amd64**: R14 holds the goroutine pointer, R15 is reserved under
-  dynamic linking, X15 is the zero register. None appear in `x86GPRNames` or
-  the vector pools, and none should.
+- **Go ABI, amd64**: R15 is reserved under dynamic linking; it appears in
+  neither `x86GPRNames` nor the vector pools, and should not.
+  R14 (the goroutine pointer) and X15 (the zero register) are different: they
+  have those meanings in **ABIInternal only**, and every kernel here is ABI0.
+  `cmd/compile/abi-internal.md` says so outright -- "In ABI0, these are
+  undefined, so transitions from ABIInternal to ABI0 can ignore these
+  registers" -- and the compiler backs it up, re-establishing both after every
+  ABI0 call it emits (`XORPS X15, X15; MOVQ TLS, R14`, in
+  `cmd/compile/internal/amd64/ssa.go`, `OpAMD64CALLstatic`). So an ABI0 leaf
+  may clobber them, which is what cespare/xxhash has always done with R14.
+  The XXH64 kernel takes R14 up on that and holds P4 there; nothing yet uses
+  X15, which would give the vector pools a sixteenth register.
 - **Go ABI, arm64**: R18 is platform-reserved, R27 is the assembler's
   temporary, R28 holds g, R29/R30 are frame and link. R12–R17 and R19–R25 are
   free. All V registers are scratch.
@@ -256,16 +273,27 @@ go build -o /tmp/sweep ./sweep                 # every length, one at a time
 - **AVX-512 requires DQ, not just F**: the scramble multiplies whole 64-bit
   lanes with `VPMULLQ`, which is AVX512DQ. `pickBackend` checks for both. A
   machine with F but not DQ (Knights Landing) must land on AVX2.
-- **Both XXH64 kernels read the `primes` table.** They are the kernels that
-  reference a Go symbol: the prologue (Go assembly text, not generated
-  bytes) loads `$·primes(SB)` into a register the generated code reads
-  through -- on arm64 because five 64-bit immediates would be four
-  instructions each in code with no constant pool, on x86 because five
-  ten-byte `movabs` cost short hashes 6-19% on Zen 3. `primes` in `xxh64.go`
-  is therefore read-only and must stay `[6]uint64` in that order: the five
-  primes, then the arm64 lane-round form, which setBackend rewrites in
-  tests. Any further table goes through `FuncDef.Table` and `TableGPR`, so
-  the simulator test can place it too.
+- **The XXH64 kernels are the ones that reference a Go symbol.** Generated
+  bytes cannot carry a relocation, so anything naming `·primes` is in the
+  prologue, which is Go assembly text. The two architectures reach it
+  differently and must:
+  - **arm64** loads `$·primes(SB)` into a register and reads five words off
+    it, because five 64-bit immediates would be four instructions each in
+    code with no constant pool.
+  - **amd64** loads four of the primes into registers RIP-relative and keeps
+    no pointer at all. A pointer costs 12-16% of a 32..256-byte hash on a
+    Redwood Cove; see the XXH64 performance notes. P3 has no register left
+    and is a `movabs` at its two cold uses -- one, not the five in the
+    prologue that cost short hashes 6-19% on Zen 3.
+
+  `primes` in `xxh64.go` is therefore read-only and must stay `[6]uint64` in
+  that order: the five primes, then the arm64 lane-round form, which
+  setBackend rewrites in tests. A backend that wants constants in registers
+  implements `TableLoader`; one that wants a pointer sets `TableGPR`. Both go
+  through `FuncDef.Table`, and `asmgen.PrologueLoads` reports the register
+  form so the simulator test can set up the same state -- the prologue is not
+  part of the instruction stream, so without that the simulated kernel would
+  run on zeroed primes.
 - **XXH64's public wrappers must inline into their callers**, and reach the
   kernel in one direct call: `go build -gcflags=-m ./xxh64` must list
   `Sum64`, `Sum64String`, `Sum64Seed`, `Sum64SeedString`, `sum64` and
@@ -322,7 +350,21 @@ anything on top of that.
   (2026-08): the long loop runs at 1.01 cycles per imul -- the wall, exactly
   as modelled -- and every length from 33 bytes up is within +/-2% of
   cespare.
-  What could move it, and is deliberately not shipped unmeasured: offloading
+- **Never reach the primes through a pointer on amd64.** The kernel used to
+  load the table's address with `LEAQ ·primes(SB), CX` and read the primes
+  off `CX`; it now loads four of them into registers RIP-relative and keeps
+  no pointer. On a Redwood Cove (Core Ultra 9 185H) that is worth 12-16%
+  over 32..128 bytes -- see the Redwood Cove section for the table and for
+  how it was isolated, which was by adding a pointer to a copy of cespare's
+  kernel and taking nothing else away.
+
+  It cost the Zen 4 nothing either way, which is consistent with the bullet
+  above: that core was already within ±2% of cespare with the pointer in
+  place. Two cores, one that cares and one that does not, and no reading of
+  the mechanism that explains either -- so the register form is kept because
+  it is never worse, not because the model says it should win.
+- What could move amd64 further, and is deliberately not shipped unmeasured:
+  offloading
   the four off-chain `in*P2` products to the vector unit -- `vpmullq` on
   AVX-512DQ, or the three-`vpmuludq` emulation on AVX2 -- and moving them back
   with `vmovq`/`vpextrq`, which would leave four scalar imuls per block and
@@ -520,7 +562,23 @@ worth nothing.
   2. `absorb` lifts the secret pointer and block position out and calls the
      backend directly. The intermediate layer was ~9% on its own.
   3. The staging size went from the reference's 256 bytes to 512. It is a
-     tuning parameter, not wire format.
+     tuning parameter, not wire format -- though `marshaledSize` counts it, so
+     changing it does invalidate marshalled state.
+
+     **It is 1024 now**, raised on a Redwood Cove where 1024 was better or
+     level at every write size: −17.7% at 64-byte writes, −11.6% at 256,
+     −3.5% at 4 KiB, +0.3% at a kibibyte. That is a block, and the same
+     amount zeebo/xxh3 stages. A further doubling to 2048 was better again
+     below 64 bytes and worse at 256 and above, which is the trade this note
+     originally recorded against going past 512.
+
+     **Two caveats, both open.** That trade was measured on the N2 and has
+     not been repeated, so measure 512 against 1024 there before trusting
+     this on arm64. And the small-write drain above is gated on
+     `len(p) < internalBufferSize-63`, a bound tuned when this was 512: the
+     drain now takes writes up to 961 bytes rather than 449, which is a
+     larger re-stage than it was measured with. The Zen 4 numbers in that
+     bullet predate this change.
 - Costs of entering a kernel, measured with sum64's signature on this machine:
   an empty Go call is 1.77ns, `accumBlocks` with nbStripes=0 is 5.02ns, and
   with one stripe 7.70ns. So a call is 1.77ns of Go plus 3.25ns of kernel
@@ -567,6 +625,9 @@ worth nothing.
   cost the custom-secret support carries. Every other length, 4..255, is a
   tie or ahead: +10% at 17..32 rising to +39% through 129..240, +38% median
   over 17..255.
+
+  Those figures predate the sweep harness being made direct-call; see the
+  benchmarking section. Re-run before quoting them.
 - Specializing the 0..16 paths on the default secret (compile-time bitflips,
   guarded by seed==0 && sec==&kSecret) was measured and rejected: only empty
   input won (+13%), 4..16 regressed 3-6%. The guarding compares sit on the
@@ -828,6 +889,64 @@ After those, a fresh per-length sweep on this core has both widths level or
 ahead of zeebo at every class: 0..3 bytes included (the old 3-8% deficit
 there is gone under go1.26.5), and the 128-bit 33..128 zone that briefly
 measured -5..-9% behind is +5..+6% ahead direct-call.
+
+### amd64, measured on Redwood Cove (Core Ultra 9 185H, Meteor Lake)
+
+Six P-cores at 4.8-5.1 GHz and no AVX-512, so **AVX2 is what dispatch picks
+here** and the AVX-512 kernel goes unexercised except through the simulator.
+`perf` works; pin to a P-core (0-11; 12-21 are Crestmont E-cores at 2.5-3.8
+GHz and will quietly halve any number taken without `taskset`).
+
+The core has three 256-bit vector ALU ports, so the AVX2 stripe's twelve
+instructions want four cycles. It gets **4.42 cycles per stripe** at 16 KiB,
+about 90% of that bound, and 4.86-4.92 out of L2 at 64 KiB and beyond.
+Nothing in the stripe is left to remove -- the ten 256-bit ALU operations are
+the algorithm's floor over 512 bits -- so this backend is finished on this
+core barring a wider one.
+
+- **The accumulator path's fixed cost is 30.7 cycles**, from a fit over
+  256..2048 bytes (`cycles = 30.7 + 4.32 x stripes`). At 256 bytes that is
+  64% of the hash. Where it goes, by profile: the kernel 40%, `mergeAccs`
+  28%, `sum64NS`'s own dispatch and the `initAcc` copy 16%, and the
+  `hashLong` wrapper 9%.
+- **The `hashLong` wrapper is worth 4.5% at 256..1024 bytes and is not
+  taken.** It is a three-way switch over `backend`, which costs 199 nodes
+  against the inliner's budget of 80, so it stays a real call and the kernel
+  is two calls from `sum64NS` where it could be one. Collapsing it to a
+  single call -- verified by hardcoding `hashLongAVX2`, which does inline at
+  cost 64 -- takes 256 bytes from 47.5 to 45.4 cycles, 512 from 65.5 to 62.6,
+  1024 from 99.1 to 94.6, and nothing at 4 KiB where the kernel hides it.
+  Three ways to get it, all rejected: a func variable is one call and would
+  inline, but escape analysis cannot see through it and would put `acc` on
+  the heap; splitting the rare backends behind a second function is still two
+  calls and 125 nodes; duplicating the switch into a fused long-path function
+  per architecture means six copies of the convergence. Worth revisiting if
+  the inliner's treatment of calls changes.
+- **The convergence is written out in `sum128NS`** rather than reached
+  through `mergeAccs` (287 nodes, never inlinable). Removing its two calls is
+  worth 8.9% at 256 bytes, 4.9% at a kibibyte, 2.9% at 4 KiB. The same change
+  in `sum64NS` removes one call and measures neutral, within a percent either
+  way; it is written the same way there for symmetry, not because it pays.
+- **Streaming**, cycles per MiB against zeebo/xxh3 after the staging size
+  went to a block: +8.7% at 16-byte writes, −7.4% at 64, +0.8% at 256, +7.0%
+  at 1 KiB, +41% at 4 KiB. The residual loss at 64-byte writes is call
+  depth: `Write` -> `write` -> `absorb` -> `accumBlocks` -> kernel against
+  zeebo's `Write` -> `updateString` -> kernel, and zeebo gets there by
+  putting its backend dispatch inline in `updateString` as a chain of `if
+  hasAVX2` on package-level bools instead of behind a wrapper. The same
+  inliner budget that blocks the `hashLong` fix blocks this one.
+- Against the reference implementations at the sizes `bench/compare_test.go`
+  measures: XXH3-64 is ahead of zeebo/xxh3 everywhere except 9..16 bytes
+  (−5%) and 0..3 (−4 to −9%, the signature cost the custom-secret support
+  carries); XXH3-128 is ahead from 17 bytes up, by 13-28% over 128..256 and
+  5-15% beyond; XXH64 is level with cespare/xxhash from 32 bytes up and 4-13%
+  ahead below it.
+- **XXH3-128 of an empty input costs 9.5 cycles against zeebo's 6.0**, 62
+  instructions against 38, because zeebo compiles the default secret's
+  bitflips in as constants and xxhaste loads them through the secret pointer.
+  Fixing it needs the specialization that was already measured and rejected
+  above -- the guard compares cost more than the L1-hot loads they remove --
+  so it stands.
 
 ## Reference vectors
 

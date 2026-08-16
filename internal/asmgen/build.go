@@ -219,6 +219,18 @@ func prologue(k Kernel, def FuncDef) []string {
 		mov = "MOVD"
 	}
 	var out []string
+	// The constants come first: they depend on nothing, where the arguments
+	// are store-to-load forwards from the caller's frame.
+	loads := PrologueLoads(k, def)
+	for _, l := range loads {
+		for i := range def.Args {
+			if k.ArgGPR(i) == l.Reg {
+				panic(fmt.Sprintf("asmgen: %s loads table slot %d into %s, which holds argument %s",
+					def.Name, l.Slot, goRegName(k, l.Reg), def.Args[i]))
+			}
+		}
+		out = append(out, fmt.Sprintf("%s ·%s+%d(SB), %s", mov, def.Table, 8*l.Slot, goRegName(k, l.Reg)))
+	}
 	for i, name := range def.Args {
 		reg := goRegName(k, k.ArgGPR(i))
 		out = append(out, fmt.Sprintf("%s %s+%d(FP), %s", mov, name, 8*i, reg))
@@ -254,6 +266,7 @@ func goRegName(k Kernel, r GPR) string {
 	return map[GPR]string{
 		rAX: "AX", rCX: "CX", rDX: "DX", rBX: "BX", rSI: "SI", rDI: "DI",
 		r8: "R8", r9: "R9", r10: "R10", r11: "R11", r12: "R12", r13: "R13",
+		r14: "R14",
 	}[r]
 }
 
