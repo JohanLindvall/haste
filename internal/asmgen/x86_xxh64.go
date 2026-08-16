@@ -6,19 +6,38 @@ package asmgen
 // nothing in the scalar instruction set changes that. See CLAUDE.md for the
 // vector-assisted variant that could, and why it is not here.
 //
-// Register plan, in twelve general-purpose registers:
+// Register plan, in thirteen general-purpose registers:
 //
 //	rdi in / lanes    rsi n / in         rdx seed, then block count
 //	rax h             r8-r11 v1..v4      r12 x (also Tmp)
-//	r13 P1            rbx P2             rcx the primes table
+//	r13 P1            rbx P2             r14 P4             rcx P5
 //
-// P1 and P2, which every lane round uses, sit in registers; P3, P4 and P5,
-// used once per merge round or tail step, are memory operands of the add or
-// imul that uses them -- one instruction each, and the load is hot. That is
-// also why the primes are not immediates: a 64-bit movabs is a ten-byte
-// instruction, five of them are fifty bytes of prologue, and on a Zen 3 the
-// sweep across hardware had the short hashes 6-19% behind cespare/xxhash,
-// which reads its primes from a table, while level everywhere else.
+// Four of the five primes live in registers, loaded RIP-relative by the
+// prologue; there is no table pointer. That is the whole difference between
+// this kernel and cespare/xxhash's on a 32..256-byte hash. Reaching the
+// primes through a pointer instead -- LEA the table, load off the base --
+// costs 12-16% there on a Redwood Cove. The measurement was made both ways:
+// adding the pointer to a copy of cespare's kernel and taking nothing else
+// away moved it from 30.4 to 34.9 cycles at 64 bytes and 46.8 to 55.0 at
+// 128, and from this side, removing up to twelve instructions elsewhere -- a
+// cheaper tail, a single-block loop, seed-free lanes -- moved not one cycle.
+//
+// Why it costs that much is not understood, and the obvious explanation is
+// wrong: it is not the loads waiting on the LEA, because a *dead* LEA in the
+// same place costs the same. See CLAUDE.md before theorizing further, and do
+// not carry the conclusion to other kernels -- XXH3 executes one of these per
+// hash for free.
+//
+// R14 is the goroutine pointer only in ABIInternal; see x86.go for why an
+// ABI0 leaf may have it.
+//
+// P3 is the odd one out: thirteen registers is one short of holding all five
+// primes alongside the hash's own nine, and P3 is used twice, both times off
+// the hot path -- the tail's four-byte step and the second multiply of the
+// avalanche. It is materialized there as a ten-byte movabs into the scratch
+// register, which is dead at both points. Materializing all five that way
+// was tried and lost: five movabs in the prologue is fifty bytes every call
+// pays, and on a Zen 3 that put the short hashes 6-19% behind cespare.
 
 // x86Scalar is the x86 backend's XXH64 face. It shares the Builder and the
 // integer emitters of x86 and adds the scalar ones the hash needs.
@@ -34,31 +53,59 @@ func (x *x86Scalar) RetGPR() GPR { return rAX }
 
 // LoadSplit is unreachable: this backend has one lane-round form.
 func (x *x86Scalar) LoadSplit(GPR) { panic("asmgen: x86 xxh64 is not dual") }
-func (x *x86Scalar) TableGPR() GPR { return rCX }
+
+// TableGPR is -1: the prologue reads the table into registers rather than
+// keeping its address. See TableLoads.
+func (x *x86Scalar) TableGPR() GPR { return -1 }
 func (x *x86Scalar) H() GPR        { return rAX }
 func (x *x86Scalar) V(i int) GPR   { return []GPR{r8, r9, r10, r11}[i] }
 func (x *x86Scalar) X() GPR        { return r12 }
 func (x *x86Scalar) Tmp() GPR      { return r12 }
 
-// x86PrimeReg is where P1 and P2 live; the other primes are read from the
-// table.
-var x86PrimeReg = map[int]GPR{0: r13, 1: rBX}
+// x86PrimeReg is where the primes live. P3 is absent: it is materialized as
+// an immediate at its two uses, both of which have the scratch register free.
+var x86PrimeReg = map[int]GPR{0: r13, 1: rBX, 3: r14, 4: rCX}
 
-// prime renders prime n as an operand: its register, or its slot in the
-// table.
-func (x *x86Scalar) prime(n int) string {
-	if r, ok := x86PrimeReg[n]; ok {
-		return x.GPRName(r)
-	}
-	return x.mem(rCX, 8*n)
+// x86PrimeVal is the value of each prime, for the ones emitted as immediates.
+// It repeats what xxh64.go holds, which is safe only because nothing checks
+// that they agree except the tests that matter: TestSimulatedBackends runs
+// this instruction stream against sum64Generic, which reads xxh64.go's
+// constants, so a value wrong here fails there.
+var x86PrimeVal = [5]uint64{
+	0x9E3779B185EBCA87, 0xC2B2AE3D27D4EB4F, 0x165667B19E3779F9,
+	0x85EBCA77C2B2AE63, 0x27D4EB2F165667C5,
 }
 
-// primeVal is the simulator's view of the same.
-func (x *x86Scalar) primeVal(m *Machine, n int) uint64 {
-	if r, ok := x86PrimeReg[n]; ok {
-		return m.R[r]
+// TableLoads is what the prologue lifts out of the primes table. The
+// streaming kernel runs nothing but the lane loop, so it takes only the two
+// primes that loop multiplies by.
+func (x *x86Scalar) TableLoads(def FuncDef) []TableLoad {
+	slots := []int{0, 1}
+	if def.Ret != "" { // the whole-hash kernel: merge, tail and avalanche too
+		slots = []int{0, 1, 3, 4}
 	}
-	return m.Load64(m.R[rCX] + uint64(8*n))
+	var out []TableLoad
+	for _, s := range slots {
+		out = append(out, TableLoad{Slot: s, Reg: x86PrimeReg[s]})
+	}
+	return out
+}
+
+// withPrime hands op the operand naming prime n, materializing it into the
+// scratch register first when it has no register of its own. dst must not be
+// that scratch register: the movabs would land on top of it.
+func (x *x86Scalar) withPrime(dst GPR, n int, op func(operand string, val func(*Machine) uint64)) {
+	if r, ok := x86PrimeReg[n]; ok {
+		op(x.GPRName(r), func(m *Machine) uint64 { return m.R[r] })
+		return
+	}
+	if dst == x.Tmp() {
+		panic("asmgen: x86 xxh64 prime immediate would clobber its own destination")
+	}
+	v := x86PrimeVal[n]
+	t := x.Tmp()
+	x.b.emit(func(m *Machine) { m.R[t] = v }, "movabsq $%#x, %s", v, x.GPRName(t))
+	op(x.GPRName(t), func(m *Machine) uint64 { return m.R[t] })
 }
 
 // x86GPR32 names the low 32 bits of a register, for the loads that zero-extend
@@ -66,22 +113,25 @@ func (x *x86Scalar) primeVal(m *Machine, n int) uint64 {
 var x86GPR32 = map[GPR]string{
 	rAX: "%eax", rCX: "%ecx", rDX: "%edx", rBX: "%ebx",
 	rSI: "%esi", rDI: "%edi", r8: "%r8d", r9: "%r9d",
-	r10: "%r10d", r11: "%r11d", r12: "%r12d", r13: "%r13d",
+	r10: "%r10d", r11: "%r11d", r12: "%r12d", r13: "%r13d", r14: "%r14d",
 }
 
-func (x *x86Scalar) LoadPrimes() {
-	x.Load64(r13, rCX, 0)
-	x.Load64(rBX, rCX, 8)
-}
+// LoadPrimes does nothing here: the prologue has already put them in
+// registers, which is the point. See TableLoads.
+func (x *x86Scalar) LoadPrimes() {}
 
 func (x *x86Scalar) AddPrime(dst GPR, n int) {
-	x.b.emit(func(m *Machine) { m.R[dst] += x.primeVal(m, n) },
-		"addq %s, %s", x.prime(n), x.GPRName(dst))
+	x.withPrime(dst, n, func(op string, val func(*Machine) uint64) {
+		x.b.emit(func(m *Machine) { m.R[dst] += val(m) },
+			"addq %s, %s", op, x.GPRName(dst))
+	})
 }
 
 func (x *x86Scalar) MulPrime(dst GPR, n int) {
-	x.b.emit(func(m *Machine) { m.R[dst] *= x.primeVal(m, n) },
-		"imulq %s, %s", x.prime(n), x.GPRName(dst))
+	x.withPrime(dst, n, func(op string, val func(*Machine) uint64) {
+		x.b.emit(func(m *Machine) { m.R[dst] *= val(m) },
+			"imulq %s, %s", op, x.GPRName(dst))
+	})
 }
 
 func (x *x86Scalar) MulAddPrime(dst GPR, mul, add int) {
