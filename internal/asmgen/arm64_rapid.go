@@ -185,6 +185,11 @@ func (a *arm64Rapid) SeedMix() {
 }
 
 // SeedConst is SeedMix with the seed known to be zero; see the x86 face.
+// ChainRound is Round here: arm64's three-operand instructions build the
+// second operand without the extra move x86 needs, so there is nothing to
+// fold and nothing to keep off the critical path.
+func (a *arm64Rapid) ChainRound(lane GPR, off, slot int) { a.Round(lane, off, slot) }
+
 func (a *arm64Rapid) SeedConst() { a.ldrSecret(a.Seed(), 8) }
 
 // secReg is where slot's secret word lives once HoldSecret has loaded it.

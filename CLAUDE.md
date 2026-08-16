@@ -1379,6 +1379,32 @@ they do not follow the change onto other hardware.
   up, where one multiply is lost in the block loop. The portable path gains
   far more -- 46% at 4 bytes, 41% at 17..32 -- because the kernel was
   already overlapping the multiply that the Go code could not.
+- **The block loop is issue-bound, and the lane round is six instructions,
+  not seven.** Counting multiplies against measured time across every length
+  puts the loop at 1.94 cycles per multiply where raw throughput is 1.57, so
+  the multiplier is not what binds: seven lanes at seven instructions is 52
+  per 112 bytes, which at 13.6 cycles is 3.8 per cycle. The seventh
+  instruction is avoidable. A lane is dead the moment its multiply has read
+  it -- the round overwrites it with the result -- so the second operand can
+  be built in the lane itself and its load folded into that xor, which drops
+  `mov 8(in), r14; xor lane, r14` to `xor 8(in), lane`.
+  Measured on a Zen 4: **+4.8% over 113..224 bytes, +7.9% over 225..1K,
+  +6.8% from 2 KiB up**, and +11.7% at 128 bytes.
+  It applies to the block loop only. The 17..112 ladder runs the same shape
+  but its rounds feed each other, and there the fold costs 2-6%: the load it
+  absorbs used to issue early, off the critical path, and folding it into
+  the xor that waits on the previous round puts it back on. Hence
+  `ChainRound` beside `Round` in the generator -- same arithmetic, two
+  spellings, one for independent lanes and one for a chain. arm64 needs
+  neither: its three-operand instructions build the operand without the
+  extra move, so `ChainRound` is `Round` there and the kernel is unchanged.
+- **Length is not monotonic, and the 224-byte boundaries are the reason.**
+  224 bytes costs 8.29 ns where 225 costs 7.00, and the same inversion sits
+  at 112/113 and 448/449. A length just under a multiple of 224 misses the
+  block loop's last iteration and pays for it in the ladder instead: seven
+  independent lanes become up to six serial mixes. It is the algorithm's
+  own shape -- which mixes run is wire format -- so it is a property to know
+  rather than a bug to fix.
 - **mulx does not help this kernel on Zen 4, and the evidence is now in.**
   The x86 face notes that `mulq`'s fixed rdx:rax pair costs a move per lane
   round and that BMI2's `mulx` would lift it. It does, and the loop is

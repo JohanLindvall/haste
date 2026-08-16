@@ -56,6 +56,15 @@ type RapidArch interface {
 	// the whole shape of the loop that uses it.
 	Round(lane GPR, off, slot int)
 
+	// ChainRound is Round for the 17..112 ladder, whose rounds feed each
+	// other. The two differ only in how the second operand is built: the
+	// block loop's lanes are independent, so folding its load into the xor
+	// costs an instruction less and issue is what binds there; the ladder
+	// waits on the previous round, so its load is better off the critical
+	// path in a register of its own. Measured on a Zen 4: folding both ways
+	// is +4 to +7% from 225 bytes up and -2 to -6% over 17..224.
+	ChainRound(lane GPR, off, slot int)
+
 	// HoldSecret keeps the named secret words in registers for the rest of
 	// the kernel, where the backend has registers to spare. Rounds emitted
 	// after it read those instead of the table.
@@ -300,7 +309,7 @@ func emitRapidSum64(a RapidArch, seeded bool) {
 		// The ladder keeps the baseline form: at most six rounds, reached by
 		// inputs as short as 17 bytes, where a second form would have to be
 		// chosen before them and the branch would cost what the rounds save.
-		a.Round(a.Seed(), r.off, r.slot)
+		a.ChainRound(a.Seed(), r.off, r.slot)
 	}
 	b.Label(last)
 	a.Tail16()
