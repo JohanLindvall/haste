@@ -444,42 +444,43 @@ anything on top of that.
     decimals at 31, 32 and 64 bytes, and the sweep leaves 33 and 37 where
     they were. That is the ceiling this note predicted, half of 0.18ns, under
     the noise floor. The branch is kept as the worked answer, not merged.
-- **The amd64 tail opens with combined-mask skips** (`TailMaskSkips` in the
-  generator): test n against 31, 24, 7 and 3 ahead of the per-bit guards, so
-  a trivial tail pays 1-2 taken branches instead of up to 5. Five taken
-  branches in a dozen instructions were most of a measured -19..-25% against
-  cespare at 4-8 bytes on the Zen 4 (worst at n in {0,1,4,5,8,9,12,16}, the
-  sparse-bit lengths); with the skips, 4 B went 15.1 -> 12.1 cycles. They
-  still pay after the primes moved into the table: regenerating with
-  `TailMaskSkips` false, four relinked layouts each, leaves 4 B at -14% and
-  8 B at -10% against cespare where the skips hold them to -3% and -4%, and
-  the two are indistinguishable from 16 bytes up. The arm64 kernel is
-  byte-identical -- the M2 was already level at these lengths -- and turning
-  the skips on there was measured on the N2 and rejected (see the dual-kernel
-  bullet above).
+- **The amd64 tail's combined-mask skips are generated but off.**
+  `TailMaskSkips` emits tests of n against 31, 24, 7 and 3 ahead of the
+  per-bit guards, so a trivial tail pays one or two taken branches instead of
+  up to five. They were on while the prologue built the five primes with
+  `movabs` -- fifty bytes of ten-byte instructions -- where they were worth
+  12-17% of a 4- or 8-byte hash and took 4 bytes from -19% against
+  cespare/xxhash to level. Holding the primes in registers removed that
+  prologue, and with it the thing the skips were paying for; what is left is
+  their cost, two not-taken tests on every length whose tail runs more than
+  one step. Re-measured after that change, four relinked layouts each, every
+  length 1..40 with direct calls:
 
-  Where that leaves amd64 XXH64 against cespare on the Zen 4: within a few
-  percent everywhere, with the sign set by binary layout rather than by the
-  kernels. Six relinked layouts fall into exactly two modes, and which one a
-  binary gets is decided by the benchmark closure's address mod 64 -- the
-  kernels themselves never moved (`sum64Scalar` sat at phase 32 in all six):
+  | range | skips on | skips off |
+  |---|---|---|
+  | 1..8 B | -1.6% | -3.0% |
+  | 9..16 B | -1.6% | +3.2% |
+  | 17..32 B | -0.1% | +3.1% |
+  | 33..40 B | -0.8% | -0.6% |
+  | 1..40 B | -0.8% | +1.2% |
 
-  | bytes | closure at phase 0 | closure at phase 32 | mean |
-  |---|---|---|---|
-  | 4 | -6.9% | +0.6% | -3.2% |
-  | 8 | -6.7% | -1.5% | -4.1% |
-  | 16 | -0.5% | +0.4% | 0.0% |
-  | 32 | +3.0% | -5.3% | -1.2% |
-  | 64 | +1.3% | +3.4% | +2.4% |
-  | 128 | -2.8% | +4.0% | +0.6% |
-  | 256 | -1.2% | -1.1% | -1.2% |
+  The per-layout aggregates do not overlap -- on -0.6..-1.0%, off
+  +0.9..+1.7% -- so they are off. Only 4 bytes still prefers them, by 8.5
+  points, and two narrower variants were generated and measured to keep just
+  that (the two entry skips alone, and everything but the n&7 skip); neither
+  recovers it, because the 4-byte win needs the whole chain and the chain
+  costs more than it returns everywhere else. arm64 has always had them off.
 
-  So quote the mean of the two phases, or a band of +/-5%, and never a
-  single draw: three of these sizes change sign between the modes. Note this
-  disagrees with the 1.13x over 9..32 bytes recorded above from the compare
-  suite -- that range measures 1.00x here in both phases -- so one of the two
-  runs saw something the other did not, and it is worth a re-measurement
-  before either number is relied on.
+  Where that leaves amd64 XXH64 against cespare on the Zen 4, same
+  measurement: mean +1.2% over 1..40 bytes, +3.2% over 9..16 and +3.1% over
+  17..32, every layout positive. Two windows still trail. 1..8 bytes reads
+  -3.0%, of which 4 bytes is -7% -- the length the skips used to buy. And a
+  scatter of multi-step tails -- 29, 32, 36, 40 -- reads -4..-6%, where
+  cespare's looped tail beats an unrolled chain of length tests; 29 bytes
+  measures the same with the skips on or off, so it is the tail's shape, not
+  the guards. Those are the places to look next. The 1.13x over 9..32
+  recorded from the compare suite elsewhere in this file does not reproduce
+  per length and should not be carried forward.
 - **Benchmarking 32..256-byte XXH64 on Zen 4 is a caller-alignment lottery.**
   Both this kernel and cespare's swing ~0.65 ns (6 cycles) at those lengths
   with the *calling function's* address: mod-64 phase 32 is the fast mode,

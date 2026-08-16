@@ -253,9 +253,19 @@ func (x *x86Scalar) BranchMaskClear(r GPR, mask int64, label string) {
 	x.branch(EQ, label)
 }
 
-// TailMaskSkips is on here: five taken branches in the dozen instructions of
-// a short hash were most of the gap to cespare/xxhash on a Zen 4.
-func (x *x86Scalar) TailMaskSkips() bool { return true }
+// TailMaskSkips is off. It was on while the prologue materialized the five
+// primes with movabs: fifty bytes of ten-byte instructions, against which
+// skipping three or four taken branches in the tail was worth 12-17% of a 4-
+// or 8-byte hash. Holding the primes in registers removed that prologue, and
+// with it the thing the skips were paying for -- what is left is their cost,
+// two not-taken tests on every length whose tail runs more than one step.
+// Measured on a Zen 4, four relinked layouts each, every length 1..40: off
+// beats on by 4.8 points over 9..16 bytes and 3.2 over 17..32, for +1.2%
+// against cespare/xxhash on the whole range where on reads -0.8%, and the
+// per-layout aggregates do not overlap. Only 4 bytes prefers them (+8.5),
+// and a variant keeping just the n&3 skip does not recover that. The
+// generator keeps the mechanism for the core that wants it.
+func (x *x86Scalar) TailMaskSkips() bool { return false }
 
 func (x *x86Scalar) BranchZero(r GPR, label string) {
 	x.b.emit(func(m *Machine) { m.setCmp(m.R[r], 0) },
