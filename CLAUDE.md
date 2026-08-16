@@ -685,6 +685,36 @@ on a Redwood Cove:
   through `disp(base,index,1)` rather than computing the index first: three
   instructions become one, twice a hash, and 1..16 bytes is 3% quicker for
   it.
+- **That rule is about instructions that *execute*, and applying it to ones
+  that do not costs time.** A register-to-register `mov` is eliminated at
+  rename here, as it is on the M2 (see the NEON note below): it takes an issue
+  slot and no execution port. Removing three of them from `Finalize` -- the
+  two that lift `mulq`'s halves into scratch and the one that puts a half
+  back, all avoidable by keeping `lo` in rax and `hi` in rdx, which is where
+  the second multiply already wants them -- removed 6.8% of the kernel's
+  instructions and 6.8% of its *issued* µops while leaving *executed* µops
+  unchanged at +0.2%, and measured **+3 to +4% slower at 1..16 bytes**, −4% at
+  128 and +2% at 160. Six relinked layouts and both caller-alignment phases
+  agree, and `BenchmarkCompare64` reproduces the 8- and 16-byte cost in a
+  second harness. Not shipped.
+
+  **The probe that explains it is three `nop`s.** A `nop` is the same shape as
+  an eliminated `mov` -- one slot, no port -- so padding the shortened
+  `Finalize` back to its original instruction count should undo the change if
+  slots are what moved, and leave it alone if the registers were. It undoes it
+  completely, at every length: 8 bytes +4.3%/+2.8% becomes +1.3%/−1.3%, and
+  128 bytes −4.1%/−3.3% becomes +0.3%/+0.6%. The `mov` form is nine bytes
+  longer and the `nop` form three, so it is not code placement either. It is
+  the slot count, in both directions.
+
+  The accounting says why the short path minds: it issues 45.4 fused µops per
+  hash at 5.97 per cycle against a 6-wide renamer, a 7.57-cycle bound against
+  7.62 measured. Removing instructions takes it *off* that bound and onto a
+  worse one, and the counters that would name the second bound -- executed
+  µops, front-end delivery -- are both flat. So instruction count is not a
+  monotone proxy for time in the 0..16 path on this core, and a change there
+  wants measuring in both directions before it is believed. The `nop` probe
+  separates "fewer slots" from "different registers" in one build.
 - **The block loop is not, though it looks it.** It retires 78% of its slots
   and is still not instruction-bound: removing 4,100 instructions from a
   64 KiB hash left the cycles where they were and turned the freed slots
@@ -1379,6 +1409,29 @@ they do not follow the change onto other hardware.
   not enter the 224-byte block loop: it runs one 112-byte block of seven
   parallel lanes and then all six ladder rungs, which are serial, where 225
   runs fourteen parallel lanes and no rungs. Wire format, not a bug.
+
+  **The step repeats every 224 bytes, and which of them shows is the core's
+  choice.** A Redwood Cove does not reproduce this one at all -- it reads 224
+  and 225 within 2% of each other, and the wrong way round -- but the same
+  miss at 448 costs it **15%**, 11.70ns against 449's 9.94, reproducibly and
+  through `bench/sweep`'s own rapidhash column. Same mechanism, one iteration
+  further along: 448 misses the loop's second pass by a byte and pays six
+  serial rungs for it. Read the sweep at both boundaries, and do not assume
+  the one that is loud on this machine is the one that is loud on that.
+- **The ladder's rungs cannot be shortened by reassociating them on x86.**
+  They are one dependency chain, so the obvious move is arm64's
+  `laneMixReassoc`: a rung wants the data word xored with the running hash,
+  which is `lo^hi`, and xoring the word with `lo` and then with `hi` is the
+  same value one cycle sooner *if* `lo` lands first. On arm64 it does, because
+  `mul` and `umulh` are two instructions. On x86 `mulq` delivers both halves
+  together, so there is no cycle to win, and what is left is the fold at the
+  end of the ladder adding one. Implemented behind a `RapidLadder` interface,
+  generated, checked against the C reference, and measured over six relinked
+  layouts: **−1.6% at 448 and −2.0% at 336**, where six rungs run and dropping
+  an instruction per rung still pays, against **+3.1% at 512 and +1.7% at 48**,
+  where two or three run and only the exit cost is left. Both bands are
+  equally common, so it is a wash with an interface attached. Reverted --
+  but the premise does hold on arm64, where it has not been tried.
 
 ### amd64, measured on Zen 4 (Ryzen 7 8840HS)
 

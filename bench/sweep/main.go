@@ -6,7 +6,12 @@
 // other one is the C reference, which cannot be called this way without cgo's
 // overhead swamping a two-nanosecond hash -- so its column is read against
 // itself: a cliff between two adjacent lengths is the thing this tool is for,
-// and rapidhash has one at 224/225 that no size-class benchmark would show.
+// and rapidhash has one every 224 bytes that no size-class benchmark would
+// show. Which of them is loud is the core's choice, so read more than one: a
+// Zen 4 shows 224/225 (8.56ns against 7.50) and a Redwood Cove does not
+// reproduce that boundary at all, while paying 15% at 448/449 (11.70 against
+// 9.94). Both are the same miss -- one byte short of another loop pass, six
+// serial ladder rungs in its place.
 //
 // Methodology: per length and implementation, iterations are calibrated to
 // ~1ms of work, run in 9 repetitions, and the per-op time is the median of
