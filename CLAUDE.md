@@ -339,6 +339,27 @@ simply disappear.
   over absolutes. Branch-miss and frontend-stall counts are reliable nulls:
   when both are zero and cycles moved, suspect fetch geometry, not
   prediction.
+- **The fleet's rows are not equally trustworthy, and the differences are
+  large.** The same benchmark, `Sum64` of 64 KiB through XXH3, across three
+  independent dispatches of `bench.yml`:
+
+  | runner | run 1 | run 2 | run 3 | spread |
+  |---|---|---|---|---|
+  | ubuntu-24.04-arm (Neoverse N2) | 2,290 | 2,289 | 2,288 | **0.1%** |
+  | macos-15-intel (i7-8700B) | 1,441 | 1,282 | 1,294 | 12.4% |
+  | macos-latest (M1, virtual) | 1,618 | 1,505 | 1,818 | 20.8% |
+  | ubuntu-24.04 (amd64) | 1,152 | 1,168 | 1,375 | 19.4% |
+
+  The arm64 Linux runner is a fixed core and repeats like dedicated hardware
+  -- three runs hours apart within a nanosecond, which is why the Neoverse
+  numbers in these notes can be quoted to three digits. The macOS rows cannot
+  be: the M1 image is virtualized and shared, and a fifth of its throughput
+  comes and goes between runs. **The amd64 row's spread is not variance at
+  all** -- it served an Ice Lake, then a Zen 4, then an Emerald Rapids -- so
+  read `cpu.txt` before comparing two of its numbers to each other.
+
+  Practically: quote arm64-Linux figures, treat macOS ones as shape, and
+  never diff two amd64 fleet runs without checking they ran on the same part.
 - **Backends only diverge from 241 bytes** -- below that no kernel is
   entered, and the portable path measures identical to the assembly build.
   That makes the three backends a free noise gauge: forcing each in turn over
