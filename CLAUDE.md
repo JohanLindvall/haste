@@ -1145,12 +1145,37 @@ dispatch itself -- the taken branch out of `sum64Scalar` into
 Intel takes the fall-through and pays nothing, so this is AMD-only, and it is
 larger than the 5-17% at 32..256 the split exists to fix.
 
-The shape that would keep both: the two forms differ only in how the lane
-loop reaches the primes, and the vendor difference was only ever measured
-from 32 bytes up, so the test belongs *after* the kernel's own `n < 32`
-branch rather than before it. Short inputs would then run one shared,
-branch-free tail and never see the dispatch. That costs the short path
-nothing and leaves the block path exactly as it is now.
+Three fixes were tried on a Zen 4 and none is a net win; the numbers are
+here so the fourth does not repeat them.
+
+- **Swap the polarity**, so the flag's default -- the pointer form, which is
+  what every non-Intel core runs -- is the fall-through and Intel takes the
+  jump. It does what it says at the short lengths, +10.4% at 4 bytes and
+  +9.9% at 8, and costs 4-9% from 32 to 256. The reason is not the forms: it
+  is *where the body sits*. The same pointer-form body measures 7.21 ns at
+  64 bytes as the twin behind the jump and 8.16 ns as the primary at the
+  entry -- 13% for placement alone, in both builds and across eight relinked
+  layouts, where the shipped arrangement reaches the fast mode in six of
+  eight and the swapped one in none. The kernels are byte blobs with their
+  branch offsets already resolved, so the generator cannot align an inner
+  loop to chase this.
+- **Jump straight to the twin** rather than through a trampoline, halving
+  the taken branches. Go's assembler will not encode a conditional jump to a
+  symbol: `JNE ·sum64ScalarPtr(SB)` is *invalid instruction*. `JEQ` over a
+  `JMP` is expressible and leaves the count unchanged for the common case.
+- **Choose in Go with a function variable**, which touches no kernel and
+  lets AMD call the pointer twin directly with no test at all. It is the
+  worst of the three: -18.6% at 4 bytes, -14.7% at 32, -17.9% at 64 and
+  -5.4% at 256. An indirect call costs more than the branch it removes,
+  which is what moved the arm64 lane-round form out of the argument list.
+
+What is left is the shape this note first suggested: the two forms differ
+only in how the *lane loop* reaches the primes, and the vendor difference
+was only ever measured from 32 bytes up, so the test belongs after the
+kernel's own `n < 32` branch, with one shared short path ahead of it. That
+is a single kernel with two long paths rather than two kernels, so it also
+sidesteps the placement effect above -- and it is generator work, not a
+flag flip.
 
 **Confirmed on a Zen 4 directly**, and as the change itself rather than as a
 ratio against cespare: the current tree against the same tree with only the
