@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JohanLindvall/haste/rapidhash"
 	"github.com/JohanLindvall/haste/xxh3"
 	"github.com/JohanLindvall/haste/xxh64"
 	cespare "github.com/cespare/xxhash/v2"
@@ -138,6 +139,13 @@ func main() {
 			var s uint64
 			for i := 0; i < n; i++ {
 				s += xxh64.Sum64(b)
+			}
+			return s
+		}},
+		{"haste-rapid", func(b []byte, n int) uint64 {
+			var s uint64
+			for i := 0; i < n; i++ {
+				s += rapidhash.Sum64(b)
 			}
 			return s
 		}},
