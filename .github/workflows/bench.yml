@@ -1,0 +1,68 @@
+name: bench
+
+# A benchmark sweep on every hardware GitHub offers, run by hand: every
+# comparison benchmark in bench/, the kernel-level backend benchmarks of
+# both packages, and the per-length sweep. Results are uploaded raw; the
+# analysis happens elsewhere. Runner VMs are shared and noisy, so numbers
+# from here are for shape and ratios, not for the README.
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "benchmark repetitions (-count)"
+        default: "3"
+  # A pull request runs it too: that is how the sweep is started from a
+  # branch, since a dispatch needs the workflow to exist on the default branch
+  # first. Only pull requests from a branch named bench-* run it, so ordinary
+  # pull requests do not pay for a sweep.
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: bench ${{ matrix.runner }}
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'bench-')
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04-arm, ubuntu-24.04, ubuntu-22.04]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: what this runner is
+        run: |
+          set +e
+          echo "runner=${{ matrix.runner }}" | tee cpu.txt
+          nproc | sed 's/^/nproc=/' | tee -a cpu.txt
+          grep -m1 -E 'model name|Model name' /proc/cpuinfo | tee -a cpu.txt
+          lscpu 2>/dev/null | grep -E 'Model name|Vendor|Flags|Features|Architecture|MHz|Thread|Core|Socket' | tee -a cpu.txt
+          cat /sys/devices/system/cpu/cpu0/regs/identification/midr_el1 2>/dev/null | sed 's/^/midr_el1=/' | tee -a cpu.txt
+          go version | tee -a cpu.txt
+          go test -run 'TestBackendName|TestBackendsNative' -v . ./xxh64 2>&1 | grep -E 'dispatched|Backend' | tee -a cpu.txt
+      - name: comparison benchmarks (bench module)
+        run: |
+          cd bench
+          go test -run xxx -bench 'Compare' -count ${{ inputs.count || 3 }} -cpu 1 -timeout 60m . 2>&1 | tee ../compare.txt
+      - name: kernel-level backend benchmarks
+        run: |
+          go test -run xxx -bench 'BenchmarkBackends|BenchmarkSum64Seed|BenchmarkFixed|BenchmarkDigest' -count ${{ inputs.count || 3 }} -cpu 1 -timeout 60m . 2>&1 | tee backends.txt
+          go test -run xxx -bench 'BenchmarkBackends|BenchmarkDigest' -count ${{ inputs.count || 3 }} -cpu 1 -timeout 60m ./xxh64 2>&1 | tee xxh64.txt
+      - name: per-length sweep 0..255
+        run: |
+          cd bench && go run ./sweep -max 255 2>&1 | tee ../sweep.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.runner }}
+          path: |
+            cpu.txt
+            compare.txt
+            backends.txt
+            xxh64.txt
+            sweep.csv
