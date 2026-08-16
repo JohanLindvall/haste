@@ -86,6 +86,7 @@ jobs:
           for a in 386 arm mips mipsle s390x ppc64 ppc64le riscv64 loong64 arm64 amd64; do
             echo "== linux/$a"
             GOOS=linux GOARCH=$a go test -c -o /dev/null .
+            GOOS=linux GOARCH=$a go test -c -o /dev/null ./xxh64
           done
           echo "== js/wasm"
           GOOS=js GOARCH=wasm go build ./...
@@ -100,13 +101,18 @@ jobs:
           go-version: stable
       - run: sudo apt-get update && sudo apt-get install -y qemu-user-static
       - run: GOARCH=amd64 go test -c -o /tmp/xxhaste.test .
+      - run: GOARCH=amd64 go test -c -o /tmp/xxh64.test ./xxh64
       # Named CPUs rather than -cpu max: they pin which kernel dispatch has to
       # pick, and neither advertises AVX-512, which qemu's TCG does not
       # implement. -test.short skips the job that shells out to the assembler.
+      # The XXH64 kernel has no dispatch to force; it runs here for the second
+      # execution environment.
       - name: AVX2 (Haswell)
         run: qemu-x86_64-static -cpu Haswell /tmp/xxhaste.test -test.short
       - name: SSE2 (Nehalem)
         run: qemu-x86_64-static -cpu Nehalem /tmp/xxhaste.test -test.short
+      - name: XXH64 (Nehalem)
+        run: qemu-x86_64-static -cpu Nehalem /tmp/xxh64.test -test.short
 
   generate:
     name: generated assembly is current
@@ -147,16 +153,22 @@ jobs:
             echo "== $f"
             go test -run "^$f$" -fuzz "^$f$" -fuzztime=60s .
           done
+          for f in FuzzStreamingMatchesOneShot FuzzKernelsAgree FuzzUnmarshalBinary; do
+            echo "== xxh64 $f"
+            go test -run "^$f$" -fuzz "^$f$" -fuzztime=60s ./xxh64
+          done
       - name: keep any input that failed
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-crashers
-          path: testdata/fuzz/
+          path: |
+            testdata/fuzz/
+            xxh64/testdata/fuzz/
           if-no-files-found: ignore
 
   crosscheck:
-    name: cross-check against zeebo/xxh3
+    name: cross-check against zeebo/xxh3 and cespare/xxhash
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

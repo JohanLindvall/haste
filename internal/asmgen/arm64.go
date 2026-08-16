@@ -138,6 +138,10 @@ func (a *arm64) Build() *Builder  { return a.b }
 func (a *arm64) Unroll() int      { return a.unroll }
 func (a *arm64) SecretImm() bool  { return !a.sve }
 func (a *arm64) ArgGPR(i int) GPR { return armArgGPR[i] }
+
+// The vector kernels return nothing and read no table.
+func (a *arm64) RetGPR() GPR      { return -1 }
+func (a *arm64) TableGPR() GPR    { return -1 }
 func (a *arm64) TmpGPR(i int) GPR { return armTmpGPR[i] }
 
 func (a *arm64) GPRName(r GPR) string { return fmt.Sprintf("x%d", int(r)) }

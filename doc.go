@@ -32,6 +32,9 @@
 //
 // The assembly is generated: see internal/asmgen, and CLAUDE.md for how it is
 // built and verified.
+//
+// The older 64-bit hash of the family, XXH64, is the subpackage
+// [github.com/JohanLindvall/xxhaste/xxh64], built the same way.
 package xxhaste
 
 //go:generate go run ./internal/asmgen/gen -out .

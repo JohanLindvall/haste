@@ -5,6 +5,8 @@
 
 XXH3 for Go — the 64-bit and 128-bit hash from [xxHash](https://github.com/Cyan4973/xxHash)
 v0.8.3, with generated assembly kernels for **SSE2, AVX2, AVX-512, NEON and SVE2**.
+The classic **XXH64** is the subpackage `xxh64`, built the same way (see
+[XXH64](#xxh64) below).
 
 Output is bit-identical to the reference C implementation on every path,
 including seeds and custom secrets. No dependencies outside the standard
@@ -172,6 +174,48 @@ Reading them back in the width they were written is worth a quarter of a
 even the untouched SSE2 kernel got faster.
 
 
+## XXH64
+
+The subpackage `xxh64` is XXH64 — the older, scalar 64-bit hash of the family,
+and what most Go code that says "xxhash" computes today. Its API mirrors
+cespare/xxhash, so switching is an import path:
+
+```go
+import "github.com/JohanLindvall/xxhaste/xxh64"
+
+h := xxh64.Sum64(data)            // also Sum64String, Sum64Seed, Sum64SeedString
+d := xxh64.New()                  // hash.Hash64; NewSeed(seed) for a keyed one
+d.Write(chunk)
+h = d.Sum64()
+```
+
+The whole hash of any input is one call into a generated kernel — the same
+generator, simulator, C-derived vectors and fuzz targets as XXH3 — and there
+is a portable implementation for everything else. XXH64's lane loop is bound
+by each lane's multiply-rotate-multiply chain and by the integer multiplier,
+so a kernel cannot beat the algorithm; what it can do is not lose anything to
+call layering or codegen. On the arm64 side there are two forms of the lane
+round, chosen by core: the fused multiply-add that Neoverse cores run at
+their chain bound, and a split multiply and add for Apple's, where a fused
+multiply-accumulate waits the whole multiplier latency for an addend that
+comes from a plain multiply. Measured on an Apple M2 P-core against
+cespare/xxhash (which is hand-written assembly on both amd64 and arm64):
+
+| size | xxh64 | cespare | | size | xxh64 | cespare |
+|-----:|------:|--------:|-|-----:|------:|--------:|
+| 4 | 2.29 | 2.30 | | 256 | **14.5** | 15.9 |
+| 8 | 2.31 | 2.31 | | 1 Ki | **50.1** | 65.3 |
+| 16 | 2.59 | 2.58 | | 4 Ki | **196** | 259 |
+| 32 | 4.62 | 4.43 | | 16 Ki | **785** | 1030 |
+| 64 | 6.02 | 5.92 | | 64 Ki | **3132** | 4117 |
+| 128 | **8.88** | 9.20 | | 1 Mi | **50103** | 65814 |
+
+Nanoseconds per hash: level through 16 bytes, within 4% at 32 and 64, ahead
+from 128 up and **31% ahead from a kibibyte** (20.9 GB/s against 15.9). On
+amd64 the kernel is the same shape as cespare's, imul-bound at eight per
+32-byte block, and should measure level; the seed argument is the one thing
+it does that the other cannot.
+
 ## Backends
 
 | backend | selected when | verified by |
@@ -183,9 +227,12 @@ even the untouched SSE2 kernel got faster.
 | NEON hybrid | MIDR names a core it is faster on | executed natively |
 | NEON | always available on arm64 | executed natively |
 | SVE2 (VL 128) | generated for verification; not selected | executed natively |
+| NEON two-lane split | generated for measurement; not selected | executed natively |
 | portable Go | other architectures, or `-tags purego` | executed natively |
+| XXH64 scalar, amd64 | always available on amd64 | executed natively and under qemu |
+| XXH64 scalar, arm64 | always; the lane round's form by core (`muladd` on Apple, `madd` elsewhere) | executed natively, both forms |
 
-`xxhaste.Backend()` reports which one is live.
+`xxhaste.Backend()` and `xxh64.Backend()` report which one is live.
 
 SVE2 is generated once per vector length: a stripe is a fixed 64 bytes, and how
 many registers that occupies is exactly what SVE leaves unspecified. At 128
@@ -202,7 +249,8 @@ unrecognised, so an unknown core simply keeps the kernel it had.
 
 - **1512 reference vectors** generated from xxHash v0.8.3 C code: 328 input
   lengths under four seeds, and ten custom secret sizes including ones whose
-  length is not a multiple of the secret consume rate.
+  length is not a multiple of the secret consume rate. XXH64 has its own 1282,
+  from the same generator over the same lengths and seeds.
 - **Every backend** is checked against those vectors, not just the one this
   machine dispatches to. The ones this machine cannot execute go through the
   simulator instead.
@@ -217,14 +265,15 @@ unrecognised, so an unknown core simply keeps the kernel it had.
   times over — at nine secret sizes, plus randomized chunking.
 - **Fuzzing** over input, seed, secret, chunk size, backend and marshalled
   state: `go test -fuzz FuzzStreamingMatchesOneShot`.
-- **Cross-implementation**: results are compared against zeebo/xxh3, an
-  independent port, in `bench/`.
+- **Cross-implementation**: results are compared against zeebo/xxh3 and, for
+  XXH64, cespare/xxhash -- independent ports -- in `bench/`.
 
 All of it runs in CI on every push and pull request, on amd64 and on arm64
 hardware, against the current Go and the 1.21 that `go.mod` declares: the suite
 under four build configurations, the SSE2 and AVX2 kernels forced under qemu, a
 minute on each fuzz target, a test-binary build for eleven architectures, and a
-check that the committed assembly still matches what the generator emits.
+check that the committed assembly still matches what the generator emits. The
+`xxh64` package goes through the same matrix.
 
 ## Releases
 

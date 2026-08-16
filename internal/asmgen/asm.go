@@ -105,24 +105,46 @@ type GPR int
 type VReg int
 
 // FuncDef describes the Go function an emitted kernel implements. Every
-// argument is pointer- or int-sized.
+// argument is pointer- or int-sized, and so is the result if there is one.
 type FuncDef struct {
 	Name string
 	Args []string
-	Doc  string
+	// Ret is the result type, or empty for none. A kernel that returns a
+	// value leaves it in the register RetGPR names.
+	Ret string
+	// Table names a package-level variable whose address the prologue loads
+	// into TableGPR, for a kernel that reads constants from memory rather
+	// than materializing them. Empty means none.
+	Table string
+	Doc   string
+}
+
+// Kernel is what the renderer needs from an emitted function: which
+// architecture it is for, its instruction stream, and how its arguments and
+// result travel. Both the XXH3 vector backends and the XXH64 scalar ones
+// implement it.
+type Kernel interface {
+	GOARCH() string
+	Build() *Builder
+	// ArgGPR is the register argument i is loaded into on entry.
+	ArgGPR(i int) GPR
+	// RetGPR is the register the result is stored from on exit, for kernels
+	// with a result.
+	RetGPR() GPR
+	// TableGPR is the register the constant table's address is loaded into,
+	// for kernels with a Table; -1 if this architecture does not use one.
+	TableGPR() GPR
 }
 
 // Arch is the surface a backend needs: enough integer work to walk the input,
 // plus the vector steps of the algorithm. Everything in kernel.go is written
 // against this, so the loop structure exists once for all five backends.
 type Arch interface {
+	Kernel
 	Name() string
-	GOARCH() string
-	Build() *Builder
 
-	// ArgGPR returns the register holding argument i on entry, and TmpGPR a
-	// scratch register (i in 0..5).
-	ArgGPR(i int) GPR
+	// TmpGPR is a scratch register (i in 0..5); ArgGPR, from Kernel, the
+	// register holding argument i on entry.
 	TmpGPR(i int) GPR
 	GPRName(GPR) string
 

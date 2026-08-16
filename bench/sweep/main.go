@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/JohanLindvall/xxhaste"
+	"github.com/JohanLindvall/xxhaste/xxh64"
 	cespare "github.com/cespare/xxhash/v2"
 	"github.com/zeebo/xxh3"
 )
@@ -70,6 +71,7 @@ func main() {
 	}{
 		{"xxhaste", xxhaste.Sum64},
 		{"zeebo", xxh3.Hash},
+		{"xxhaste64", xxh64.Sum64},
 		{"cespare", cespare.Sum64},
 		{"xxhaste128", func(b []byte) uint64 { return xxhaste.Sum128(b).Lo }},
 		{"zeebo128", func(b []byte) uint64 { return xxh3.Hash128(b).Lo }},

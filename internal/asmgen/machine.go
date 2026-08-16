@@ -58,6 +58,11 @@ func (m *Machine) Load64(addr uint64) uint64 {
 	return v
 }
 
+// Load32, Load16 and Load8 read little-endian words of those widths.
+func (m *Machine) Load32(addr uint64) uint64 { return uint64(uint32(m.Load64(addr))) }
+func (m *Machine) Load16(addr uint64) uint64 { return uint64(uint16(m.Load64(addr))) }
+func (m *Machine) Load8(addr uint64) uint64  { return uint64(uint8(m.Load64(addr))) }
+
 // Store64 writes a little-endian 64-bit word.
 func (m *Machine) Store64(addr, v uint64) {
 	o := m.off(addr)

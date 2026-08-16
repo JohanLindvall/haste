@@ -242,15 +242,16 @@ func TestSimulatedAgainstReference(t *testing.T) {
 	}
 }
 
-// TestGeneratedFilesUpToDate regenerates every backend and compares it with
-// what is checked in, so that an edit to the generator cannot silently leave
-// the shipped assembly behind.
+// TestGeneratedFilesUpToDate regenerates every backend -- the XXH3 ones here
+// and the XXH64 ones in xxh64/ -- and compares it with what is checked in, so
+// that an edit to the generator cannot silently leave the shipped assembly
+// behind.
 func TestGeneratedFilesUpToDate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the system assembler")
 	}
-	for _, b := range asmgen.Backends() {
-		t.Run(b.Name, func(t *testing.T) {
+	for _, b := range asmgen.AllBackends() {
+		t.Run(b.Filename(), func(t *testing.T) {
 			got, err := asmgen.Generate(b)
 			if err != nil {
 				t.Skipf("cannot assemble for %s: %v", b.GOARCH, err)
