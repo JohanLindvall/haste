@@ -733,6 +733,54 @@ on a Redwood Cove:
   further down and this one do not disagree -- that note measured `mulx`
   alone, on a core where it is slower, and the selection is gated to Intel.
 
+**Three regimes, and top-down names each one.** Per hash, differenced against
+a zero-iteration run, medians of five, `Backend()` reporting `mulx`:
+
+| bytes | cyc | instr | IPC | retiring | backend | bound by |
+|---|---|---|---|---|---|---|
+| 0..16 | 7.6 | 44 | 5.8 | 86-93% | <=5% | the machine's width |
+| 17..64 | 9.4-11.8 | 52-70 | 5.5-5.9 | 88-92% | 3-10% | width |
+| 96..112 | 16.3-18.8 | 88-95 | 5.1-5.4 | 79-84% | 14-15% | the ladder |
+| 224 / 225 | 33.3 / 30.5 | 162 / 163 | 4.9 / 5.4 | 77% / 87% | 19% / 11% | the ladder, isolated |
+| 336..448 | 46-60 | 215-266 | 4.4-4.7 | 72-76% | 21-27% | the ladder |
+| 4 Ki..64 Ki | -- | -- | 4.6 | 68-69% | 22-27% | the block loop |
+
+The 224-against-225 pair is the experiment worth keeping: the same
+instruction count to within one, ten points of retiring apart. That is the
+six serial ladder rungs 224 runs and 225 does not, with nothing else moving.
+
+**The block loop is 29% above every bound that can be computed for it, and it
+is not waiting on anything.** Per 224-byte iteration at 64 KiB: 19.85 cycles,
+95.2 instructions, 82.3 issued µops, 107.6 executed. Ports, and how busy each
+is against those 19.85 cycles:
+
+| port | µops/iter | busy |
+|---|---|---|
+| 1 (the multiplier) | 15.43 | 78% |
+| 5+11 | 28.77 | 72% |
+| 6 | 14.29 | 72% |
+| 0 | 13.91 | 70% |
+| 2/3/10 (loads) | 35.14 | 59% |
+
+Fourteen multiplies at one per cycle is 14; the ALU µops spread over five
+ports is 14.5; a lane's two dependent rounds are 12. The highest is 15.4 and
+it runs at 19.85. **`exe_activity.exe_bound_0_ports` is 0.0%**, so the
+scheduler is never empty and none of that gap is a dependency stall -- which
+is also why the subtractive study above found no single dominant term. The
+largest named component is `bound_on_loads` at 8.8%, and it is not cache
+capacity: the L1 miss rate is 0.2% even at 64 KiB, and the figure sits at
+5-9% at 1 KiB, 4 KiB and 16 KiB alike, all L1-resident. It is the loop's 35
+loads an iteration, not where they come from. Whatever closes this gap is
+about issuing fewer loads, and `HoldSecret` is the lever that has already
+been pulled.
+
+Two figures from the same run, for calibration. The seed still costs what the
+unseeded twin exists to avoid: 9.00 cycles against 7.65 at 8 bytes, +18%. And
+against the vendored C reference in the same process, where the cgo call is
+amortized and the comparison means something, rapidhash is **1.13x at both
+64 KiB and 1 MiB** (55.2 GB/s against 49.0). Below a few hundred bytes that
+column is cgo overhead and says nothing -- it reads 5.1x at 256 bytes.
+
 **On arm64 the loop is bound by the multiplier, and it is finished.** x86
 gets both halves of a product from one `mulq`; arm64 needs `mul` and `umulh`,
 so the same 224-byte iteration issues 28 multiplies rather than 14, and an
@@ -1405,6 +1453,12 @@ they do not follow the change onto other hardware.
   the hash, which is what `sum64RapidNS` exists to avoid, and the result no
   longer fits the budget. TestFixedMatchesSum64 holds them to `Sum64` over
   the whole 32-bit space and 200k random wider samples.
+
+  **A Redwood Cove agrees, and says where the saving comes from**: against
+  `Sum64` of an 8-byte slice at 7.65 cycles and 44 instructions,
+  `Sum64Uint64` is 4.27 cycles and 22, and `Sum64Uint128` 4.26 and 21. Half
+  the instructions, not just the call -- the length switch and the tail's
+  overlapping reads go with it.
 - **224 bytes is slower than 225** (8.56 against 7.50 ns), because 224 does
   not enter the 224-byte block loop: it runs one 112-byte block of seven
   parallel lanes and then all six ladder rungs, which are serial, where 225
