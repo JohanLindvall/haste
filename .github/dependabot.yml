@@ -1,0 +1,12 @@
+# Keeps the workflow actions current. They rotted three majors behind once;
+# a monthly PR is cheaper than rediscovering that. Grouped so one PR carries
+# all the bumps, and CI decides whether it merges.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

@@ -20,10 +20,13 @@ jobs:
     name: gofmt and vet
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
+          # The root module has no go.sum -- it imports nothing -- so the
+          # cache keys on the bench module's, which this job builds.
+          cache-dependency-path: bench/go.sum
       - name: gofmt
         run: |
           unformatted=$(gofmt -l .)
@@ -51,10 +54,11 @@ jobs:
           # rather than simulated.
           - { runner: ubuntu-24.04-arm, arch: arm64, go: stable }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
+          cache: false # nothing to key on: the root module has no go.sum
       # Informational: which kernel this runner actually picked. Never fails
       # the job on its own; the real run is the next step.
       - name: which kernel this runner dispatched to
@@ -71,10 +75,11 @@ jobs:
     name: cross-compile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
+          cache: false # nothing to key on: the root module has no go.sum
       # endian_slow.go exists for the big-endian and unaligned-access
       # architectures, and none of them can be run here. Building the test
       # binary is the least that has to hold: internal/asmgen is imported by
@@ -95,10 +100,11 @@ jobs:
     name: forced SSE2 and AVX2 dispatch
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
+          cache: false # nothing to key on: the root module has no go.sum
       - run: sudo apt-get update && sudo apt-get install -y qemu-user-static
       - run: GOARCH=amd64 go test -c -o /tmp/xxhaste.test .
       - run: GOARCH=amd64 go test -c -o /tmp/xxh64.test ./xxh64
@@ -118,10 +124,11 @@ jobs:
     name: generated assembly is current
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
+          cache: false # nothing to key on: the root module has no go.sum
       - name: cross-assemblers for both targets
         run: |
           sudo apt-get update
@@ -142,10 +149,11 @@ jobs:
     name: fuzz smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
+          cache: false # nothing to key on: the root module has no go.sum
       # Discovered, not listed: a hand-kept list silently stops covering a
       # new target or a new package, and this one already went stale once
       # when xxh64 arrived. Go allows one -fuzz target per invocation, hence
@@ -169,7 +177,7 @@ jobs:
           fi
       - name: keep any input that failed
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-crashers
           path: "**/testdata/fuzz/"
@@ -179,10 +187,13 @@ jobs:
     name: cross-check against zeebo/xxh3 and cespare/xxhash
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
+          # The root module has no go.sum -- it imports nothing -- so the
+          # cache keys on the bench module's, which this job builds.
+          cache-dependency-path: bench/go.sum
       - run: cd bench && go test ./...
 
   tag:
@@ -193,7 +204,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the whole history, and every tag, to find the latest
       - name: cut the next patch version

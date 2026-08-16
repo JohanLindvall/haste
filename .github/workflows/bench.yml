@@ -30,20 +30,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04-arm, ubuntu-24.04, ubuntu-22.04]
+        # ubuntu-22.04 used to be the third row; its image starts brownouts on
+        # 2026-09-17 (actions/runner-images#14254), and it was the same x86
+        # pool as 24.04 under an older image anyway. macOS is Apple silicon,
+        # which is hardware the Linux runners cannot show: the M-series is
+        # exactly the wide-vector core the NEON hybrid gating declines.
+        runner: [ubuntu-24.04-arm, ubuntu-24.04, macos-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
+          # The root module has no go.sum; the cache keys on the bench
+          # module's, which every step here builds against.
+          cache-dependency-path: bench/go.sum
       - name: what this runner is
         run: |
           set +e
           echo "runner=${{ matrix.runner }}" | tee cpu.txt
-          nproc | sed 's/^/nproc=/' | tee -a cpu.txt
-          grep -m1 -E 'model name|Model name' /proc/cpuinfo | tee -a cpu.txt
+          (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null) | sed 's/^/nproc=/' | tee -a cpu.txt
+          grep -m1 -E 'model name|Model name' /proc/cpuinfo 2>/dev/null | tee -a cpu.txt
           lscpu 2>/dev/null | grep -E 'Model name|Vendor|Flags|Features|Architecture|MHz|Thread|Core|Socket' | tee -a cpu.txt
           cat /sys/devices/system/cpu/cpu0/regs/identification/midr_el1 2>/dev/null | sed 's/^/midr_el1=/' | tee -a cpu.txt
+          sysctl -n machdep.cpu.brand_string 2>/dev/null | sed 's/^/brand=/' | tee -a cpu.txt
           go version | tee -a cpu.txt
           go test -run 'TestBackendName|TestBackendsNative' -v . ./xxh64 2>&1 | grep -E 'dispatched|Backend' | tee -a cpu.txt
       - name: comparison benchmarks (bench module)
@@ -57,7 +66,7 @@ jobs:
       - name: per-length sweep 0..255
         run: |
           cd bench && go run ./sweep -max 255 2>&1 | tee ../sweep.csv
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bench-${{ matrix.runner }}
           path: |
