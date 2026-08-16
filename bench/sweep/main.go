@@ -116,13 +116,13 @@ func measure(f runner, in []byte) float64 {
 		}
 		iters *= 4
 	}
-	reps := make([]float64, reps)
-	for r := range reps {
+	took := make([]float64, reps)
+	for r := range took {
 		t := time.Now()
 		sink += f(in, iters)
-		reps[r] = float64(time.Since(t).Nanoseconds()) / float64(iters)
+		took[r] = float64(time.Since(t).Nanoseconds()) / float64(iters)
 	}
-	sort.Float64s(reps)
+	sort.Float64s(took)
 
 	// The median of the repetitions, unless interference stretched more than
 	// half of them: a full 0..256 matrix once produced two points 3x off
@@ -131,7 +131,7 @@ func measure(f runner, in []byte) float64 {
 	// interference, only by miscalibration, so when the median disagrees
 	// with it by more than 20% the run was dirty and the minimum is the
 	// honest number.
-	med, min := reps[len(reps)/2], reps[0]
+	med, min := took[len(took)/2], took[0]
 	if med > min*1.2 {
 		return min
 	}
