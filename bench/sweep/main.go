@@ -116,11 +116,36 @@ func measure(f runner, in []byte) float64 {
 		}
 		iters *= 4
 	}
+	// A repetition that reads exactly zero did not take less than no time:
+	// it finished inside one tick of the clock, because the calibration pass
+	// above was interfered with and set iters too low. Multiplying the count
+	// and starting the point again is the only honest answer, and it
+	// terminates -- each attempt quadruples the work, so a clock coarse
+	// enough to need many of them would have to be minutes wide.
+	//
+	// On a fine clock this never fires. On a windows-11-arm runner it fired
+	// for 49 of 1,792 cells before it existed, which is 3% of a matrix
+	// reading as hashes that cost nothing.
 	took := make([]float64, reps)
-	for r := range took {
-		t := time.Now()
-		sink += f(in, iters)
-		took[r] = float64(time.Since(t).Nanoseconds()) / float64(iters)
+	for attempt := 0; ; attempt++ {
+		zero := false
+		for r := range took {
+			t := time.Now()
+			sink += f(in, iters)
+			d := time.Since(t)
+			if d == 0 {
+				zero = true
+				break
+			}
+			took[r] = float64(d.Nanoseconds()) / float64(iters)
+		}
+		if !zero {
+			break
+		}
+		if attempt >= 8 {
+			return 0 // a clock this coarse cannot be worked around here
+		}
+		iters *= 4
 	}
 	sort.Float64s(took)
 
