@@ -1254,13 +1254,31 @@ here so the fourth does not repeat them.
   -5.4% at 256. An indirect call costs more than the branch it removes,
   which is what moved the arm64 lane-round form out of the argument list.
 
-What is left is the shape this note first suggested: the two forms differ
-only in how the *lane loop* reaches the primes, and the vendor difference
-was only ever measured from 32 bytes up, so the test belongs after the
-kernel's own `n < 32` branch, with one shared short path ahead of it. That
-is a single kernel with two long paths rather than two kernels, so it also
-sidesteps the placement effect above -- and it is generator work, not a
-flag flip.
+- **Guard the form test with the length**, so an input too short for the
+  lane loop never loads the flag or takes the branch: the prologue tests
+  `n < 32` in Go assembly and skips the form test, and the body's own length
+  branch runs as before. This was the shape this note used to recommend and
+  is the closest of the four -- 4 bytes -0.7%, 8 bytes -1.0% -- while
+  costing 7-11% from 32 to 256. Two things sink it: the guard is itself a
+  compare and a taken branch, about 0.3 ns of a 2.7 ns hash, so it replaces
+  the dispatch rather than removing it; and the short path it then reaches
+  is the primary's form rather than the twin's.
+
+That last point reframes all four. The dispatch is not pure overhead in
+front of a fixed short path: **the form it jumps to is the faster one at
+every size measured here.** With both forms forced inside one binary the
+pointer form wins at 32 bytes (5.78 against 6.04 ns), at 64 (7.20 against
+7.39) and at 256 (17.22 against 17.61) -- its two taken branches included.
+What the branch costs, the form it lands on partly pays back, so every fix
+that removes the branch by keeping the register form on the short path
+trades one for the other.
+
+The ceiling for any of this is the kernel from before the split, which had
+one form and no test at all: 2.71 ns at 4 bytes against 2.98 shipped. That
+quarter of a nanosecond is what a two-form dispatch costs a short hash, and
+none of the four structures recovered it. It is left as it is. Callers with
+an integer key have `Sum64Uint32`, `Sum64Uint64` and `Sum64Uint128`, which
+reach neither the kernel nor the dispatch.
 
 **Confirmed on a Zen 4 directly**, and as the change itself rather than as a
 ratio against cespare: the current tree against the same tree with only the
