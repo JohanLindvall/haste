@@ -10,7 +10,9 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"sort"
@@ -25,11 +27,24 @@ type result struct {
 	ns                float64
 }
 
-var line = regexp.MustCompile(`^Benchmark(\S+?)-\d+\s+\d+\s+([0-9.]+) ns/op`)
+// The -N suffix is GOMAXPROCS, and Go omits it when it is 1 -- which is
+// exactly what `go test -cpu 1` produces, and what the bench workflow asks
+// for. Requiring it here meant the workflow's own flag guaranteed no line
+// ever matched, on every runner at once.
+var line = regexp.MustCompile(`^Benchmark(\S+?)(?:-\d+)?\s+\d+\s+([0-9.]+) ns/op`)
 
 func main() {
+	if err := run(os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, "mdtable:", err)
+		os.Exit(1)
+	}
+}
+
+// run is main with its ends exposed, so the parsing and the table can be
+// tested without a process.
+func run(in io.Reader, out io.Writer) error {
 	var results []result
-	sc := bufio.NewScanner(os.Stdin)
+	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
 	for sc.Scan() {
 		m := line.FindStringSubmatch(sc.Text())
@@ -43,14 +58,13 @@ func main() {
 		results = append(results, split(m[1], ns))
 	}
 	if err := sc.Err(); err != nil {
-		fmt.Fprintln(os.Stderr, "mdtable:", err)
-		os.Exit(1)
+		return err
 	}
 	if len(results) == 0 {
-		fmt.Fprintln(os.Stderr, "mdtable: no benchmark lines on stdin")
-		os.Exit(1)
+		return errors.New("no benchmark lines on stdin")
 	}
-	emit(results)
+	emit(out, results)
+	return nil
 }
 
 // split maps a benchmark name onto table coordinates. The shapes in this
@@ -74,7 +88,7 @@ func split(name string, ns float64) result {
 	return r
 }
 
-func emit(results []result) {
+func emit(w io.Writer, results []result) {
 	// Group and column order is order of appearance; rows sort numerically.
 	var groups []string
 	cols := map[string][]string{}
@@ -99,14 +113,14 @@ func emit(results []result) {
 
 	for gi, g := range groups {
 		if gi > 0 {
-			fmt.Println()
+			fmt.Fprintln(w)
 		}
-		fmt.Printf("## %s\n\n", g)
-		fmt.Println("ns/op, median of repetitions, lower is better.")
-		fmt.Println()
+		fmt.Fprintf(w, "## %s\n\n", g)
+		fmt.Fprintln(w, "ns/op, median of repetitions, lower is better.")
+		fmt.Fprintln(w)
 		impls := cols[g]
-		fmt.Printf("| size | %s |\n", strings.Join(impls, " | "))
-		fmt.Printf("|---:|%s\n", strings.Repeat("---:|", len(impls)))
+		fmt.Fprintf(w, "| size | %s |\n", strings.Join(impls, " | "))
+		fmt.Fprintf(w, "|---:|%s\n", strings.Repeat("---:|", len(impls)))
 
 		sizes := make([]string, 0, len(cells[g]))
 		for s := range cells[g] {
@@ -144,7 +158,7 @@ func emit(results []result) {
 				}
 				out = append(out, cell)
 			}
-			fmt.Printf("| %s |\n", strings.Join(out, " | "))
+			fmt.Fprintf(w, "| %s |\n", strings.Join(out, " | "))
 		}
 	}
 }
