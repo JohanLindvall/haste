@@ -206,10 +206,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # the whole history, and every tag, to find the latest
+          fetch-depth: 0 # the whole history, to diff against the last release
+          fetch-tags: true # and the tags, which are the whole input here
       - name: cut the next patch version
         run: |
           set -euo pipefail
+
+          # Fetch the tags explicitly rather than trusting the checkout to
+          # have them. Whether it does has depended on the action's version
+          # and on fetch-depth, and this job reads exactly one thing from the
+          # repository -- if that read comes back empty the version restarts
+          # at v0.1.0, which is a wrong answer rather than an error. One
+          # fetch removes the question.
+          git fetch --tags --force --quiet origin
+
+          tags=$(git tag -l 'v*' | grep -cE '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+          echo "visible release tags: $tags"
+          if [ "$tags" -eq 0 ] && git ls-remote --tags --quiet origin 'refs/tags/v*' | grep -q .; then
+            echo "::error::the remote has release tags but none are visible here; refusing to restart versioning"
+            exit 1
+          fi
 
           # A re-run, or a release cut by hand, already has its tag.
           if tag=$(git describe --exact-match --tags HEAD 2>/dev/null); then
@@ -242,12 +258,15 @@ jobs:
             next="v${major}.${minor}.$((patch + 1))"
           fi
 
-          if git ls-remote --exit-code --tags origin "refs/tags/$next" >/dev/null 2>&1; then
-            echo "::error::$next already exists on the remote"
+          echo "latest=${latest:-none}, next=$next, HEAD=$(git rev-parse --short HEAD)"
+
+          # An existing $next means the state this job derived from is not the
+          # state of the remote. Say which, rather than exiting 1 with nothing
+          # to go on -- that is what the last failure here looked like.
+          if remote=$(git ls-remote --exit-code --tags origin "refs/tags/$next" 2>/dev/null); then
+            echo "::error::$next already exists on the remote (${remote%%$'\t'*}); computed from latest=${latest:-none}"
             exit 1
           fi
-
-          echo "latest=${latest:-none}, tagging $next"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$next" -m "$next"

@@ -103,3 +103,49 @@ jobs:
             xxh64.txt
             xxh64.md
             sweep.csv
+
+  publish:
+    name: publish benchmarks.md
+    needs: bench
+    # always(), because fail-fast is off and a runner that failed should not
+    # cost the results of the ones that worked -- mkbenchmarks lists it as
+    # missing instead. Dispatch only: a bench-* pull request must not push to
+    # the default branch.
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          pattern: bench-*
+      - name: compose benchmarks.md
+        run: bash bench/mkbenchmarks.sh artifacts > benchmarks.md
+      - name: commit it back
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain -- benchmarks.md)" ]; then
+            echo "benchmarks.md is unchanged; nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add benchmarks.md
+          git commit -m "Update benchmarks.md from run ${{ github.run_id }} [skip ci]"
+          # The sweep takes long enough that main can move under it. Rebase
+          # onto whatever landed and try again; benchmarks.md is generated
+          # wholesale, so there is nothing to merge.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "pushed on attempt $attempt"
+              exit 0
+            fi
+            git fetch --quiet origin main
+            git rebase --quiet origin/main || git rebase --abort || true
+          done
+          echo "::error::could not push benchmarks.md after three attempts"
+          exit 1
