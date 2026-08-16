@@ -207,7 +207,14 @@ jobs:
   tag:
     name: tag
     needs: [check, test, cross, qemu, generate, fuzz, crosscheck]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Dispatch counts as well as push, which makes "run CI and release what
+    # is ready" a button rather than an empty commit. It is safe to press
+    # twice: the step below does nothing when HEAD already carries a tag or
+    # when no module file has changed since the last one. The ref check is
+    # what keeps it to the default branch either way.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
