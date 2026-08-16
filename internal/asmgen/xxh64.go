@@ -60,21 +60,26 @@ type XXH64Arch interface {
 	Name() string
 
 	// Register plan. H is the running hash; V(i) lane i; X a scratch
-	// register for a loaded word; P(i) prime i+1; Tmp a scratch register,
-	// which may be X itself -- the skeleton never needs both at once.
+	// register for a loaded word; Tmp a scratch register, which may be X
+	// itself -- the skeleton never needs both at once. The primes are the
+	// architecture's business: the skeleton names them by index, 0..4 for
+	// P1..P5, and each backend keeps them where it likes -- all in registers
+	// on arm64; on x86, which has no register to spare and no appetite for
+	// 64-bit immediates, the two the lane loop uses in registers and the
+	// rest as memory operands off the table.
 	H() GPR
 	V(i int) GPR
 	X() GPR
-	P(i int) GPR
 	Tmp() GPR
 
-	// LoadPrimes puts P1, P2 and P4 -- what the lanes, the merge and the
-	// eight-byte tail steps use -- in P(0), P(1) and P(3), from the table
-	// at TableGPR or from immediates. LoadTailPrimes does the same for P3
-	// and P5 into P(2) and P(4); it runs after the merge and may reuse lane
-	// registers, which is what lets x86 fit the whole plan in its twelve.
+	// LoadPrimes brings the primes to wherever this backend keeps them,
+	// from the table at TableGPR.
 	LoadPrimes()
-	LoadTailPrimes()
+	// AddPrime is dst += Pn; MulPrime is dst *= Pn; MulAddPrime is
+	// dst = dst*Pmul + Padd, one instruction on arm64 and two on x86.
+	AddPrime(dst GPR, n int)
+	MulPrime(dst GPR, n int)
+	MulAddPrime(dst GPR, mul, add int)
 
 	// LoadSplit reads the lane-round form -- the sixth table slot -- into
 	// dst. Only a Dual backend's skeleton calls it.
@@ -112,10 +117,6 @@ type XXH64Arch interface {
 	AddImm(dst GPR, imm int64)
 	Sub(dst, src GPR)
 	Xor(dst, src GPR)
-	// Mul is dst *= src.
-	Mul(dst, src GPR)
-	// MulAdd is dst = dst*mul + add: one instruction on arm64, two on x86.
-	MulAdd(dst, mul, add GPR)
 	// Rol rotates left by an immediate; Rol3 rotates src into dst, one
 	// instruction on arm64 and two on x86.
 	Rol(dst GPR, sh uint)
@@ -158,7 +159,6 @@ func emitSum64(a XXH64Arch) {
 	in, n, seed := a.ArgGPR(0), a.ArgGPR(1), a.ArgGPR(2)
 	h := a.H()
 	v := [4]GPR{a.V(0), a.V(1), a.V(2), a.V(3)}
-	p1, p4 := a.P(0), a.P(3)
 	short, tail := b.NewLabel("short"), b.NewLabel("tail")
 
 	a.LoadPrimes()
@@ -185,18 +185,15 @@ func emitSum64(a XXH64Arch) {
 		// h = (h ^ round0(v)) * P1 + P4
 		a.Round0(v[i])
 		a.Xor(h, v[i])
-		a.MulAdd(h, p1, p4)
+		a.MulAddPrime(h, 0, 3)
 	}
-
-	a.LoadTailPrimes()
 	a.Jmp(tail)
 
 	// Under a block there are no lanes: the hash starts from the seed and
 	// the fifth prime and is all tail.
 	b.Label(short)
-	a.LoadTailPrimes()
 	a.Mov(h, seed)
-	a.Add(h, a.P(4))
+	a.AddPrime(h, 4)
 
 	b.Label(tail)
 	a.Add(h, n)
@@ -264,22 +261,21 @@ func emitBlockLoop(a XXH64Arch, in, nb GPR, v [4]GPR, split bool) {
 func emitTail(a XXH64Arch, h, p, n GPR) {
 	b := a.Build()
 	x := a.X()
-	p1, p2, p3, p4, p5 := a.P(0), a.P(1), a.P(2), a.P(3), a.P(4)
 	step8 := func() {
 		// h = rol(h ^ round0(word), 27) * P1 + P4
 		a.Load64Adv(x, p, 8)
 		a.Round0(x)
 		a.Xor(h, x)
 		a.Rol(h, 27)
-		a.MulAdd(h, p1, p4)
+		a.MulAddPrime(h, 0, 3)
 	}
 	step1 := func() {
 		// h = rol(h ^ byte*P5, 11) * P1
 		a.Load8Adv(x, p, 1)
-		a.Mul(x, p5)
+		a.MulPrime(x, 4)
 		a.Xor(h, x)
 		a.Rol(h, 11)
-		a.Mul(h, p1)
+		a.MulPrime(h, 0)
 	}
 	t8, t4, t2, t1, fin := b.NewLabel("t8"), b.NewLabel("t4"), b.NewLabel("t2"), b.NewLabel("t1"), b.NewLabel("fin")
 
@@ -293,10 +289,10 @@ func emitTail(a XXH64Arch, h, p, n GPR) {
 	a.BranchBitClear(n, 2, t2)
 	// h = rol(h ^ word32*P1, 23) * P2 + P3
 	a.Load32Adv(x, p, 4)
-	a.Mul(x, p1)
+	a.MulPrime(x, 0)
 	a.Xor(h, x)
 	a.Rol(h, 23)
-	a.MulAdd(h, p2, p3)
+	a.MulAddPrime(h, 1, 2)
 	b.Label(t2)
 	a.BranchBitClear(n, 1, t1)
 	step1()
@@ -310,8 +306,8 @@ func emitTail(a XXH64Arch, h, p, n GPR) {
 // emitAvalanche is the final mix.
 func emitAvalanche(a XXH64Arch, h GPR) {
 	a.XorShr(h, 33)
-	a.Mul(h, a.P(1))
+	a.MulPrime(h, 1)
 	a.XorShr(h, 29)
-	a.Mul(h, a.P(2))
+	a.MulPrime(h, 2)
 	a.XorShr(h, 32)
 }

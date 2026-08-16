@@ -10,12 +10,15 @@ package asmgen
 //
 //	rdi in / lanes    rsi n / in         rdx seed, then block count
 //	rax h             r8-r11 v1..v4      r12 x (also Tmp)
-//	r13 P1            rbx P2             rcx P4
-//	r8 P3, r9 P5 once the lanes are dead
+//	r13 P1            rbx P2             rcx the primes table
 //
-// P3 and P5 are needed only in the tail, after the merge has consumed the
-// lanes, which is what makes the plan fit; LoadTailPrimes is where they
-// arrive. All primes are immediates: movabs is one instruction here.
+// P1 and P2, which every lane round uses, sit in registers; P3, P4 and P5,
+// used once per merge round or tail step, are memory operands of the add or
+// imul that uses them -- one instruction each, and the load is hot. That is
+// also why the primes are not immediates: a 64-bit movabs is a ten-byte
+// instruction, five of them are fifty bytes of prologue, and on a Zen 3 the
+// sweep across hardware had the short hashes 6-19% behind cespare/xxhash,
+// which reads its primes from a table, while level everywhere else.
 
 // x86Scalar is the x86 backend's XXH64 face. It shares the Builder and the
 // integer emitters of x86 and adds the scalar ones the hash needs.
@@ -27,24 +30,36 @@ func newX86Scalar() *x86Scalar {
 	return &x86Scalar{x86: &x86{b: &Builder{}, name: "scalar"}}
 }
 
-const (
-	xxh64Prime1 uint64 = 0x9E3779B185EBCA87
-	xxh64Prime2 uint64 = 0xC2B2AE3D27D4EB4F
-	xxh64Prime3 uint64 = 0x165667B19E3779F9
-	xxh64Prime4 uint64 = 0x85EBCA77C2B2AE63
-	xxh64Prime5 uint64 = 0x27D4EB2F165667C5
-)
-
 func (x *x86Scalar) RetGPR() GPR { return rAX }
 
 // LoadSplit is unreachable: this backend has one lane-round form.
 func (x *x86Scalar) LoadSplit(GPR) { panic("asmgen: x86 xxh64 is not dual") }
-func (x *x86Scalar) TableGPR() GPR { return -1 }
+func (x *x86Scalar) TableGPR() GPR { return rCX }
 func (x *x86Scalar) H() GPR        { return rAX }
 func (x *x86Scalar) V(i int) GPR   { return []GPR{r8, r9, r10, r11}[i] }
 func (x *x86Scalar) X() GPR        { return r12 }
 func (x *x86Scalar) Tmp() GPR      { return r12 }
-func (x *x86Scalar) P(i int) GPR   { return []GPR{r13, rBX, r8, rCX, r9}[i] }
+
+// x86PrimeReg is where P1 and P2 live; the other primes are read from the
+// table.
+var x86PrimeReg = map[int]GPR{0: r13, 1: rBX}
+
+// prime renders prime n as an operand: its register, or its slot in the
+// table.
+func (x *x86Scalar) prime(n int) string {
+	if r, ok := x86PrimeReg[n]; ok {
+		return x.GPRName(r)
+	}
+	return x.mem(rCX, 8*n)
+}
+
+// primeVal is the simulator's view of the same.
+func (x *x86Scalar) primeVal(m *Machine, n int) uint64 {
+	if r, ok := x86PrimeReg[n]; ok {
+		return m.R[r]
+	}
+	return m.Load64(m.R[rCX] + uint64(8*n))
+}
 
 // x86GPR32 names the low 32 bits of a register, for the loads that zero-extend
 // into the full register.
@@ -54,20 +69,24 @@ var x86GPR32 = map[GPR]string{
 	r10: "%r10d", r11: "%r11d", r12: "%r12d", r13: "%r13d",
 }
 
-func (x *x86Scalar) movabs(dst GPR, imm uint64) {
-	x.b.emit(func(m *Machine) { m.R[dst] = imm },
-		"movabsq $%d, %s", imm, x.GPRName(dst))
-}
-
 func (x *x86Scalar) LoadPrimes() {
-	x.movabs(x.P(0), xxh64Prime1)
-	x.movabs(x.P(1), xxh64Prime2)
-	x.movabs(x.P(3), xxh64Prime4)
+	x.Load64(r13, rCX, 0)
+	x.Load64(rBX, rCX, 8)
 }
 
-func (x *x86Scalar) LoadTailPrimes() {
-	x.movabs(x.P(2), xxh64Prime3)
-	x.movabs(x.P(4), xxh64Prime5)
+func (x *x86Scalar) AddPrime(dst GPR, n int) {
+	x.b.emit(func(m *Machine) { m.R[dst] += x.primeVal(m, n) },
+		"addq %s, %s", x.prime(n), x.GPRName(dst))
+}
+
+func (x *x86Scalar) MulPrime(dst GPR, n int) {
+	x.b.emit(func(m *Machine) { m.R[dst] *= x.primeVal(m, n) },
+		"imulq %s, %s", x.prime(n), x.GPRName(dst))
+}
+
+func (x *x86Scalar) MulAddPrime(dst GPR, mul, add int) {
+	x.MulPrime(dst, mul)
+	x.AddPrime(dst, add)
 }
 
 func (x *x86Scalar) Load64(dst, base GPR, off int) {
@@ -120,16 +139,6 @@ func (x *x86Scalar) Xor(dst, src GPR) {
 		"xorq %s, %s", x.GPRName(src), x.GPRName(dst))
 }
 
-func (x *x86Scalar) Mul(dst, src GPR) {
-	x.b.emit(func(m *Machine) { m.R[dst] *= m.R[src] },
-		"imulq %s, %s", x.GPRName(src), x.GPRName(dst))
-}
-
-func (x *x86Scalar) MulAdd(dst, mul, add GPR) {
-	x.Mul(dst, mul)
-	x.Add(dst, add)
-}
-
 func (x *x86Scalar) Rol(dst GPR, sh uint) {
 	x.b.emit(func(m *Machine) { m.R[dst] = m.R[dst]<<sh | m.R[dst]>>(64-sh) },
 		"rolq $%d, %s", sh, x.GPRName(dst))
@@ -143,13 +152,13 @@ func (x *x86Scalar) Rol3(dst, src GPR, sh uint) {
 // InitLanes in two-operand form: a move and an add per lane that needs one.
 func (x *x86Scalar) InitLanes(seed GPR, v [4]GPR) {
 	x.Mov(v[0], seed)
-	x.Add(v[0], x.P(0))
-	x.Add(v[0], x.P(1))
+	x.AddPrime(v[0], 0)
+	x.AddPrime(v[0], 1)
 	x.Mov(v[1], seed)
-	x.Add(v[1], x.P(1))
+	x.AddPrime(v[1], 1)
 	x.Mov(v[2], seed)
 	x.Mov(v[3], seed)
-	x.Sub(v[3], x.P(0))
+	x.Sub(v[3], r13)
 }
 
 func (x *x86Scalar) XorShr(dst GPR, sh uint) {
@@ -161,9 +170,9 @@ func (x *x86Scalar) XorShr(dst GPR, sh uint) {
 
 // Round0 is x = rol(x*P2, 31) * P1.
 func (x *x86Scalar) Round0(r GPR) {
-	x.Mul(r, x.P(1))
+	x.MulPrime(r, 1)
 	x.Rol(r, 31)
-	x.Mul(r, x.P(0))
+	x.MulPrime(r, 0)
 }
 
 func (x *x86Scalar) Dual() bool { return false }
@@ -175,10 +184,10 @@ func (x *x86Scalar) Block(in GPR, off int, v [4]GPR, split bool) {
 	w := x.X()
 	for i := 0; i < 4; i++ {
 		x.Load64(w, in, off+8*i)
-		x.Mul(w, x.P(1))
+		x.MulPrime(w, 1)
 		x.Add(v[i], w)
 		x.Rol(v[i], 31)
-		x.Mul(v[i], x.P(0))
+		x.MulPrime(v[i], 0)
 	}
 }
 

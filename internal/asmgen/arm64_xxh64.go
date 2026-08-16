@@ -41,18 +41,25 @@ func (a *arm64Scalar) H() GPR        { return 9 }
 func (a *arm64Scalar) V(i int) GPR   { return GPR(10 + i) }
 func (a *arm64Scalar) X() GPR        { return 14 }
 func (a *arm64Scalar) Tmp() GPR      { return 19 }
-func (a *arm64Scalar) P(i int) GPR   { return GPR(4 + i) }
+
+// p is the register holding prime n+1: x4..x8, all loaded up front.
+func (a *arm64Scalar) p(n int) GPR { return GPR(4 + n) }
 
 func (a *arm64Scalar) LoadPrimes() {
 	t := a.TableGPR()
-	a.LoadPair(a.P(0), a.P(1), t, 0)
-	a.LoadPair(a.P(2), a.P(3), t, 16)
-	a.Load64(a.P(4), t, 32)
+	a.LoadPair(a.p(0), a.p(1), t, 0)
+	a.LoadPair(a.p(2), a.p(3), t, 16)
+	a.Load64(a.p(4), t, 32)
 }
 
-// LoadTailPrimes has nothing to do: every prime has been in a register since
-// the prologue.
-func (a *arm64Scalar) LoadTailPrimes() {}
+func (a *arm64Scalar) AddPrime(dst GPR, n int) { a.Add(dst, a.p(n)) }
+func (a *arm64Scalar) MulPrime(dst GPR, n int) { a.mul3(dst, dst, a.p(n)) }
+
+func (a *arm64Scalar) MulAddPrime(dst GPR, mul, add int) {
+	m, ad := a.p(mul), a.p(add)
+	a.b.emit(func(mc *Machine) { mc.R[dst] = mc.R[dst]*mc.R[m] + mc.R[ad] },
+		"madd %s, %s, %s, %s", a.GPRName(dst), a.GPRName(dst), a.GPRName(m), a.GPRName(ad))
+}
 
 // LoadSplit reads the lane-round form from the table's sixth slot. It sits
 // after the length branch, so a short hash never executes it.
@@ -102,12 +109,6 @@ func (a *arm64Scalar) AddImm(dst GPR, imm int64) { a.AddRI(dst, imm) }
 func (a *arm64Scalar) Sub(dst, src GPR)          { a.SubRR(dst, src) }
 func (a *arm64Scalar) Shr(dst GPR, sh uint)      { a.ShrRI(dst, sh) }
 func (a *arm64Scalar) Xor(dst, src GPR)          { a.eor3(dst, dst, src) }
-func (a *arm64Scalar) Mul(dst, src GPR)          { a.mul3(dst, dst, src) }
-
-func (a *arm64Scalar) MulAdd(dst, mul, add GPR) {
-	a.b.emit(func(m *Machine) { m.R[dst] = m.R[dst]*m.R[mul] + m.R[add] },
-		"madd %s, %s, %s, %s", a.GPRName(dst), a.GPRName(dst), a.GPRName(mul), a.GPRName(add))
-}
 
 // Rol is a rotate right by the complement: arm64 has only ror.
 func (a *arm64Scalar) Rol(dst GPR, sh uint) {
@@ -122,7 +123,7 @@ func (a *arm64Scalar) Rol3(dst, src GPR, sh uint) {
 
 // InitLanes with three-operand adds: five instructions.
 func (a *arm64Scalar) InitLanes(seed GPR, v [4]GPR) {
-	p1, p2 := a.P(0), a.P(1)
+	p1, p2 := a.p(0), a.p(1)
 	a.add3(v[0], seed, p1)
 	a.Add(v[0], p2)
 	a.add3(v[1], seed, p2)
@@ -135,9 +136,9 @@ func (a *arm64Scalar) XorShr(dst GPR, sh uint) { a.eorShr(dst, dst, dst, sh) }
 
 // Round0 is x = rol(x*P2, 31) * P1.
 func (a *arm64Scalar) Round0(r GPR) {
-	a.Mul(r, a.P(1))
+	a.MulPrime(r, 1)
 	a.Rol(r, 31)
-	a.Mul(r, a.P(0))
+	a.MulPrime(r, 0)
 }
 
 // Block pairs the loads and then runs the four rounds, in the form asked
@@ -147,18 +148,18 @@ func (a *arm64Scalar) Block(in GPR, off int, v [4]GPR, split bool) {
 	a.ldp(x[0], x[1], in, off)
 	a.ldp(x[2], x[3], in, off+16)
 	for i := 0; i < 4; i++ {
-		vi, xi, p2 := v[i], x[i], a.P(1)
+		vi, xi, p2 := v[i], x[i], a.p(1)
 		if !split {
 			// v = v + x*P2, in one instruction whose addend waits on the
 			// previous round's mul.
 			a.b.emit(func(m *Machine) { m.R[vi] += m.R[xi] * m.R[p2] },
 				"madd %s, %s, %s, %s", a.GPRName(vi), a.GPRName(xi), a.GPRName(p2), a.GPRName(vi))
 		} else {
-			a.Mul(xi, p2)
+			a.MulPrime(xi, 1)
 			a.Add(vi, xi)
 		}
 		a.Rol(vi, 31)
-		a.Mul(vi, a.P(0))
+		a.MulPrime(vi, 0)
 	}
 }
 
