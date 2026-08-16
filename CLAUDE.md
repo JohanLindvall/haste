@@ -105,8 +105,27 @@ go test -race ./...                                  # no shared state after ini
 GOARCH=amd64 go test -c -o /tmp/x.test . && qemu-x86_64-static -cpu max /tmp/x.test
 GOARCH=amd64 go test -c -o /tmp/x.test . && qemu-x86_64-static -cpu Nehalem /tmp/x.test   # forces SSE2 dispatch
 go test -fuzz FuzzStreamingMatchesOneShot -fuzztime=60s .   # one target at a time
-for a in 386 arm mips s390x ppc64 riscv64 arm64; do GOARCH=$a go test -c -o /dev/null .; done
+for a in 386 arm mips mipsle mips64 s390x ppc64 ppc64le riscv64 loong64 arm64; do
+  for p in . ./xxh3 ./xxh64 ./rapidhash; do
+    GOOS=linux GOARCH=$a go test -c -o /dev/null $p || echo "FAIL linux/$a $p"
+  done
+done
 ```
+
+**Pin `GOOS` in that last loop.** Without it, every iteration on a macOS
+checkout asks for `darwin/386`, `darwin/mips` and so on, the toolchain
+refuses the pair before it compiles a line, and the loop still exits 0 -- so
+the check that exists to catch `endian_slow.go` and the 32-bit `int` in
+`internal/asmgen` reports success having compiled nothing. It was written on
+the Linux VM, where it does work, which is exactly how a check like this
+rots.
+
+CI's `cross` job is the authority and does not have that hole: it pins both
+variables, adds the non-Linux targets that select different files (arm64
+outside Linux cannot read MIDR), and discovers the package list rather than
+carrying one, having already been caught by a hardcoded list that stopped
+covering `rapidhash` the day it landed. The loop above is the quick local
+version of it.
 
 `./...` covers `xxh64` too, which has the same shape of suite: vectors, kernels
 against its portable code (both arm64 forms, forced through `setBackend`),
