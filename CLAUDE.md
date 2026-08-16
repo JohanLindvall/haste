@@ -330,22 +330,28 @@ anything on top of that.
   transfers are the unknown, and an all-vector loop is out (Intel's `vpmullq`
   is a 15-cycle latency, and the chain would eat it). Needs a Zen 4 and an
   Intel core to measure before it goes anywhere near dispatch.
-- **The dual kernel costs about a cycle where a single block cannot amortize
-  it.** A per-length sweep on the N2 leaves xxh64 3% behind cespare/xxhash at
-  exactly 33 and 37 bytes -- one 32-byte block plus a short tail -- and the
-  deficit survives four relinked layouts, so it is a result rather than the
-  caller-alignment lottery. Generating the arm64 kernel with `Dual()` false
-  halves it at 33 (3.2% -> 1.4%) and does nothing at 37: the form load and its
-  branch are the price of shipping both lane rounds in one kernel, which is
-  what buys +31% on Apple cores, and the rest is a couple of instructions in a
-  ~34-cycle hash. By 64 bytes it is gone (-1%), and from 200 bytes up the
-  kernel is 5-6% ahead. Three things were tried and are not worth keeping:
-  turning `TailMaskSkips` on for arm64 (33 unchanged, 37 slightly better, 88
-  worse -- branch cost on this core is not what it is on x86), hoisting the
-  form load above `InitLanes` to cover its latency (neutral; the out-of-order
-  window was already covering it), and inverting the branch so the fused form
-  falls through and the split form is the taken side (neutral, as instruction
-  counting predicts -- it is one taken branch either way).
+- **The dual kernel costs 1-2% where a single block cannot amortize it**, and
+  that is the whole of it: measured with direct calls on the N2, the form load
+  and its branch are 2.1% at 33 bytes and 1.3% at 37 -- one 32-byte block plus
+  a short tail -- and nothing at 31, where the block loop is not entered. They
+  are what buys +31% on Apple cores.
+
+  An earlier version of this bullet had xxh64 3% *behind* cespare/xxhash at
+  those two lengths, chased through relinked layouts and a `Dual()` false
+  build. That number was the sweep harness, not the kernel: it calls through a
+  function value, which our inlinable entry point pays twice and cespare's
+  assembly symbol once. Direct calls put us level or ahead at every length
+  from 31 to 88 -- +0.7% at 33, -0.9% at 37, -1.6% at 88, -1.8% at 64. When a
+  sweep number disagrees with the compare suite about *this* library against
+  cespare, the compare suite is right; see the harness note under
+  Benchmarking.
+
+  Three things were tried against the 1-2% and are not worth keeping: turning
+  `TailMaskSkips` on for arm64 (33 unchanged, 88 worse -- branch cost on this
+  core is not what it is on x86), hoisting the form load above `InitLanes` to
+  cover its latency (neutral; the out-of-order window was already covering
+  it), and inverting the branch so the fused form falls through and the split
+  form is the taken side (neutral -- it is one taken branch either way).
 - **Do not move the form choice out of the kernel.** It looks like the obvious
   way to spare the cores that do not need it, and every mechanism costs more
   than the 0.18ns it saves, because all of them move the choice into the
