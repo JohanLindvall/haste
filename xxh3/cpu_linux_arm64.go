@@ -6,8 +6,6 @@ import (
 	"encoding/binary"
 	"os"
 	_ "unsafe" // for go:linkname
-
-	"github.com/JohanLindvall/haste/internal/cpu"
 )
 
 // SVE2 detection on Linux.
@@ -27,37 +25,6 @@ const (
 
 //go:linkname runtimeGetAuxv runtime.getAuxv
 func runtimeGetAuxv() []uintptr
-
-// Core identification.
-//
-// One kernel here is faster only on cores whose vector pipes are scarce
-// relative to their integer pipes, and slower on the rest, so it is enabled
-// only where the core is positively identified. MIDR_EL1 names the exact
-// core, which means this check can fail to recognise a core but cannot
-// misidentify one: anything unrecognised keeps the portable choice. Reading
-// it is internal/cpu's job, shared with xxh64.
-
-// narrowVectorCores lists cores measured or modelled to run the hybrid kernel
-// faster, keyed by implementer<<12|part. It is deliberately short: every entry
-// needs evidence, and the cost of omitting a core is only that it keeps the
-// kernel it has.
-//
-//	0x41d49  ARM Neoverse N2  -- measured here, +24% at 64 KiB
-//
-// Cores known to lose: Neoverse V1 and V2 (four vector pipes, so the trade is
-// backwards), Apple's (four vector pipes and a multiply-accumulate that
-// issues once a cycle; measured 4-10% behind on an M2), and anything
-// big.LITTLE, where a goroutine can migrate to a core the check never saw.
-var narrowVectorCores = map[uint32]bool{
-	0x41d49: true,
-}
-
-var hybridCore = detectHybridCore()
-
-func detectHybridCore() bool {
-	v, ok := cpu.MIDR()
-	return ok && narrowVectorCores[cpu.Implementer(v)<<12|cpu.Part(v)]
-}
 
 var sve2 = detectSVE2()
 

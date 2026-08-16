@@ -3,11 +3,9 @@
 package xxh3
 
 // Off Linux there is no portable way to ask for SVE2 without cgo, and no
-// arm64 platform outside Linux currently exposes it, so the NEON kernel is
-// used unconditionally.
+// arm64 platform outside Linux currently exposes it, so SVE2 is never
+// selected there. Which of the NEON kernels runs is decided by the core,
+// which is a separate question with a separate answer per platform: see
+// cpu_core_arm64.go.
 
 func hasSVE2() bool { return false }
-
-// hybridCore reports whether this core runs the hybrid kernel faster. Off
-// Linux the core cannot be identified without cgo, so it never does.
-const hybridCore = false
