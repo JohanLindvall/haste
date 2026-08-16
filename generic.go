@@ -442,31 +442,31 @@ func len17to128_128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) Uint128 
 		if n > 64 {
 			if n > 96 {
 				{
-					i0, i1 := rd64(add(in, 48), 0), rd64(add(in, 48), 8)
 					j0, j1 := rd64(add(in, n-64), 0), rd64(add(in, n-64), 8)
-					lo = (lo + mul128Fold64(i0^rd64(add(sec, 96), 0), i1^rd64(add(sec, 96), 8))) ^ (j0 + j1)
+					i0, i1 := rd64(add(in, 48), 0), rd64(add(in, 48), 8)
 					hi = (hi + mul128Fold64(j0^rd64(add(sec, 96+16), 0), j1^rd64(add(sec, 96+16), 8))) ^ (i0 + i1)
+					lo = (lo + mul128Fold64(i0^rd64(add(sec, 96), 0), i1^rd64(add(sec, 96), 8))) ^ (j0 + j1)
 				}
 			}
 			{
-				i0, i1 := rd64(add(in, 32), 0), rd64(add(in, 32), 8)
 				j0, j1 := rd64(add(in, n-48), 0), rd64(add(in, n-48), 8)
-				lo = (lo + mul128Fold64(i0^rd64(add(sec, 64), 0), i1^rd64(add(sec, 64), 8))) ^ (j0 + j1)
+				i0, i1 := rd64(add(in, 32), 0), rd64(add(in, 32), 8)
 				hi = (hi + mul128Fold64(j0^rd64(add(sec, 64+16), 0), j1^rd64(add(sec, 64+16), 8))) ^ (i0 + i1)
+				lo = (lo + mul128Fold64(i0^rd64(add(sec, 64), 0), i1^rd64(add(sec, 64), 8))) ^ (j0 + j1)
 			}
 		}
 		{
-			i0, i1 := rd64(add(in, 16), 0), rd64(add(in, 16), 8)
 			j0, j1 := rd64(add(in, n-32), 0), rd64(add(in, n-32), 8)
-			lo = (lo + mul128Fold64(i0^rd64(add(sec, 32), 0), i1^rd64(add(sec, 32), 8))) ^ (j0 + j1)
+			i0, i1 := rd64(add(in, 16), 0), rd64(add(in, 16), 8)
 			hi = (hi + mul128Fold64(j0^rd64(add(sec, 32+16), 0), j1^rd64(add(sec, 32+16), 8))) ^ (i0 + i1)
+			lo = (lo + mul128Fold64(i0^rd64(add(sec, 32), 0), i1^rd64(add(sec, 32), 8))) ^ (j0 + j1)
 		}
 	}
 	{
-		i0, i1 := rd64(in, 0), rd64(in, 8)
 		j0, j1 := rd64(add(in, n-16), 0), rd64(add(in, n-16), 8)
-		lo = (lo + mul128Fold64(i0^rd64(sec, 0), i1^rd64(sec, 8))) ^ (j0 + j1)
+		i0, i1 := rd64(in, 0), rd64(in, 8)
 		hi = (hi + mul128Fold64(j0^rd64(add(sec, 16), 0), j1^rd64(add(sec, 16), 8))) ^ (i0 + i1)
+		lo = (lo + mul128Fold64(i0^rd64(sec, 0), i1^rd64(sec, 8))) ^ (j0 + j1)
 	}
 	return finalize128(lo, hi, n, 0)
 }

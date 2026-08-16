@@ -195,7 +195,21 @@ func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) ui
 				acc += mix16BNS(add(in, n-16), add(sec, 16))
 				return avalanche(acc)
 			}
-			return len17to128_64NS(in, n, sec)
+			// The 33..128 rungs, hand-inlined; see len17to128_64NS.
+			acc := uint64(n) * prime64_1
+			if n > 64 {
+				if n > 96 {
+					acc += mix16BNS(add(in, 48), add(sec, 96))
+					acc += mix16BNS(add(in, n-64), add(sec, 112))
+				}
+				acc += mix16BNS(add(in, 32), add(sec, 64))
+				acc += mix16BNS(add(in, n-48), add(sec, 80))
+			}
+			acc += mix16BNS(add(in, 16), add(sec, 32))
+			acc += mix16BNS(add(in, n-32), add(sec, 48))
+			acc += mix16BNS(in, sec)
+			acc += mix16BNS(add(in, n-16), add(sec, 16))
+			return avalanche(acc)
 		}
 		return len129to240_64NS(in, n, sec)
 	}
@@ -221,19 +235,73 @@ func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) ui
 	return avalanche64(rd64(sec, 56) ^ rd64(sec, 64))
 }
 
-// sum64Seeded applies a seed. Up to 240 bytes the seed enters the arithmetic
-// directly; above that XXH3 defines the seeded hash as the unseeded hash under
-// a secret derived from the seed, which has to be built first.
+// sum64Seeded is the seeded core behind Sum64Seed: sum64 under the default
+// secret, with the routing and the short cases in one call's worth of code. It
+// used to route through sum64, and the second call plus its re-tested length
+// tree was a third of an 8-byte seeded hash on a Zen 4. Up to 240 bytes the
+// seed enters the arithmetic directly; above that XXH3 defines the seeded hash
+// as the unseeded hash under a secret derived from the seed, which has to be
+// built first. The seed-zero route keeps Sum64Seed(b, 0) == Sum64(b), at
+// unseeded speed.
+//
+//go:nosplit
 func sum64Seeded(in unsafe.Pointer, n uintptr, seed uint64) uint64 {
 	if seed == 0 {
-		return sum64NS(in, n, unsafe.Pointer(&kSecret), secretDefaultSize)
+		return sum64SeedZero(in, n)
 	}
-	if n <= midsizeMax {
-		return sum64(in, n, unsafe.Pointer(&kSecret), secretDefaultSize, seed)
+	sec := unsafe.Pointer(&kSecret)
+	if n > 16 {
+		if n > midsizeMax {
+			return sum64SeededLong(in, n, seed)
+		}
+		if n <= 128 {
+			// The 17..128 rungs inline, as in sum64NS; each mix pays the
+			// seed's two adds and nothing else.
+			acc := uint64(n) * prime64_1
+			if n > 32 {
+				if n > 64 {
+					if n > 96 {
+						acc += mix16B(add(in, 48), add(sec, 96), seed)
+						acc += mix16B(add(in, n-64), add(sec, 112), seed)
+					}
+					acc += mix16B(add(in, 32), add(sec, 64), seed)
+					acc += mix16B(add(in, n-48), add(sec, 80), seed)
+				}
+				acc += mix16B(add(in, 16), add(sec, 32), seed)
+				acc += mix16B(add(in, n-32), add(sec, 48), seed)
+			}
+			acc += mix16B(in, sec, seed)
+			acc += mix16B(add(in, n-16), add(sec, 16), seed)
+			return avalanche(acc)
+		}
+		return len129to240_64(in, n, sec, seed)
 	}
-	var secret [secretDefaultSize]byte
-	deriveSecret(&secret, seed)
-	return sum64NS(in, n, unsafe.Pointer(&secret), secretDefaultSize)
+	// The short cases, transcribed from sum64 with the default secret's
+	// pointer; kept in lockstep with it by the seeded reference vectors.
+	if n > 8 {
+		bitflip1 := (rd64(sec, 24) ^ rd64(sec, 32)) + seed
+		bitflip2 := (rd64(sec, 40) ^ rd64(sec, 48)) - seed
+		inputLo := rd64(in, 0) ^ bitflip1
+		inputHi := rd64(in, n-8) ^ bitflip2
+		acc := uint64(n) + bits.ReverseBytes64(inputLo) + inputHi + mul128Fold64(inputLo, inputHi)
+		return avalanche(acc)
+	}
+	if n >= 4 {
+		seed ^= uint64(bits.ReverseBytes32(uint32(seed))) << 32
+		in1 := rd32(in, 0)
+		in2 := rd32(in, n-4)
+		bitflip := (rd64(sec, 8) ^ rd64(sec, 16)) - seed
+		return rrmxmx(uint64(in2)+uint64(in1)<<32^bitflip, uint64(n))
+	}
+	if n > 0 {
+		c1 := uint32(rdb(in, 0))
+		c2 := uint32(rdb(in, n>>1))
+		c3 := uint32(rdb(in, n-1))
+		combined := c1<<16 | c2<<24 | c3 | uint32(n)<<8
+		bitflip := uint64(rd32(sec, 0)^rd32(sec, 4)) + seed
+		return avalanche64(uint64(combined) ^ bitflip)
+	}
+	return avalanche64(seed ^ rd64(sec, 56) ^ rd64(sec, 64))
 }
 
 // ---------------------------------------------------------------------------
@@ -345,7 +413,34 @@ func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) U
 				hi := mul128Fold64(j0^rd64(sec, 16), j1^rd64(sec, 24)) ^ (i0 + i1)
 				return finalize128(lo, hi, n, 0)
 			}
-			return len17to128_128NS(in, n, sec)
+			// The 33..128 rungs, hand-inlined; see len17to128_128NS.
+			lo := uint64(n) * prime64_1
+			hi := uint64(0)
+			if n > 64 {
+				if n > 96 {
+					j0, j1 := rd64(add(in, n-64), 0), rd64(add(in, n-64), 8)
+					i0, i1 := rd64(add(in, 48), 0), rd64(add(in, 48), 8)
+					hi = (hi + mul128Fold64(j0^rd64(add(sec, 96+16), 0), j1^rd64(add(sec, 96+16), 8))) ^ (i0 + i1)
+					lo = (lo + mul128Fold64(i0^rd64(add(sec, 96), 0), i1^rd64(add(sec, 96), 8))) ^ (j0 + j1)
+				}
+				j0, j1 := rd64(add(in, n-48), 0), rd64(add(in, n-48), 8)
+				i0, i1 := rd64(add(in, 32), 0), rd64(add(in, 32), 8)
+				hi = (hi + mul128Fold64(j0^rd64(add(sec, 64+16), 0), j1^rd64(add(sec, 64+16), 8))) ^ (i0 + i1)
+				lo = (lo + mul128Fold64(i0^rd64(add(sec, 64), 0), i1^rd64(add(sec, 64), 8))) ^ (j0 + j1)
+			}
+			{
+				j0, j1 := rd64(add(in, n-32), 0), rd64(add(in, n-32), 8)
+				i0, i1 := rd64(add(in, 16), 0), rd64(add(in, 16), 8)
+				hi = (hi + mul128Fold64(j0^rd64(add(sec, 32+16), 0), j1^rd64(add(sec, 32+16), 8))) ^ (i0 + i1)
+				lo = (lo + mul128Fold64(i0^rd64(add(sec, 32), 0), i1^rd64(add(sec, 32), 8))) ^ (j0 + j1)
+			}
+			{
+				j0, j1 := rd64(add(in, n-16), 0), rd64(add(in, n-16), 8)
+				i0, i1 := rd64(in, 0), rd64(in, 8)
+				hi = (hi + mul128Fold64(j0^rd64(add(sec, 16), 0), j1^rd64(add(sec, 16), 8))) ^ (i0 + i1)
+				lo = (lo + mul128Fold64(i0^rd64(sec, 0), i1^rd64(sec, 8))) ^ (j0 + j1)
+			}
+			return finalize128(lo, hi, n, 0)
 		}
 		return len129to240_128NS(in, n, sec)
 	}
@@ -397,14 +492,137 @@ func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) U
 	}
 }
 
-func sum128Seeded(in unsafe.Pointer, n uintptr, seed uint64) Uint128 {
-	if seed == 0 {
-		return sum128NS(in, n, unsafe.Pointer(&kSecret), secretDefaultSize)
-	}
-	if n <= midsizeMax {
-		return sum128(in, n, unsafe.Pointer(&kSecret), secretDefaultSize, seed)
-	}
+// sum64SeedZero relays Sum64Seed's zero-seed route to sum64NS from a
+// splittable, non-inlined frame. Both the seeded twin and sum64NS are
+// nosplit, and chained directly their frames run past the nosplit budget on
+// 386; the shim's own stack check breaks the chain, at the cost of one call
+// on a route only Sum64Seed(b, 0) takes.
+//
+//go:noinline
+func sum64SeedZero(in unsafe.Pointer, n uintptr) uint64 {
+	return sum64NS(in, n, unsafe.Pointer(&kSecret), secretDefaultSize)
+}
+
+// sum128SeedZero is sum64SeedZero's 128-bit counterpart.
+//
+//go:noinline
+func sum128SeedZero(in unsafe.Pointer, n uintptr) Uint128 {
+	return sum128NS(in, n, unsafe.Pointer(&kSecret), secretDefaultSize)
+}
+
+// sum64SeededLong hashes a seeded long input: XXH3 defines it as the unseeded
+// hash under a secret derived from the seed. It is split out of sum64Seeded
+// because the derived secret's frame does not fit a nosplit function once the
+// race detector inflates it, and at this length the extra call is noise.
+func sum64SeededLong(in unsafe.Pointer, n uintptr, seed uint64) uint64 {
+	var secret [secretDefaultSize]byte
+	deriveSecret(&secret, seed)
+	return sum64NS(in, n, unsafe.Pointer(&secret), secretDefaultSize)
+}
+
+// sum128SeededLong is sum64SeededLong's 128-bit counterpart.
+func sum128SeededLong(in unsafe.Pointer, n uintptr, seed uint64) Uint128 {
 	var secret [secretDefaultSize]byte
 	deriveSecret(&secret, seed)
 	return sum128NS(in, n, unsafe.Pointer(&secret), secretDefaultSize)
+}
+
+// sum128Seeded is sum64Seeded's 128-bit counterpart; see the comment there.
+//
+//go:nosplit
+func sum128Seeded(in unsafe.Pointer, n uintptr, seed uint64) Uint128 {
+	if seed == 0 {
+		return sum128SeedZero(in, n)
+	}
+	sec := unsafe.Pointer(&kSecret)
+	if n > 16 {
+		if n > midsizeMax {
+			return sum128SeededLong(in, n, seed)
+		}
+		if n <= 128 {
+			// The 17..32 rung and the 33..128 rungs inline, as in sum128NS,
+			// with the seed keying each secret word.
+			if n <= 32 {
+				i0, i1 := rd64(in, 0), rd64(in, 8)
+				j0, j1 := rd64(add(in, n-16), 0), rd64(add(in, n-16), 8)
+				lo := (uint64(n)*prime64_1 + mul128Fold64(i0^(rd64(sec, 0)+seed), i1^(rd64(sec, 8)-seed))) ^ (j0 + j1)
+				hi := mul128Fold64(j0^(rd64(sec, 16)+seed), j1^(rd64(sec, 24)-seed)) ^ (i0 + i1)
+				return finalize128(lo, hi, n, seed)
+			}
+			lo := uint64(n) * prime64_1
+			hi := uint64(0)
+			if n > 64 {
+				if n > 96 {
+					j0, j1 := rd64(add(in, n-64), 0), rd64(add(in, n-64), 8)
+					i0, i1 := rd64(add(in, 48), 0), rd64(add(in, 48), 8)
+					hi = (hi + mul128Fold64(j0^(rd64(add(sec, 96+16), 0)+seed), j1^(rd64(add(sec, 96+16), 8)-seed))) ^ (i0 + i1)
+					lo = (lo + mul128Fold64(i0^(rd64(add(sec, 96), 0)+seed), i1^(rd64(add(sec, 96), 8)-seed))) ^ (j0 + j1)
+				}
+				j0, j1 := rd64(add(in, n-48), 0), rd64(add(in, n-48), 8)
+				i0, i1 := rd64(add(in, 32), 0), rd64(add(in, 32), 8)
+				hi = (hi + mul128Fold64(j0^(rd64(add(sec, 64+16), 0)+seed), j1^(rd64(add(sec, 64+16), 8)-seed))) ^ (i0 + i1)
+				lo = (lo + mul128Fold64(i0^(rd64(add(sec, 64), 0)+seed), i1^(rd64(add(sec, 64), 8)-seed))) ^ (j0 + j1)
+			}
+			{
+				j0, j1 := rd64(add(in, n-32), 0), rd64(add(in, n-32), 8)
+				i0, i1 := rd64(add(in, 16), 0), rd64(add(in, 16), 8)
+				hi = (hi + mul128Fold64(j0^(rd64(add(sec, 32+16), 0)+seed), j1^(rd64(add(sec, 32+16), 8)-seed))) ^ (i0 + i1)
+				lo = (lo + mul128Fold64(i0^(rd64(add(sec, 32), 0)+seed), i1^(rd64(add(sec, 32), 8)-seed))) ^ (j0 + j1)
+			}
+			{
+				j0, j1 := rd64(add(in, n-16), 0), rd64(add(in, n-16), 8)
+				i0, i1 := rd64(in, 0), rd64(in, 8)
+				hi = (hi + mul128Fold64(j0^(rd64(add(sec, 16), 0)+seed), j1^(rd64(add(sec, 16), 8)-seed))) ^ (i0 + i1)
+				lo = (lo + mul128Fold64(i0^(rd64(sec, 0)+seed), i1^(rd64(sec, 8)-seed))) ^ (j0 + j1)
+			}
+			return finalize128(lo, hi, n, seed)
+		}
+		return len129to240_128(in, n, sec, seed)
+	}
+	// The short cases, transcribed from sum128; see sum64Seeded.
+	if n > 8 {
+		bitflipl := (rd64(sec, 32) ^ rd64(sec, 40)) - seed
+		bitfliph := (rd64(sec, 48) ^ rd64(sec, 56)) + seed
+		inputLo := rd64(in, 0)
+		inputHi := rd64(in, n-8)
+		hi, lo := bits.Mul64(inputLo^inputHi^bitflipl, prime64_1)
+
+		lo += uint64(n-1) << 54
+		inputHi ^= bitfliph
+		hi += inputHi + uint64(uint32(inputHi))*(prime32_2-1)
+		lo ^= bits.ReverseBytes64(hi)
+
+		rhi, rlo := bits.Mul64(lo, prime64_2)
+		rhi += hi * prime64_2
+		return Uint128{Lo: avalanche(rlo), Hi: avalanche(rhi)}
+	}
+	if n >= 4 {
+		seed ^= uint64(bits.ReverseBytes32(uint32(seed))) << 32
+		inputLo := rd32(in, 0)
+		inputHi := rd32(in, n-4)
+		keyed := (uint64(inputLo) + uint64(inputHi)<<32) ^ ((rd64(sec, 16) ^ rd64(sec, 24)) + seed)
+
+		hi, lo := bits.Mul64(keyed, prime64_1+uint64(n)<<2)
+		hi += lo << 1
+		lo ^= hi >> 3
+		lo = xorshift64(lo, 35)
+		lo *= 0x9FB21C651E98DF25
+		lo = xorshift64(lo, 28)
+		return Uint128{Lo: lo, Hi: avalanche(hi)}
+	}
+	if n > 0 {
+		c1 := uint32(rdb(in, 0))
+		c2 := uint32(rdb(in, n>>1))
+		c3 := uint32(rdb(in, n-1))
+		combinedl := c1<<16 | c2<<24 | c3 | uint32(n)<<8
+		combinedh := bits.RotateLeft32(bits.ReverseBytes32(combinedl), 13)
+		return Uint128{
+			Lo: avalanche64(uint64(combinedl) ^ (uint64(rd32(sec, 0)^rd32(sec, 4)) + seed)),
+			Hi: avalanche64(uint64(combinedh) ^ (uint64(rd32(sec, 8)^rd32(sec, 12)) - seed)),
+		}
+	}
+	return Uint128{
+		Lo: avalanche64(seed ^ rd64(sec, 64) ^ rd64(sec, 72)),
+		Hi: avalanche64(seed ^ rd64(sec, 80) ^ rd64(sec, 88)),
+	}
 }
