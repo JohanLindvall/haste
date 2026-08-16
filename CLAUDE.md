@@ -804,6 +804,27 @@ moved with it -- the caller-alignment lottery under Benchmarking, seen from
 the other side. Settle it the way that section prescribes, with three
 relinked layouts on an AMD box, before trading the 64-128 byte win away.
 
+**A second x86 core says the costs are placement and the win is real.** The
+commit pair was measured in isolation on a Redwood Cove, at both alignment
+phases, medians of five (win positive, as above):
+
+| bytes | Zen 3 | Redwood Cove, phase 0 | phase 32 |
+|---|---|---|---|
+| 32 | −7.6% | −2.0% | +0.1% |
+| 64 | +26.8% | +6.9% | +7.2% |
+| 128 | +12.0% | −0.7% | −0.8% |
+| 512 | −2.1% | −0.1% | +0.4% |
+| 1024 | −5.2% | +0.7% | +0.5% |
+
+Every one of the Zen 3 *costs* is gone: nothing at 32, 512 or a kibibyte
+exceeds a point, and the two phases bracket zero at each of them, which is
+what a placement artifact looks like when the placement is varied. The 64-byte
+*win* survives on both cores and in both phases, smaller here (7% against
+27%). 40 and 96 bytes, not in the Zen 3 table, win 5.6-8.6% and 2.7-2.9%.
+So the rung inlining is worth keeping on its own merits, and the Zen 3 losses
+are still owed the three relinked layouts on an AMD box -- this only shows
+they do not follow the change onto other hardware.
+
 ### amd64, measured on Zen 4 (Ryzen 7 8840HS)
 
 The core retires **four 256-bit vector ALU operations per cycle**, and an
