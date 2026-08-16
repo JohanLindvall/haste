@@ -770,7 +770,14 @@ nanoseconds carry the VM's clock.
 - Candidates for the remainder, none tested: 512-bit licence behaviour on
   the fast-block path, our per-stripe secret load against whatever zeebo
   keeps in registers, and Intel's three-port 256-bit issue against Zen's
-  four. It wants an Intel machine with counters, not another runner.
+  four. It wants an Intel machine with counters -- and note that the Redwood
+  Cove used elsewhere in these notes is a Meteor Lake client part with **no
+  AVX-512 at all**, so it can say nothing about any of this. Every Intel
+  core that runs the AVX-512 kernel has so far been a runner.
+- The comparison that matters here is within one binary: `BenchmarkBackends`
+  forces each kernel through `setBackend` in the same process on the same
+  core, which is what the AVX-512-against-AVX2 numbers above are, so they do
+  not depend on the VM's clock or on code layout between builds.
 - **XXH64's remaining x86 gap is Intel-only and lives between 64 and 256
   bytes**: Emerald Rapids 0.84-0.90x of cespare there, Ice Lake 0.92-0.95x,
   while Zen 3 and Zen 4 are level or ahead across that window and every core
