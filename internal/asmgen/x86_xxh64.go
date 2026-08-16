@@ -35,7 +35,10 @@ const (
 	xxh64Prime5 uint64 = 0x27D4EB2F165667C5
 )
 
-func (x *x86Scalar) RetGPR() GPR   { return rAX }
+func (x *x86Scalar) RetGPR() GPR { return rAX }
+
+// LoadSplit is unreachable: this backend has one lane-round form.
+func (x *x86Scalar) LoadSplit(GPR) { panic("asmgen: x86 xxh64 is not dual") }
 func (x *x86Scalar) TableGPR() GPR { return -1 }
 func (x *x86Scalar) H() GPR        { return rAX }
 func (x *x86Scalar) V(i int) GPR   { return []GPR{r8, r9, r10, r11}[i] }

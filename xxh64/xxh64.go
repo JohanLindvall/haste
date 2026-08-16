@@ -41,10 +41,15 @@ const (
 
 // primes is the table the arm64 kernels load their constants from: five
 // 64-bit immediates would cost four instructions each in a kernel that has
-// no constant pool, where three paired loads from here cost three. It is
-// never written. The x86 kernels use immediates, which are one instruction
-// there.
-var primes = [5]uint64{prime1, prime2, prime3, prime4, prime5}
+// no constant pool, where three paired loads from here cost three. The x86
+// kernels use immediates, which are one instruction there.
+//
+// The sixth slot is not a prime: it is the arm64 lane-round form, written
+// once at package init (see dispatch_arm64.go) and read by the kernel only
+// on the path that runs the lane loop. Keeping it here rather than passing
+// it as an argument is what lets a short hash never touch it, and every
+// caller skip loading it.
+var primes = [6]uint64{prime1, prime2, prime3, prime4, prime5}
 
 // The four entry points below are wrappers around one call into the kernel
 // -- direct on amd64, through a variable chosen at startup on arm64 -- so

@@ -12,9 +12,9 @@ import "unsafe"
 // sum64Scalar hashes the n bytes at in under seed, whatever n is: lanes, merge, tail and avalanche in one call.
 //
 //go:noescape
-func sum64Scalar(in unsafe.Pointer, n int, seed uint64, split int) uint64
+func sum64Scalar(in unsafe.Pointer, n int, seed uint64) uint64
 
 // blocksScalar absorbs nbBlocks whole blocks at in into the four lanes.
 //
 //go:noescape
-func blocksScalar(lanes *[4]uint64, in unsafe.Pointer, nbBlocks int, split int)
+func blocksScalar(lanes *[4]uint64, in unsafe.Pointer, nbBlocks int)

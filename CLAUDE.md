@@ -61,7 +61,11 @@ between the caller and the kernel shows: an indirect call through a function
 variable measured 2 cycles on an M2, a fifth of an 8-byte hash, and a Go
 wrapper choosing between two kernels is past the inliner's budget. That is why
 the arm64 kernel carries both forms of its lane round and takes the choice as
-a fourth argument (`split`, a package variable) rather than being two kernels.
+the sixth slot of the primes table the kernel already points at, rather than
+being two kernels or taking an argument: an argument made every caller load a
+global and every short hash carry a value only the lane loop reads. Moving it
+into the table -- one load, only on the >=32-byte path -- took the short
+lengths from 2-3% behind cespare/xxhash to 2-4% ahead on the N2.
 
 ## Regenerating assembly
 

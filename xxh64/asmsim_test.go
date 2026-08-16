@@ -54,18 +54,18 @@ func (r *simRegion) lanes() [4]uint64 {
 	return v
 }
 
-// simSum64 runs a backend's sum64 kernel over in. split is the fourth
-// argument of a dual backend; a single-form backend has no such argument
-// and the register it would land in is one the kernel overwrites first.
+// simSum64 runs a backend's sum64 kernel over in. split is written into the
+// table's sixth slot, where a dual backend's lane loop reads it; a
+// single-form backend never looks.
 func simSum64(t *testing.T, k asmgen.Kernel, in []byte, seed uint64, split int) uint64 {
 	t.Helper()
 	r := newSimRegion(&[4]uint64{}, in)
 	r.m.R[k.ArgGPR(0)] = r.inAt
 	r.m.R[k.ArgGPR(1)] = uint64(len(in))
 	r.m.R[k.ArgGPR(2)] = seed
-	r.m.R[k.ArgGPR(3)] = uint64(split)
 	if k.TableGPR() >= 0 {
 		r.m.R[k.TableGPR()] = r.tableAt
+		r.m.Store64(r.tableAt+40, uint64(split))
 	}
 	if err := r.m.Run(k.Build().Insts()); err != nil {
 		t.Fatal(err)
@@ -79,9 +79,9 @@ func simBlocks(t *testing.T, k asmgen.Kernel, lanes *[4]uint64, in []byte, nb in
 	r.m.R[k.ArgGPR(0)] = r.lanesAt
 	r.m.R[k.ArgGPR(1)] = r.inAt
 	r.m.R[k.ArgGPR(2)] = uint64(nb)
-	r.m.R[k.ArgGPR(3)] = uint64(split)
 	if k.TableGPR() >= 0 {
 		r.m.R[k.TableGPR()] = r.tableAt
+		r.m.Store64(r.tableAt+40, uint64(split))
 	}
 	if err := r.m.Run(k.Build().Insts()); err != nil {
 		t.Fatal(err)

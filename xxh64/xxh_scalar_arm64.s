@@ -8,20 +8,19 @@
 
 #include "textflag.h"
 
-// func sum64Scalar(in unsafe.Pointer, n int, seed uint64, split int) uint64
+// func sum64Scalar(in unsafe.Pointer, n int, seed uint64) uint64
 //
 // hashes the n bytes at in under seed, whatever n is: lanes, merge, tail and avalanche in one call.
-TEXT ·sum64Scalar(SB), NOSPLIT, $0-40
+TEXT ·sum64Scalar(SB), NOSPLIT, $0-32
 	MOVD in+0(FP), R0
 	MOVD n+8(FP), R1
 	MOVD seed+16(FP), R2
-	MOVD split+24(FP), R3
 	MOVD $·primes(SB), R23
 	WORD $0xa94016e4 // ldp x4, x5, [x23]
 	WORD $0xa9411ee6 // ldp x6, x7, [x23, #16]
 	WORD $0xf94012e8 // ldr x8, [x23, #32]
 	WORD $0xf100803f // cmp x1, #0x20
-	WORD $0x5400128b // b.lt 260 <kernel+0x260> // b.tstop
+	WORD $0x540012ab // b.lt 264 <kernel+0x264> // b.tstop
 	WORD $0x8b04004a // add x10, x2, x4
 	WORD $0x8b05014a // add x10, x10, x5
 	WORD $0x8b05004b // add x11, x2, x5
@@ -29,8 +28,9 @@ TEXT ·sum64Scalar(SB), NOSPLIT, $0-40
 	WORD $0xcb04004d // sub x13, x2, x4
 	WORD $0xaa0103e2 // mov x2, x1
 	WORD $0xd345fc42 // lsr x2, x2, #5
-	WORD $0xb40007e3 // cbz x3, 12c <kernel+0x12c>
-	WORD $0x36000282 // tbz w2, #0, 84 <kernel+0x84>
+	WORD $0xf94016ee // ldr x14, [x23, #40]
+	WORD $0xb40007ee // cbz x14, 130 <kernel+0x130>
+	WORD $0x36000282 // tbz w2, #0, 88 <kernel+0x88>
 	WORD $0xa9403c0e // ldp x14, x15, [x0]
 	WORD $0xa9414410 // ldp x16, x17, [x0, #16]
 	WORD $0x9b057dce // mul x14, x14, x5
@@ -52,7 +52,7 @@ TEXT ·sum64Scalar(SB), NOSPLIT, $0-40
 	WORD $0x91008000 // add x0, x0, #0x20
 	// .Leven5:
 	WORD $0xd341fc42 // lsr x2, x2, #1
-	WORD $0xb4000502 // cbz x2, 128 <kernel+0x128>
+	WORD $0xb4000502 // cbz x2, 12c <kernel+0x12c>
 	// .Lblocks6:
 	WORD $0xa9403c0e // ldp x14, x15, [x0]
 	WORD $0xa9414410 // ldp x16, x17, [x0, #16]
@@ -92,11 +92,11 @@ TEXT ·sum64Scalar(SB), NOSPLIT, $0-40
 	WORD $0x9b047dad // mul x13, x13, x4
 	WORD $0x91010000 // add x0, x0, #0x40
 	WORD $0xf1000442 // subs x2, x2, #0x1
-	WORD $0x54fffb41 // b.ne 8c <kernel+0x8c> // b.any
+	WORD $0x54fffb41 // b.ne 90 <kernel+0x90> // b.any
 	// .Lbdone7:
-	WORD $0x14000032 // b 1f0 <kernel+0x1f0>
+	WORD $0x14000032 // b 1f4 <kernel+0x1f4>
 	// .Lfused3:
-	WORD $0x36000202 // tbz w2, #0, 16c <kernel+0x16c>
+	WORD $0x36000202 // tbz w2, #0, 170 <kernel+0x170>
 	WORD $0xa9403c0e // ldp x14, x15, [x0]
 	WORD $0xa9414410 // ldp x16, x17, [x0, #16]
 	WORD $0x9b0529ca // madd x10, x14, x5, x10
@@ -114,7 +114,7 @@ TEXT ·sum64Scalar(SB), NOSPLIT, $0-40
 	WORD $0x91008000 // add x0, x0, #0x20
 	// .Leven8:
 	WORD $0xd341fc42 // lsr x2, x2, #1
-	WORD $0xb4000402 // cbz x2, 1f0 <kernel+0x1f0>
+	WORD $0xb4000402 // cbz x2, 1f4 <kernel+0x1f4>
 	// .Lblocks9:
 	WORD $0xa9403c0e // ldp x14, x15, [x0]
 	WORD $0xa9414410 // ldp x16, x17, [x0, #16]
@@ -146,7 +146,7 @@ TEXT ·sum64Scalar(SB), NOSPLIT, $0-40
 	WORD $0x9b047dad // mul x13, x13, x4
 	WORD $0x91010000 // add x0, x0, #0x40
 	WORD $0xf1000442 // subs x2, x2, #0x1
-	WORD $0x54fffc41 // b.ne 174 <kernel+0x174> // b.any
+	WORD $0x54fffc41 // b.ne 178 <kernel+0x178> // b.any
 	// .Lbdone10:
 	// .Ljoin4:
 	WORD $0x93cafd49 // ror x9, x10, #63
@@ -176,13 +176,13 @@ TEXT ·sum64Scalar(SB), NOSPLIT, $0-40
 	WORD $0x9b047dad // mul x13, x13, x4
 	WORD $0xca0d0129 // eor x9, x9, x13
 	WORD $0x9b041d29 // madd x9, x9, x4, x7
-	WORD $0x14000003 // b 268 <kernel+0x268>
+	WORD $0x14000003 // b 26c <kernel+0x26c>
 	// .Lshort1:
 	WORD $0xaa0203e9 // mov x9, x2
 	WORD $0x8b080129 // add x9, x9, x8
 	// .Ltail2:
 	WORD $0x8b010129 // add x9, x9, x1
-	WORD $0x362001e1 // tbz w1, #4, 2a8 <kernel+0x2a8>
+	WORD $0x362001e1 // tbz w1, #4, 2ac <kernel+0x2ac>
 	WORD $0xf840840e // ldr x14, [x0], #8
 	WORD $0x9b057dce // mul x14, x14, x5
 	WORD $0x93ce85ce // ror x14, x14, #33
@@ -198,7 +198,7 @@ TEXT ·sum64Scalar(SB), NOSPLIT, $0-40
 	WORD $0x93c99529 // ror x9, x9, #37
 	WORD $0x9b041d29 // madd x9, x9, x4, x7
 	// .Lt811:
-	WORD $0x36180101 // tbz w1, #3, 2c8 <kernel+0x2c8>
+	WORD $0x36180101 // tbz w1, #3, 2cc <kernel+0x2cc>
 	WORD $0xf840840e // ldr x14, [x0], #8
 	WORD $0x9b057dce // mul x14, x14, x5
 	WORD $0x93ce85ce // ror x14, x14, #33
@@ -207,14 +207,14 @@ TEXT ·sum64Scalar(SB), NOSPLIT, $0-40
 	WORD $0x93c99529 // ror x9, x9, #37
 	WORD $0x9b041d29 // madd x9, x9, x4, x7
 	// .Lt412:
-	WORD $0x361000c1 // tbz w1, #2, 2e0 <kernel+0x2e0>
+	WORD $0x361000c1 // tbz w1, #2, 2e4 <kernel+0x2e4>
 	WORD $0xb840440e // ldr w14, [x0], #4
 	WORD $0x9b047dce // mul x14, x14, x4
 	WORD $0xca0e0129 // eor x9, x9, x14
 	WORD $0x93c9a529 // ror x9, x9, #41
 	WORD $0x9b051929 // madd x9, x9, x5, x6
 	// .Lt213:
-	WORD $0x36080161 // tbz w1, #1, 30c <kernel+0x30c>
+	WORD $0x36080161 // tbz w1, #1, 310 <kernel+0x310>
 	WORD $0x3840140e // ldrb w14, [x0], #1
 	WORD $0x9b087dce // mul x14, x14, x8
 	WORD $0xca0e0129 // eor x9, x9, x14
@@ -226,7 +226,7 @@ TEXT ·sum64Scalar(SB), NOSPLIT, $0-40
 	WORD $0x93c9d529 // ror x9, x9, #53
 	WORD $0x9b047d29 // mul x9, x9, x4
 	// .Lt114:
-	WORD $0x360000c1 // tbz w1, #0, 324 <kernel+0x324>
+	WORD $0x360000c1 // tbz w1, #0, 328 <kernel+0x328>
 	WORD $0x3840140e // ldrb w14, [x0], #1
 	WORD $0x9b087dce // mul x14, x14, x8
 	WORD $0xca0e0129 // eor x9, x9, x14
@@ -238,25 +238,25 @@ TEXT ·sum64Scalar(SB), NOSPLIT, $0-40
 	WORD $0xca497529 // eor x9, x9, x9, lsr #29
 	WORD $0x9b067d29 // mul x9, x9, x6
 	WORD $0xca498129 // eor x9, x9, x9, lsr #32
-	MOVD R9, ret+32(FP)
+	MOVD R9, ret+24(FP)
 	RET
 
-// func blocksScalar(lanes *[4]uint64, in unsafe.Pointer, nbBlocks int, split int)
+// func blocksScalar(lanes *[4]uint64, in unsafe.Pointer, nbBlocks int)
 //
 // absorbs nbBlocks whole blocks at in into the four lanes.
-TEXT ·blocksScalar(SB), NOSPLIT, $0-32
+TEXT ·blocksScalar(SB), NOSPLIT, $0-24
 	MOVD lanes+0(FP), R0
 	MOVD in+8(FP), R1
 	MOVD nbBlocks+16(FP), R2
-	MOVD split+24(FP), R3
 	MOVD $·primes(SB), R23
 	WORD $0xa94016e4 // ldp x4, x5, [x23]
 	WORD $0xa9411ee6 // ldp x6, x7, [x23, #16]
 	WORD $0xf94012e8 // ldr x8, [x23, #32]
 	WORD $0xa9402c0a // ldp x10, x11, [x0]
 	WORD $0xa941340c // ldp x12, x13, [x0, #16]
-	WORD $0xb40007e3 // cbz x3, 110 <kernel+0x110>
-	WORD $0x36000282 // tbz w2, #0, 68 <kernel+0x68>
+	WORD $0xf94016ee // ldr x14, [x23, #40]
+	WORD $0xb40007ee // cbz x14, 114 <kernel+0x114>
+	WORD $0x36000282 // tbz w2, #0, 6c <kernel+0x6c>
 	WORD $0xa9403c2e // ldp x14, x15, [x1]
 	WORD $0xa9414430 // ldp x16, x17, [x1, #16]
 	WORD $0x9b057dce // mul x14, x14, x5
@@ -278,7 +278,7 @@ TEXT ·blocksScalar(SB), NOSPLIT, $0-32
 	WORD $0x91008021 // add x1, x1, #0x20
 	// .Leven3:
 	WORD $0xd341fc42 // lsr x2, x2, #1
-	WORD $0xb4000502 // cbz x2, 10c <kernel+0x10c>
+	WORD $0xb4000502 // cbz x2, 110 <kernel+0x110>
 	// .Lblocks4:
 	WORD $0xa9403c2e // ldp x14, x15, [x1]
 	WORD $0xa9414430 // ldp x16, x17, [x1, #16]
@@ -318,11 +318,11 @@ TEXT ·blocksScalar(SB), NOSPLIT, $0-32
 	WORD $0x9b047dad // mul x13, x13, x4
 	WORD $0x91010021 // add x1, x1, #0x40
 	WORD $0xf1000442 // subs x2, x2, #0x1
-	WORD $0x54fffb41 // b.ne 70 <kernel+0x70> // b.any
+	WORD $0x54fffb41 // b.ne 74 <kernel+0x74> // b.any
 	// .Lbdone5:
-	WORD $0x14000032 // b 1d4 <kernel+0x1d4>
+	WORD $0x14000032 // b 1d8 <kernel+0x1d8>
 	// .Lfused1:
-	WORD $0x36000202 // tbz w2, #0, 150 <kernel+0x150>
+	WORD $0x36000202 // tbz w2, #0, 154 <kernel+0x154>
 	WORD $0xa9403c2e // ldp x14, x15, [x1]
 	WORD $0xa9414430 // ldp x16, x17, [x1, #16]
 	WORD $0x9b0529ca // madd x10, x14, x5, x10
@@ -340,7 +340,7 @@ TEXT ·blocksScalar(SB), NOSPLIT, $0-32
 	WORD $0x91008021 // add x1, x1, #0x20
 	// .Leven6:
 	WORD $0xd341fc42 // lsr x2, x2, #1
-	WORD $0xb4000402 // cbz x2, 1d4 <kernel+0x1d4>
+	WORD $0xb4000402 // cbz x2, 1d8 <kernel+0x1d8>
 	// .Lblocks7:
 	WORD $0xa9403c2e // ldp x14, x15, [x1]
 	WORD $0xa9414430 // ldp x16, x17, [x1, #16]
@@ -372,7 +372,7 @@ TEXT ·blocksScalar(SB), NOSPLIT, $0-32
 	WORD $0x9b047dad // mul x13, x13, x4
 	WORD $0x91010021 // add x1, x1, #0x40
 	WORD $0xf1000442 // subs x2, x2, #0x1
-	WORD $0x54fffc41 // b.ne 158 <kernel+0x158> // b.any
+	WORD $0x54fffc41 // b.ne 15c <kernel+0x15c> // b.any
 	// .Lbdone8:
 	// .Ljoin2:
 	WORD $0xf900000a // str x10, [x0]

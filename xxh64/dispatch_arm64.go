@@ -8,31 +8,29 @@ import (
 	"github.com/JohanLindvall/xxhaste/internal/cpu"
 )
 
-// arm64 dispatch. The kernel has the lane round in two forms and takes the
-// choice as its last argument: zero for the fused multiply-add, the shape
-// the other Go implementation ships and Neoverse cores are known to run at
-// their chain bound; one for a separate multiply and add, which Apple's
-// cores want -- see internal/asmgen/arm64_xxh64.go. The choice is a variable
-// read by the wrappers below, which inline into their callers and reach the
-// kernel in one direct call.
+// arm64 dispatch. The kernel has the lane round in two forms: the fused
+// multiply-add, the shape the other Go implementation ships and Neoverse
+// cores are known to run at their chain bound, and a separate multiply and
+// add, which Apple's cores want -- see internal/asmgen/arm64_xxh64.go. The
+// choice lives in the sixth slot of the primes table, written once here at
+// package init and read by the kernel itself, only on the path that runs
+// the lane loop: callers pass nothing, and a short hash never touches it.
+var _ = pickForm()
 
-// split is 1 for the split lane round, 0 for the fused one.
-var split = pickForm()
-
-func pickForm() int {
+func pickForm() bool {
 	if cpu.Apple() {
-		return 1
+		primes[5] = 1
 	}
-	return 0
+	return true
 }
 
-func sum64(p unsafe.Pointer, n int, seed uint64) uint64 { return sum64Scalar(p, n, seed, split) }
+func sum64(p unsafe.Pointer, n int, seed uint64) uint64 { return sum64Scalar(p, n, seed) }
 
-func blocks(v *[4]uint64, p unsafe.Pointer, nb int) { blocksScalar(v, p, nb, split) }
+func blocks(v *[4]uint64, p unsafe.Pointer, nb int) { blocksScalar(v, p, nb) }
 
 // Backend names the lane-round form in use: "madd" or "muladd".
 func Backend() string {
-	if split != 0 {
+	if primes[5] != 0 {
 		return "muladd"
 	}
 	return "madd"
@@ -43,9 +41,9 @@ func Backend() string {
 func setBackend(name string) bool {
 	switch name {
 	case "madd":
-		split = 0
+		primes[5] = 0
 	case "muladd":
-		split = 1
+		primes[5] = 1
 	default:
 		return false
 	}

@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/JohanLindvall/xxhaste"
@@ -50,13 +52,43 @@ func measure(f func([]byte) uint64, in []byte) float64 {
 		reps[r] = float64(time.Since(t).Nanoseconds()) / float64(iters)
 	}
 	sort.Float64s(reps)
-	return reps[len(reps)/2]
+
+	// The median of the repetitions, unless interference stretched more than
+	// half of them: a full 0..256 matrix once produced two points 3x off
+	// because a burst outlasted five of the nine reps, and the median
+	// faithfully reported the burst. The minimum cannot be slowed by
+	// interference, only by miscalibration, so when the median disagrees
+	// with it by more than 20% the run was dirty and the minimum is the
+	// honest number.
+	med, min := reps[len(reps)/2], reps[0]
+	if med > min*1.2 {
+		return min
+	}
+	return med
 }
 
 func main() {
 	max := flag.Int("max", 255, "largest length to measure")
 	min := flag.Int("min", 0, "smallest length to measure")
+	lens := flag.String("lens", "", "comma-separated lengths to measure instead of min..max")
 	flag.Parse()
+
+	var list []int
+	if *lens != "" {
+		for _, f := range strings.Split(*lens, ",") {
+			n, err := strconv.Atoi(strings.TrimSpace(f))
+			if err != nil {
+				panic(err)
+			}
+			list = append(list, n)
+		}
+		sort.Ints(list)
+		*max = list[len(list)-1]
+	} else {
+		for n := *min; n <= *max; n++ {
+			list = append(list, n)
+		}
+	}
 
 	buf := make([]byte, *max+64)
 	g := uint64(2654435761)
@@ -92,7 +124,7 @@ func main() {
 		fmt.Printf(",%s", im.name)
 	}
 	fmt.Println()
-	for n := *min; n <= *max; n++ {
+	for _, n := range list {
 		fmt.Print(n)
 		for _, im := range impls {
 			fmt.Printf(",%.3f", measure(im.f, buf[:n]))

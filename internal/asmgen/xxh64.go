@@ -19,18 +19,20 @@ package asmgen
 
 // XXH64Funcs returns the two function definitions a scalar backend generates,
 // in the order EmitXXH64 emits them. A backend with two lane-round forms
-// takes a fourth argument, split, selecting the form: nonzero for the split
+// reads the form from the sixth table slot: nonzero for the split
 // multiply and add, zero for the fused one. The choice travels as an argument
 // rather than as two kernels because the caller is an inlined wrapper that
 // must reach the kernel in one direct call, and a wrapper choosing between
 // two callees is past the inliner's budget while a call through a variable
 // measured two cycles on an M2 -- a fifth of a short hash.
 func XXH64Funcs(suffix string, dual bool) []FuncDef {
+	// A dual backend used to take its lane-round form as a fourth argument,
+	// which made every caller load a global and every short hash carry a value
+	// it never reads. The form now lives in the sixth slot of the primes
+	// table, which the kernel holds a pointer to anyway, so only the paths
+	// that run the lane loop pay one load for it.
 	sumArgs, blockArgs := []string{"in", "n", "seed"}, []string{"lanes", "in", "nbBlocks"}
-	if dual {
-		sumArgs = append(sumArgs, "split")
-		blockArgs = append(blockArgs, "split")
-	}
+	_ = dual
 	return []FuncDef{
 		{
 			Name:  "sum64" + suffix,
@@ -74,8 +76,12 @@ type XXH64Arch interface {
 	LoadPrimes()
 	LoadTailPrimes()
 
+	// LoadSplit reads the lane-round form -- the sixth table slot -- into
+	// dst. Only a Dual backend's skeleton calls it.
+	LoadSplit(dst GPR)
+
 	// Dual reports whether the backend has two lane-round forms, selected by
-	// the split argument; see XXH64Funcs.
+	// the table's form slot; see XXH64Funcs.
 	Dual() bool
 
 	// Block absorbs the block at in+off into the four lanes: for each lane,
@@ -213,7 +219,7 @@ func emitBlocks(a XXH64Arch) {
 }
 
 // emitBlockLoops emits the lane loop, or on a dual backend both forms of
-// it, the fused one reached by a branch on the split argument.
+// it, the fused one reached by a branch on the table's form slot.
 func emitBlockLoops(a XXH64Arch, in, nb GPR, v [4]GPR) {
 	if !a.Dual() {
 		emitBlockLoop(a, in, nb, v, false)
@@ -221,7 +227,8 @@ func emitBlockLoops(a XXH64Arch, in, nb GPR, v [4]GPR) {
 	}
 	b := a.Build()
 	fused, join := b.NewLabel("fused"), b.NewLabel("join")
-	a.BranchZero(a.ArgGPR(3), fused)
+	a.LoadSplit(a.X())
+	a.BranchZero(a.X(), fused)
 	emitBlockLoop(a, in, nb, v, true)
 	a.Jmp(join)
 	b.Label(fused)

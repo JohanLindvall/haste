@@ -18,7 +18,7 @@ package asmgen
 //
 // Register plan:
 //
-//	x0 in / lanes   x1 n / in    x2 seed, then block count    x3 split
+//	x0 in / lanes   x1 n / in    x2 seed, then block count
 //	x4-x8 P1..P5    x9 h         x10-x13 v1..v4               x14-x17 words
 //	x19 Tmp         x23 primes table
 //
@@ -53,6 +53,10 @@ func (a *arm64Scalar) LoadPrimes() {
 // LoadTailPrimes has nothing to do: every prime has been in a register since
 // the prologue.
 func (a *arm64Scalar) LoadTailPrimes() {}
+
+// LoadSplit reads the lane-round form from the table's sixth slot. It sits
+// after the length branch, so a short hash never executes it.
+func (a *arm64Scalar) LoadSplit(dst GPR) { a.Load64(dst, a.TableGPR(), 40) }
 
 func (a *arm64Scalar) Load64(dst, base GPR, off int) {
 	a.b.emit(func(m *Machine) { m.R[dst] = m.Load64(m.R[base] + uint64(off)) },
