@@ -1862,19 +1862,22 @@ core barring a wider one.
 
 ### The other Go rapidhashes
 
-Three Go ports exist and they do not all compute the same thing. `bench/`
-carries the first two; all three relationships are pinned by tests, because
-"another Go rapidhash" is exactly the kind of thing a reader assumes is
-interchangeable.
+Three Go ports exist and they do not all compute the same thing. Only the
+first is in `bench/`; the other two compute different answers, and timing
+those beside this package reads as a like-for-like comparison however the row
+is labelled. "Another Go rapidhash" is exactly the kind of thing a reader
+assumes is interchangeable, so what each one is gets written down here.
 
 - **go.dw1.io/rapidhash** (dwisiswant0) is the same algorithm version and
   agrees bit for bit, seeded and unseeded, at every length tried. It is a
   correctness peer, not only a speed one -- `TestSameAsDW1`.
-- **poiug07/rapidhash_go** agrees to 336 bytes and differs at every length
-  from 337 up. 337 is the first length that runs both the 224-byte loop and
-  the 112-byte block after it; `ref/rapidgen.c` emits vectors at 335, 336 and
-  337 for that reason, and this package matches the C at all three. Its
-  benchmark rows are labelled -- `TestPoiug07DivergesAbove336`.
+- **poiug07/rapidhash_go** is the current version and agrees to 336 bytes,
+  then differs at every length from 337 up. 337 is the first length that runs
+  both the 224-byte loop and the 112-byte block after it; `ref/rapidgen.c`
+  emits vectors at 335, 336 and 337 for that reason, and this package matches
+  the C at all three, so the divergence is not this one's. It was briefly in
+  `bench/` and removed: a row that is only comparable below 337 bytes is
+  worse than no row.
 - **vkudryk/rapidhash-go** implements the *original* rapidhash: three secret
   words against eight, the length folded into the prologue rather than the
   final mix, and a nonzero default seed. Its first three secret words are

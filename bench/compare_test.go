@@ -11,8 +11,9 @@
 //
 // Two more ports join for each algorithm, per issue #7. bytedance/gopkg's
 // xxhash3 is the only Go XXH3 besides zeebo's with hand-written vector paths.
-// go.dw1.io/rapidhash and poiug07/rapidhash_go are Go rapidhash: the first
-// assembly-free but current, the second explicitly not chasing speed.
+// go.dw1.io/rapidhash is a second Go rapidhash of the current version: no
+// assembly, but the same answer, which makes it a correctness peer as well as
+// a timing one.
 //
 // When a C compiler is present, the reference C implementations themselves
 // join the comparison through cgo (see cref.go): xxHash pinned to v0.8.3, the
@@ -28,7 +29,6 @@ import (
 	"github.com/JohanLindvall/haste/xxh64"
 	bytedance "github.com/bytedance/gopkg/util/xxhash3"
 	cespare "github.com/cespare/xxhash/v2"
-	poiug07 "github.com/poiug07/rapidhash_go"
 	zeebo "github.com/zeebo/xxh3"
 	dw1 "go.dw1.io/rapidhash"
 )
@@ -177,37 +177,6 @@ func TestSameAsDW1(t *testing.T) {
 	}
 }
 
-// TestPoiug07DivergesAbove336 records where the third rapidhash port stops
-// agreeing, and that everything below it does.
-//
-// It is the same algorithm version -- it matches at every length to 336 --
-// and then differs at every length from 337 up. 337 is the first length that
-// runs both the 224-byte loop and the 112-byte block after it, so that is
-// where to look. This package matches the reference C at 335, 336 and 337,
-// which ref/rapidgen.c emits vectors for precisely because the boundary is
-// easy to get wrong.
-//
-// The rows in the benchmarks below are labelled accordingly: it is a fair
-// speed peer up to 336 bytes and a different answer above it.
-func TestPoiug07DivergesAbove336(t *testing.T) {
-	buf := buffer(1024)
-	for n := 0; n <= 336; n++ {
-		if got, want := poiug07.Rapidhash(buf[:n]), rapidhash.Sum64(buf[:n]); got != want {
-			t.Fatalf("len=%d: expected agreement below 337, got %#016x != %#016x", n, got, want)
-		}
-	}
-	agreed := 0
-	for n := 337; n <= 1024; n++ {
-		if poiug07.Rapidhash(buf[:n]) == rapidhash.Sum64(buf[:n]) {
-			agreed++
-		}
-	}
-	if agreed != 0 {
-		t.Errorf("poiug07 now agrees at %d lengths above 336; the divergence note "+
-			"and the benchmark labels need revisiting", agreed)
-	}
-}
-
 func BenchmarkCompare64(b *testing.B) {
 	for _, n := range sizes {
 		buf := buffer(n)
@@ -251,15 +220,6 @@ func BenchmarkCompare64(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
 				sink64 = dw1.Hash(buf)
-			}
-		})
-		// Same algorithm to 336 bytes and a different answer above it; see
-		// TestPoiug07DivergesAbove336. Read the larger sizes as a pure-Go
-		// reference point, not as a like-for-like rapidhash.
-		b.Run(fmt.Sprintf("%d/poiug07-rapid", n), func(b *testing.B) {
-			b.SetBytes(int64(n))
-			for i := 0; i < b.N; i++ {
-				sink64 = poiug07.Rapidhash(buf)
 			}
 		})
 		if cRapid != nil {

@@ -312,7 +312,7 @@ is.** There are three, and they are not the same hash:
 | port | agrees with this package |
 |---|---|
 | [go.dw1.io/rapidhash](https://github.com/dwisiswant0/rapidhash) | yes, bit for bit, seeded and not — same algorithm version |
-| [poiug07/rapidhash_go](https://github.com/poiug07/rapidhash_go) | to 336 bytes; differs at every length from 337 up |
+| [poiug07/rapidhash_go](https://github.com/poiug07/rapidhash_go) | to 336 bytes only; differs at every length from 337 up |
 | [vkudryk/rapidhash-go](https://github.com/vkudryk/rapidhash-go) | no — it is the *original* rapidhash, three secret words against eight |
 
 337 is the first length that runs both the 224-byte block loop and the
@@ -325,9 +325,11 @@ the prologue rather than the final mix, and its default seed is nonzero. Its
 first three secret words are identical to the current ones, which is what
 makes the two easy to mistake for each other.
 
-`bench/` measures dw1 and poiug07 beside this package, and
-`TestSameAsDW1` and `TestPoiug07DivergesAbove336` pin both relationships so
-neither can quietly change.
+Only dw1 is in `bench/`, where `TestSameAsDW1` holds it to this package bit
+for bit. The other two are not: timing an implementation that computes a
+different answer reads as a like-for-like comparison however the row is
+labelled, whether it diverges because the version differs (vkudryk) or
+because it stops agreeing past 336 bytes (poiug07).
 
 The kernel is worth **32-36% over 225 bytes and up** against the portable Go,
 on a Zen 4 — and nothing measurable below that, where the cost is the call
