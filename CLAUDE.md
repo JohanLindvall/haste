@@ -1860,72 +1860,36 @@ core barring a wider one.
   above -- the guard compares cost more than the L1-hot loads they remove --
   so it stands.
 
-### The other Go rapidhash
+### The other Go rapidhashes
 
-[vkudryk/rapidhash-go](https://github.com/vkudryk/rapidhash-go) implements the
-**original** rapidhash, not the one in `rapidhash/`. Its secret is three words
-where the current algorithm's is eight, it folds the length into the prologue
-rather than the final mix, and its default seed is nonzero rather than zero.
-The two disagree at every length, zero included; the reference C agrees with
-this package at all of them.
+Three Go ports exist and they do not all compute the same thing. `bench/`
+carries the first two; all three relationships are pinned by tests, because
+"another Go rapidhash" is exactly the kind of thing a reader assumes is
+interchangeable.
 
-The first three secret words are byte-identical between the two, which is what
-makes them easy to confuse and worth writing down. It was briefly added to
-`bench/` and then removed: benchmarking two different algorithms beside each
-other reads as a like-for-like comparison however the rows are labelled, and
-it forced `bench/go.mod` from Go 1.22 to 1.24.2 for the privilege.
+- **go.dw1.io/rapidhash** (dwisiswant0) is the same algorithm version and
+  agrees bit for bit, seeded and unseeded, at every length tried. It is a
+  correctness peer, not only a speed one -- `TestSameAsDW1`.
+- **poiug07/rapidhash_go** agrees to 336 bytes and differs at every length
+  from 337 up. 337 is the first length that runs both the 224-byte loop and
+  the 112-byte block after it; `ref/rapidgen.c` emits vectors at 335, 336 and
+  337 for that reason, and this package matches the C at all three. Its
+  benchmark rows are labelled -- `TestPoiug07DivergesAbove336`.
+- **vkudryk/rapidhash-go** implements the *original* rapidhash: three secret
+  words against eight, the length folded into the prologue rather than the
+  final mix, and a nonzero default seed. Its first three secret words are
+  byte-identical to the current ones, which is what makes them easy to
+  confuse. Not in `bench/`: timing a different algorithm beside this one
+  reads as like-for-like however the row is labelled.
 
-## The efficiency cores rank the hashes differently
+### The other Go XXH3
 
-Measured on an M2's Blizzard cores under background QoS, which also clocks
-them to about 0.95 GHz -- so the ratio to the performance core is the number,
-not the nanoseconds. `Sum64`, minimum of three:
-
-| bytes | XXH3 P/E | XXH64 P/E | rapidhash P/E |
-|---|---|---|---|
-| 16 | 7.5x | 8.1x | 6.6x |
-| 64 | 7.2x | 8.8x | 9.2x |
-| 256 | 7.1x | 7.7x | 8.3x |
-| 1 Ki | 7.2x | 6.3x | 7.6x |
-| 64 Ki | 7.7x | 5.6x | 7.1x |
-
-The ranking moves with the core. At 64 KiB the P-core has XXH3 and rapidhash
-level -- 1,329 ns against 1,316 -- and the E-core has rapidhash ahead by 8%,
-10,204 against 9,387. A narrow core has less vector width to give XXH3 and
-proportionally more multiplier to give rapidhash, and XXH64 is the one that
-scales best of the three onto the small core because it was never using the
-width in the first place.
-
-Worth knowing for two reasons: a big.LITTLE scheduler can move a goroutine
-between the two mid-hash, and "which hash is fastest" has a different answer
-on a phone or a laptop on battery than it does on the core the numbers in
-this file were taken on.
-
-## What the assembly is worth
-
-Measured on an M2 P-core against a `-tags purego` build of each package,
-which is also what every architecture without a kernel runs. Minimum of
-three, `Sum64` at each length:
-
-| bytes | XXH3 | XXH64 | rapidhash |
-|---|---|---|---|
-| 16 | 1.03x | 1.30x | 1.00x |
-| 64 | 1.03x | 1.49x | 1.16x |
-| 256 | 2.15x | 1.37x | 1.29x |
-| 1 Ki | 2.53x | 1.39x | 1.34x |
-| 64 Ki | 2.36x | 1.39x | 1.33x |
-| 1 Mi | 2.36x | 1.39x | 1.33x |
-
-Three different answers to the same question. XXH3's kernels are worth 2.4x
-because Go has no way to write eight 128-bit accumulators; XXH64's 1.4x is
-the lane loop's rotates and the compiler's refusal to keep five primes in
-registers; rapidhash's 1.33x is smaller still, because its portable form is
-already the same multiplies and Go emits them well. Below 64 bytes all three
-converge on the portable path's own numbers, which is the short paths being
-Go in every build.
-
-Worth keeping in view when a kernel change looks expensive to maintain: the
-one that costs the most to generate is also the one carrying the most.
+**bytedance/gopkg/util/xxhash3** is the only Go XXH3 besides zeebo's with
+hand-written vector paths, and it agrees with `xxh3/` bit for bit --
+`TestSameAsBytedance`. Its 128-bit result is `[2]uint64` in `[hi, lo]` order,
+the reverse of what the field names here would suggest; getting that backwards
+yields two plausible uint64s and no error, so the test asserts the order
+rather than a comment claiming it.
 
 ## Reference vectors
 

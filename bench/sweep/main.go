@@ -40,8 +40,10 @@ import (
 	"github.com/JohanLindvall/haste/rapidhash"
 	"github.com/JohanLindvall/haste/xxh3"
 	"github.com/JohanLindvall/haste/xxh64"
+	bytedance "github.com/bytedance/gopkg/util/xxhash3"
 	cespare "github.com/cespare/xxhash/v2"
 	zeebo "github.com/zeebo/xxh3"
+	dw1 "go.dw1.io/rapidhash"
 )
 
 var sink uint64
@@ -221,6 +223,13 @@ func main() {
 			}
 			return s
 		}},
+		{"bytedance", func(b []byte, n int) uint64 {
+			var s uint64
+			for i := 0; i < n; i++ {
+				s += bytedance.Hash(b)
+			}
+			return s
+		}},
 		{"haste-xxh64", func(b []byte, n int) uint64 {
 			var s uint64
 			for i := 0; i < n; i++ {
@@ -232,6 +241,13 @@ func main() {
 			var s uint64
 			for i := 0; i < n; i++ {
 				s += rapidhash.Sum64(b)
+			}
+			return s
+		}},
+		{"dw1-rapid", func(b []byte, n int) uint64 {
+			var s uint64
+			for i := 0; i < n; i++ {
+				s += dw1.Hash(b)
 			}
 			return s
 		}},

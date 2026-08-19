@@ -9,6 +9,11 @@
 // folded 64x64 multiplies -- included because it is what the comparison is
 // for: knowing which shape of hash wins where.
 //
+// Two more ports join for each algorithm, per issue #7. bytedance/gopkg's
+// xxhash3 is the only Go XXH3 besides zeebo's with hand-written vector paths.
+// go.dw1.io/rapidhash and poiug07/rapidhash_go are Go rapidhash: the first
+// assembly-free but current, the second explicitly not chasing speed.
+//
 // When a C compiler is present, the reference C implementations themselves
 // join the comparison through cgo (see cref.go): xxHash pinned to v0.8.3, the
 // revision the test vectors came from, and rapidhash as vendored beside it.
@@ -21,8 +26,11 @@ import (
 	"github.com/JohanLindvall/haste/rapidhash"
 	"github.com/JohanLindvall/haste/xxh3"
 	"github.com/JohanLindvall/haste/xxh64"
+	bytedance "github.com/bytedance/gopkg/util/xxhash3"
 	cespare "github.com/cespare/xxhash/v2"
+	poiug07 "github.com/poiug07/rapidhash_go"
 	zeebo "github.com/zeebo/xxh3"
+	dw1 "go.dw1.io/rapidhash"
 )
 
 var sizes = []int{4, 8, 16, 32, 64, 128, 240, 256, 512, 1024, 4096, 16384, 65536, 1 << 20}
@@ -123,6 +131,83 @@ func TestRapidhashSameAsC(t *testing.T) {
 	}
 }
 
+// TestSameAsBytedance is the second independent Go XXH3 held to this one.
+// Its 128-bit result is [hi, lo] -- the reverse of the order the field names
+// here imply -- which is worth a test rather than a comment, since getting it
+// backwards produces two plausible-looking uint64s and no error.
+func TestSameAsBytedance(t *testing.T) {
+	buf := buffer(1 << 16)
+	for _, n := range []int{0, 1, 3, 4, 8, 9, 16, 17, 32, 64, 128, 129, 240, 241,
+		256, 512, 1024, 1025, 4096, 65535, 65536} {
+		in := buf[:n]
+		if got, want := bytedance.Hash(in), xxh3.Sum64(in); got != want {
+			t.Errorf("len=%d: bytedance Hash %#016x != %#016x", n, got, want)
+		}
+		if got, want := bytedance.HashString(string(in)), xxh3.Sum64(in); got != want {
+			t.Errorf("len=%d: bytedance HashString %#016x != %#016x", n, got, want)
+		}
+		h, c := bytedance.Hash128(in), xxh3.Sum128(in)
+		if h[0] != c.Hi || h[1] != c.Lo {
+			t.Errorf("len=%d: bytedance Hash128 [%#x,%#x] != {hi=%#x lo=%#x}",
+				n, h[0], h[1], c.Hi, c.Lo)
+		}
+	}
+}
+
+// TestSameAsDW1 is the cross-check issue #7 was after: go.dw1.io/rapidhash
+// implements the same version of the algorithm this package does, so the two
+// must agree bit for bit, seeded and not. It is the only rapidhash peer that
+// is a correctness check rather than only a benchmark one.
+func TestSameAsDW1(t *testing.T) {
+	buf := buffer(1 << 16)
+	for _, n := range []int{0, 1, 3, 4, 8, 16, 17, 32, 64, 112, 113, 224, 225,
+		240, 300, 336, 337, 512, 1024, 4096, 65535, 65536} {
+		in := buf[:n]
+		if got, want := dw1.Hash(in), rapidhash.Sum64(in); got != want {
+			t.Errorf("len=%d: dw1 Hash %#016x != %#016x", n, got, want)
+		}
+		if got, want := dw1.HashString(string(in)), rapidhash.Sum64(in); got != want {
+			t.Errorf("len=%d: dw1 HashString %#016x != %#016x", n, got, want)
+		}
+		for _, seed := range []uint64{1, 42, 0x9e3779b185ebca87, ^uint64(0)} {
+			if got, want := dw1.HashWithSeed(in, seed), rapidhash.Sum64Seed(in, seed); got != want {
+				t.Errorf("len=%d seed=%#x: dw1 HashWithSeed %#016x != %#016x", n, seed, got, want)
+			}
+		}
+	}
+}
+
+// TestPoiug07DivergesAbove336 records where the third rapidhash port stops
+// agreeing, and that everything below it does.
+//
+// It is the same algorithm version -- it matches at every length to 336 --
+// and then differs at every length from 337 up. 337 is the first length that
+// runs both the 224-byte loop and the 112-byte block after it, so that is
+// where to look. This package matches the reference C at 335, 336 and 337,
+// which ref/rapidgen.c emits vectors for precisely because the boundary is
+// easy to get wrong.
+//
+// The rows in the benchmarks below are labelled accordingly: it is a fair
+// speed peer up to 336 bytes and a different answer above it.
+func TestPoiug07DivergesAbove336(t *testing.T) {
+	buf := buffer(1024)
+	for n := 0; n <= 336; n++ {
+		if got, want := poiug07.Rapidhash(buf[:n]), rapidhash.Sum64(buf[:n]); got != want {
+			t.Fatalf("len=%d: expected agreement below 337, got %#016x != %#016x", n, got, want)
+		}
+	}
+	agreed := 0
+	for n := 337; n <= 1024; n++ {
+		if poiug07.Rapidhash(buf[:n]) == rapidhash.Sum64(buf[:n]) {
+			agreed++
+		}
+	}
+	if agreed != 0 {
+		t.Errorf("poiug07 now agrees at %d lengths above 336; the divergence note "+
+			"and the benchmark labels need revisiting", agreed)
+	}
+}
+
 func BenchmarkCompare64(b *testing.B) {
 	for _, n := range sizes {
 		buf := buffer(n)
@@ -136,6 +221,12 @@ func BenchmarkCompare64(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
 				sink64 = zeebo.Hash(buf)
+			}
+		})
+		b.Run(fmt.Sprintf("%d/bytedance", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = bytedance.Hash(buf)
 			}
 		})
 		b.Run(fmt.Sprintf("%d/haste-xxh64", n), func(b *testing.B) {
@@ -154,6 +245,21 @@ func BenchmarkCompare64(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
 				sink64 = rapidhash.Sum64(buf)
+			}
+		})
+		b.Run(fmt.Sprintf("%d/dw1-rapid", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = dw1.Hash(buf)
+			}
+		})
+		// Same algorithm to 336 bytes and a different answer above it; see
+		// TestPoiug07DivergesAbove336. Read the larger sizes as a pure-Go
+		// reference point, not as a like-for-like rapidhash.
+		b.Run(fmt.Sprintf("%d/poiug07-rapid", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = poiug07.Rapidhash(buf)
 			}
 		})
 		if cRapid != nil {
@@ -195,6 +301,13 @@ func BenchmarkCompare128(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				h := zeebo.Hash128(buf)
 				sink128 = xxh3.Uint128{Lo: h.Lo, Hi: h.Hi}
+			}
+		})
+		b.Run(fmt.Sprintf("%d/bytedance", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				h := bytedance.Hash128(buf)
+				sink128 = xxh3.Uint128{Lo: h[1], Hi: h[0]}
 			}
 		})
 		if cXXH3128 != nil {
@@ -245,6 +358,12 @@ func BenchmarkCompareSeed(b *testing.B) {
 			b.SetBytes(int64(n))
 			for i := 0; i < b.N; i++ {
 				sink64 = rapidhash.Sum64Seed(buf, 42)
+			}
+		})
+		b.Run(fmt.Sprintf("%d/dw1-rapid", n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				sink64 = dw1.HashWithSeed(buf, 42)
 			}
 		})
 		if cRapidSeed != nil {

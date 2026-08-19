@@ -65,9 +65,15 @@ one seed? Use `NewSeed`, which derives it once.
 
 ## Speed
 
-Against [zeebo/xxh3](https://github.com/zeebo/xxh3) (the fastest existing Go XXH3) and
-[cespare/xxhash](https://github.com/cespare/xxhash) (XXH64 — a different, cheaper
-algorithm, included for scale). Nanoseconds per hash, lower is better.
+Against [zeebo/xxh3](https://github.com/zeebo/xxh3) (the fastest existing Go XXH3),
+[bytedance/gopkg](https://pkg.go.dev/github.com/bytedance/gopkg/util/xxhash3)
+(the only other Go XXH3 with hand-written vector paths, and bit-identical to
+this one) and [cespare/xxhash](https://github.com/cespare/xxhash) (XXH64 — a
+different, cheaper algorithm, included for scale). Nanoseconds per hash, lower
+is better.
+
+The tables below predate the bytedance and rapidhash peers joining `bench/`;
+their columns arrive with the next measured run.
 
 ### arm64
 
@@ -301,16 +307,27 @@ It is bit-identical to the reference C, over 640 vectors generated from it by
 packages' are.
 
 **If you are comparing against another Go rapidhash, check which version it
-is.** [vkudryk/rapidhash-go](https://github.com/vkudryk/rapidhash-go)
-implements the *original* rapidhash: three secret words where the current
-algorithm has eight, the length folded into the prologue rather than the final
-mix, and a nonzero default seed. It produces different hashes from this
-package at every length, including zero — verified against the reference C,
-which agrees with this package throughout. Neither is wrong; they are
-different versions of the algorithm, and the first three secret words are
-identical, which is what makes the two easy to mistake for each other. It is
-not in `bench/`, because timing two different algorithms side by side invites
-exactly that mistake.
+is.** There are three, and they are not the same hash:
+
+| port | agrees with this package |
+|---|---|
+| [go.dw1.io/rapidhash](https://github.com/dwisiswant0/rapidhash) | yes, bit for bit, seeded and not — same algorithm version |
+| [poiug07/rapidhash_go](https://github.com/poiug07/rapidhash_go) | to 336 bytes; differs at every length from 337 up |
+| [vkudryk/rapidhash-go](https://github.com/vkudryk/rapidhash-go) | no — it is the *original* rapidhash, three secret words against eight |
+
+337 is the first length that runs both the 224-byte block loop and the
+112-byte block after it, which is the boundary `ref/rapidgen.c` emits vectors
+either side of. This package matches the reference C at 335, 336 and 337.
+
+vkudryk's is a different version rather than a different answer: its secret is
+three words where the current algorithm has eight, it folds the length into
+the prologue rather than the final mix, and its default seed is nonzero. Its
+first three secret words are identical to the current ones, which is what
+makes the two easy to mistake for each other.
+
+`bench/` measures dw1 and poiug07 beside this package, and
+`TestSameAsDW1` and `TestPoiug07DivergesAbove336` pin both relationships so
+neither can quietly change.
 
 The kernel is worth **32-36% over 225 bytes and up** against the portable Go,
 on a Zen 4 — and nothing measurable below that, where the cost is the call
