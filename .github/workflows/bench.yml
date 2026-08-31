@@ -1,10 +1,11 @@
 name: bench
 
-# A benchmark sweep on every hardware GitHub offers, run by hand: every
-# comparison benchmark in bench/, the kernel-level backend benchmarks of
-# both packages, and the per-length sweep. Results are uploaded raw; the
-# analysis happens elsewhere. Runner VMs are shared and noisy, so numbers
-# from here are for shape and ratios, not for the README.
+# A benchmark sweep across the Linux and Windows runner pools, both
+# architectures, run by hand: every comparison benchmark in bench/, the
+# kernel-level backend benchmarks of all three packages, and the per-length
+# sweep. Results are uploaded raw; the analysis happens elsewhere. Runner VMs
+# are shared and noisy, so numbers from here are for shape and ratios, not
+# for the README. macOS is not swept -- see the matrix.
 
 on:
   workflow_dispatch:
@@ -33,19 +34,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Every OS/architecture family the standard runners offer.
+        # The Linux and Windows families, on both architectures.
         # ubuntu-22.04 used to be a row; its image starts brownouts on
         # 2026-09-17 (actions/runner-images#14254), and it was the same x86
-        # pool as 24.04 under an older image anyway. macos-latest is Apple
-        # silicon -- the wide-vector core the NEON hybrid gating declines --
-        # and macos-15-intel is the one x86 pool that is not an Azure VM.
-        # The windows rows run under bash; a row whose image has no C
-        # compiler just loses the C reference columns, nothing else.
+        # pool as 24.04 under an older image anyway. The windows rows run
+        # under bash; a row whose image has no C compiler just loses the C
+        # reference columns, nothing else.
+        #
+        # macos-latest and macos-15-intel were rows until 2026-08-31,
+        # dropped for cost: GitHub bills a macOS minute at ten times a
+        # Linux one, and this is the longest job in the repository. They
+        # were also the two least trustworthy rows -- three dispatches
+        # spread 20.8% on the virtualized M1 and 12.4% on the Intel one,
+        # against the arm64 Linux runner's 0.1% -- and Apple silicon is
+        # the one platform whose numbers in CLAUDE.md come from dedicated
+        # hardware anyway.
+        #
+        # What goes with them is darwin's only *execution* anywhere in CI:
+        # ci.yml cross-compiles darwin/amd64 and darwin/arm64 but runs
+        # neither, so `internal/cpu/os_darwin.go` and the Apple branch of
+        # xxh64's arm64 dispatch are now compiled and never taken. Both
+        # lane-round forms are still executed on ubuntu-24.04-arm, which
+        # forces each through setBackend; it is the selection, not the
+        # kernel, that stops being covered. Re-add a row if that changes.
         runner:
           - ubuntu-24.04-arm
           - ubuntu-24.04
-          - macos-latest
-          - macos-15-intel
           - windows-latest
           - windows-11-arm
     steps:

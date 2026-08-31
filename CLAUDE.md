@@ -246,11 +246,24 @@ wherever that lands.
 
 ### The bench workflow
 
-`bench.yml` is dispatched by hand, sweeps every OS/architecture family the
-standard runners offer, renders each log as markdown, and commits the
+`bench.yml` is dispatched by hand, sweeps the Linux and Windows runner pools
+on both architectures, renders each log as markdown, and commits the
 aggregate to `benchmarks.md` with `[skip ci]`. Those are shared VMs: good for
 shape and for ratios within one column, not for absolute figures. Everything
 in the performance notes below came from dedicated hardware instead.
+
+**macOS is not in the matrix**, as of 2026-08-31: a macOS minute bills at ten
+times a Linux one and this is the longest job here, and the two rows bought
+the least -- the spread table below has them at 12.4% and 20.8% across three
+dispatches where the arm64 Linux runner repeats to 0.1%, and the Apple
+silicon figures in these notes come from an M2 on the desk rather than from
+the fleet. What went with them is darwin's only execution anywhere in CI:
+`ci.yml` cross-compiles `darwin/amd64` and `darwin/arm64` and runs neither,
+so `internal/cpu/os_darwin.go` and the Apple branch of xxh64's arm64 dispatch
+now compile without ever being taken. The kernels they select are still run,
+on `ubuntu-24.04-arm`, which forces both lane-round forms through
+`setBackend` -- it is the *selection* that stopped being covered, not the
+code it selects.
 
 It decides cgo by handing the compiler a five-byte program and seeing whether
 a binary comes out. A runner with no C toolchain still has `CGO_ENABLED=1`,
@@ -377,8 +390,10 @@ simply disappear.
   all** -- it served an Ice Lake, then a Zen 4, then an Emerald Rapids -- so
   read `cpu.txt` before comparing two of its numbers to each other.
 
-  Practically: quote arm64-Linux figures, treat macOS ones as shape, and
-  never diff two amd64 fleet runs without checking they ran on the same part.
+  Practically: quote arm64-Linux figures, and never diff two amd64 fleet runs
+  without checking they ran on the same part. The two macOS rows are kept
+  here as the evidence they are -- they are what the cost of that pool bought
+  -- but they are no longer dispatched; see the bench workflow above.
 - **What the fleet is actually for is catching the platform you cannot run.**
   Its numbers are worse than dedicated hardware's, so the case for it is not
   measurement -- it is that a build tag can disable a kernel on an operating
