@@ -145,19 +145,57 @@ func (d *Digest) WriteString(s string) (int, error) {
 }
 
 func (d *Digest) write(p []byte) {
-	if len(p) == 0 {
+	n := len(p)
+	if n == 0 {
 		return
 	}
-	d.totalLen += uint64(len(p))
+	d.totalLen += uint64(n)
 
 	// Nothing is absorbed while everything still fits: a message this short
 	// may yet be hashed by the short-input path, which needs all of it, and
 	// batching small writes keeps them to one copy each.
-	if d.bufUsed+len(p) <= internalBufferSize {
-		d.bufUsed += copy(d.buf[stripeLen+d.bufUsed:], p)
+	//
+	// Up to 64 bytes the copy is made here with overlapping fixed-size
+	// moves, not with copy: copy is a call into memmove, and for a write of
+	// that size the call and memmove's own size dispatch were a third of the
+	// cost -- profiled on a Zen 4 at 64-byte writes, memmove was 31% of the
+	// cycles where the kernel was 17%. The moves may overlap because p and
+	// the staging area never alias. They are 16 bytes at most: the compiler
+	// lowers a 16-byte array copy to one SSE move, and a 32-byte one to a
+	// call into memmove, which is what this is here to avoid.
+	end := d.bufUsed + n
+	if end > internalBufferSize {
+		d.absorb(p)
 		return
 	}
-	d.absorb(p)
+	dst := unsafe.Pointer(&d.buf[stripeLen+d.bufUsed])
+	src := unsafe.Pointer(unsafe.SliceData(p))
+	d.bufUsed = end
+	switch {
+	case n > 64:
+		copy(unsafe.Slice((*byte)(dst), n), p)
+	case n > 32:
+		*(*[16]byte)(dst) = *(*[16]byte)(src)
+		*(*[16]byte)(add(dst, 16)) = *(*[16]byte)(add(src, 16))
+		*(*[16]byte)(add(dst, uintptr(n)-32)) = *(*[16]byte)(add(src, uintptr(n)-32))
+		*(*[16]byte)(add(dst, uintptr(n)-16)) = *(*[16]byte)(add(src, uintptr(n)-16))
+	case n > 16:
+		*(*[16]byte)(dst) = *(*[16]byte)(src)
+		*(*[16]byte)(add(dst, uintptr(n)-16)) = *(*[16]byte)(add(src, uintptr(n)-16))
+	case n > 8:
+		*(*[8]byte)(dst) = *(*[8]byte)(src)
+		*(*[8]byte)(add(dst, uintptr(n)-8)) = *(*[8]byte)(add(src, uintptr(n)-8))
+	case n > 4:
+		*(*[4]byte)(dst) = *(*[4]byte)(src)
+		*(*[4]byte)(add(dst, uintptr(n)-4)) = *(*[4]byte)(add(src, uintptr(n)-4))
+	default:
+		// 1..4 bytes: the first and the last, then the two in between,
+		// which at three bytes are both the middle one.
+		*(*byte)(dst) = *(*byte)(src)
+		*(*byte)(add(dst, uintptr(n)-1)) = *(*byte)(add(src, uintptr(n)-1))
+		*(*byte)(add(dst, uintptr(n)>>1)) = *(*byte)(add(src, uintptr(n)>>1))
+		*(*byte)(add(dst, uintptr(n)-1-uintptr(n)>>1)) = *(*byte)(add(src, uintptr(n)-1-uintptr(n)>>1))
+	}
 }
 
 // absorb takes every stripe that is safe to take from the staged bytes
@@ -181,26 +219,31 @@ func (d *Digest) absorb(p []byte) {
 	// 256-byte Write; the extra copy of p here is cheaper until p is most of
 	// the staging area. The bound also keeps the slide provably in bounds:
 	// at most 63 staged bytes remain, so window + remainder + p fits.
+	// The counts below are all non-negative, and the divisions are by a
+	// power of two: taken as unsigned they are one shift each, where a
+	// signed division by a constant is four instructions of rounding on
+	// every one -- this runs per Write, and the arithmetic was a visible
+	// share of a small write on a Zen 4.
 	if len(p) < internalBufferSize-(stripeLen-1) {
-		k := d.bufUsed / stripeLen
+		k := int(uint(d.bufUsed) / stripeLen)
 		accumBlocks(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), k, sec, d.secretLimit, soFar)
 		d.nbStripesSoFar = d.wrap(soFar + k)
 		// Slide the new window -- the last 64 bytes absorbed -- and the
 		// staged remainder down, then stage p after them.
-		rem := d.bufUsed - k*stripeLen
+		rem := int(uint(d.bufUsed) % stripeLen)
 		copy(d.buf[:stripeLen+rem], d.buf[k*stripeLen:stripeLen+d.bufUsed])
 		d.bufUsed = rem + copy(d.buf[stripeLen+rem:], p)
 		return
 	}
 
-	nb := (d.bufUsed + len(p) - 1) / stripeLen
+	nb := int(uint(d.bufUsed+len(p)-1) / stripeLen)
 
 	// Everything staged, plus enough of p to finish the stripe it ends in.
 	// Completing that stripe in place keeps this to one run rather than two,
 	// and copies at most 63 bytes instead of filling the staging area.
-	staged := d.bufUsed / stripeLen
+	staged := int(uint(d.bufUsed) / stripeLen)
 	pOff := 0
-	if rem := d.bufUsed - staged*stripeLen; rem > 0 && staged < nb {
+	if rem := int(uint(d.bufUsed) % stripeLen); rem > 0 && staged < nb {
 		pOff = stripeLen - rem
 		copy(d.buf[stripeLen+d.bufUsed:], p[:pOff])
 		d.bufUsed += pOff
@@ -247,7 +290,9 @@ func (d *Digest) digestLong(acc *[accNB]uint64) {
 	// the staging capacity; past that, absorb leaves at most a partial one.
 	// Where they leave the block position does not matter: only the final
 	// stripe follows, and it is keyed from the end of the secret.
-	if nb := (d.bufUsed - 1) / stripeLen; nb > 0 {
+	// bufUsed is at least one here: totalLen is past midsizeMax, and absorb
+	// never leaves the staging area empty.
+	if nb := int(uint(d.bufUsed-1) / stripeLen); nb > 0 {
 		d.consumeStripes(acc, unsafe.Pointer(&d.buf[stripeLen]), nb, d.nbStripesSoFar)
 	}
 
