@@ -163,6 +163,14 @@ type XXH64Arch interface {
 	// the table's form slot; see XXH64Funcs.
 	Dual() bool
 
+	// BlockUnroll is how many blocks the lane loop runs per iteration, a
+	// power of two. The blocks the count leaves over run ahead of the loop,
+	// in binary. Two on x86, where the loop is at its multiplier and the
+	// overhead is hidden; four on arm64, where a two-block loop is at the
+	// front end's width as well and its speed then depends on where the
+	// linker put it -- see the arm64 backend.
+	BlockUnroll() int
+
 	// Block absorbs the block at in+off into the four lanes: for each lane,
 	// v = rol(v + word*P2, 31) * P1. How the loads and the rounds interleave
 	// is the architecture's -- x86 loads each word into X as it goes, arm64
@@ -377,23 +385,37 @@ func emitBlockLoops(a XXH64Arch, in, nb GPR, v [4]GPR) {
 }
 
 // emitBlockLoop absorbs nb blocks from in, advancing in past them. It runs
-// two blocks per iteration, with the odd block first: the loop is bound by
-// each lane's dependency chain, not by its own overhead, but the cores that
-// issue it fastest are the ones the two instructions of overhead per block
-// still show on.
+// BlockUnroll blocks per iteration, with the blocks the count leaves over
+// first: the loop is bound by each lane's dependency chain and by the
+// multiplier, not by its own overhead, but the cores that issue it fastest
+// are the ones the loop instructions per block still show on.
 func emitBlockLoop(a XXH64Arch, in, nb GPR, v [4]GPR, split bool) {
 	b := a.Build()
-	even, loop, done := b.NewLabel("even"), b.NewLabel("blocks"), b.NewLabel("bdone")
-	a.BranchBitClear(nb, 0, even)
-	a.Block(in, 0, v, split)
-	a.AddImm(in, 32)
-	b.Label(even)
-	a.Shr(nb, 1)
+	unroll := a.BlockUnroll()
+	if unroll&(unroll-1) != 0 || unroll < 1 {
+		panic("asmgen: BlockUnroll must be a power of two")
+	}
+	// The blocks the loop will not cover run first, in binary: one if bit
+	// 0 of the count is set, then two if bit 1, and so on.
+	shift := 0
+	for 1<<shift < unroll {
+		next := b.NewLabel("even")
+		a.BranchBitClear(nb, uint(shift), next)
+		for i := 0; i < 1<<shift; i++ {
+			a.Block(in, 32*i, v, split)
+		}
+		a.AddImm(in, int64(32<<shift))
+		b.Label(next)
+		shift++
+	}
+	loop, done := b.NewLabel("blocks"), b.NewLabel("bdone")
+	a.Shr(nb, uint(shift))
 	a.BranchZero(nb, done)
 	b.Label(loop)
-	a.Block(in, 0, v, split)
-	a.Block(in, 32, v, split)
-	a.AddImm(in, 64)
+	for i := 0; i < unroll; i++ {
+		a.Block(in, 32*i, v, split)
+	}
+	a.AddImm(in, int64(32*unroll))
 	a.SubBranch(nb, 1, NE, loop)
 	b.Label(done)
 }

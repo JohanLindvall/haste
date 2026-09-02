@@ -299,6 +299,11 @@ func (x *x86Scalar) Round0(r GPR) {
 
 func (x *x86Scalar) Dual() bool { return false }
 
+// BlockUnroll is two here: the loop is at the multiplier -- eight imuls a
+// block at one a cycle on every current core -- and its two overhead
+// instructions per block hide behind them. Four was not measured on x86.
+func (x *x86Scalar) BlockUnroll() int { return 2 }
+
 // Block loads each word into the one scratch register and absorbs it before
 // the next: renaming makes the reuse free, and there is no fifth register.
 // There is one round shape here, so split is ignored.
