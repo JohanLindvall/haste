@@ -275,26 +275,54 @@ func moduleRoot(t *testing.T) string {
 }
 
 // TestGeneratedFilesUpToDate regenerates every backend -- the XXH3 ones here
-// and the XXH64 ones in xxh64/ -- and compares it with what is checked in, so
-// that an edit to the generator cannot silently leave the shipped assembly
-// behind.
+// and the XXH64 and rapidhash ones in their packages -- and compares it with
+// what is checked in, so that an edit to the generator cannot silently leave
+// the shipped assembly behind. The stub files, one per package and
+// architecture, are checked the same way; they need no assembler, so they
+// are checked even where the assembly is skipped.
 func TestGeneratedFilesUpToDate(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs the system assembler")
-	}
 	root := moduleRoot(t)
+	if !testing.Short() {
+		for _, b := range asmgen.AllBackends() {
+			t.Run(b.Filename(), func(t *testing.T) {
+				got, err := asmgen.Generate(b)
+				if err != nil {
+					t.Skipf("cannot assemble for %s: %v", b.GOARCH, err)
+				}
+				want, err := os.ReadFile(filepath.Join(root, b.Filename()))
+				if err != nil {
+					t.Fatalf("%v (run go generate ./...)", err)
+				}
+				if got != string(want) {
+					t.Errorf("%s is stale; run go generate ./...", b.Filename())
+				}
+			})
+		}
+	}
+	// The stubs, grouped as the generator groups them.
+	type key struct{ dir, goarch string }
+	byPkg := map[key][]asmgen.Backend{}
+	var keys []key
 	for _, b := range asmgen.AllBackends() {
-		t.Run(b.Filename(), func(t *testing.T) {
-			got, err := asmgen.Generate(b)
+		k := key{b.Dir, b.GOARCH}
+		if _, seen := byPkg[k]; !seen {
+			keys = append(keys, k)
+		}
+		byPkg[k] = append(byPkg[k], b)
+	}
+	for _, k := range keys {
+		name := filepath.Join(k.dir, "stub_"+k.goarch+".go")
+		t.Run(name, func(t *testing.T) {
+			got, err := asmgen.GenerateStubs(k.goarch, byPkg[k])
 			if err != nil {
-				t.Skipf("cannot assemble for %s: %v", b.GOARCH, err)
+				t.Fatal(err)
 			}
-			want, err := os.ReadFile(filepath.Join(root, b.Filename()))
+			want, err := os.ReadFile(filepath.Join(root, name))
 			if err != nil {
 				t.Fatalf("%v (run go generate ./...)", err)
 			}
 			if got != string(want) {
-				t.Errorf("%s is stale; run go generate ./...", b.Filename())
+				t.Errorf("%s is stale; run go generate ./...", name)
 			}
 		})
 	}
