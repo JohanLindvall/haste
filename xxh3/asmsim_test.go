@@ -114,6 +114,26 @@ func simAccumBlocks(t *testing.T, k asmgen.Arch, acc *[accNB]uint64, in, sec []b
 	*acc = r.acc()
 }
 
+// simAccumBlocks2 runs the two-run kernel: nbStripes stripes from the start
+// of in, then nbStripes2 more from gap stripes further on, so that the second
+// run is not the continuation of the first in memory.
+func simAccumBlocks2(t *testing.T, k asmgen.Arch, acc *[accNB]uint64, in, sec []byte, nbStripes, soFar, gap, nbStripes2 int) {
+	t.Helper()
+	r := newSimRegion(acc, in, sec)
+	r.m.R[k.ArgGPR(0)] = r.accAt
+	r.m.R[k.ArgGPR(1)] = r.inAt
+	r.m.R[k.ArgGPR(2)] = uint64(nbStripes)
+	r.m.R[k.ArgGPR(3)] = r.secAt
+	r.m.R[k.ArgGPR(4)] = uint64(len(sec) - stripeLen)
+	r.m.R[k.ArgGPR(5)] = uint64(soFar)
+	r.m.R[k.ArgGPR(6)] = r.inAt + uint64(stripeLen*(nbStripes+gap))
+	r.m.R[k.ArgGPR(7)] = uint64(nbStripes2)
+	if err := r.m.Run(k.Build().Insts()); err != nil {
+		t.Fatal(err)
+	}
+	*acc = r.acc()
+}
+
 // simLengths spans every structural boundary of the long path: the first
 // length that reaches it, exact multiples of the stripe and block, and inputs
 // long enough to need several blocks and an unrolled remainder.
@@ -130,7 +150,7 @@ func TestSimulatedBackends(t *testing.T) {
 		b := b
 		t.Run(b.Name, func(t *testing.T) {
 			kernels := asmgen.EmitAll(b.New)
-			hashLongK, blocksK, accumK := kernels[0], kernels[1], kernels[2]
+			hashLongK, blocksK, accumK, blocks2K := kernels[0], kernels[1], kernels[2], kernels[3]
 
 			for _, n := range simLengths {
 				in := buf[:n]
@@ -181,6 +201,28 @@ func TestSimulatedBackends(t *testing.T) {
 					if got != want {
 						t.Fatalf("accumBlocks soFar=%d stripes=%d:\n got %v\nwant %v",
 							soFar, stripes, got, want)
+					}
+				}
+			}
+
+			// accumBlocks2 must carry the block position from the first run
+			// into the second, wherever the first stops: short of the
+			// boundary, on it, or past it, and either run may be empty.
+			for _, soFar := range []int{0, 1, 15} {
+				for _, n1 := range []int{0, 1, 15, 16, 17} {
+					for _, n2 := range []int{0, 1, 15, 16, 31, 33} {
+						const gap = 3
+						in := buf[:stripeLen*(n1+gap+n2)]
+						got, want := initAcc, initAcc
+						accumBlocksGeneric(&want, unsafe.Pointer(&in[0]), n1,
+							unsafe.Pointer(&kSecret), secretDefaultSize-stripeLen, soFar)
+						accumBlocksGeneric(&want, add(unsafe.Pointer(&buf[0]), uintptr(stripeLen*(n1+gap))), n2,
+							unsafe.Pointer(&kSecret), secretDefaultSize-stripeLen, (soFar+n1)%((secretDefaultSize-stripeLen)/secretConsumeRate))
+						simAccumBlocks2(t, blocks2K, &got, in, sec, n1, soFar, gap, n2)
+						if got != want {
+							t.Fatalf("accumBlocks2 soFar=%d n1=%d n2=%d:\n got %v\nwant %v",
+								soFar, n1, n2, got, want)
+						}
 					}
 				}
 			}

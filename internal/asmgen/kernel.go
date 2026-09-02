@@ -1,16 +1,20 @@
 package asmgen
 
+import "fmt"
+
 // The kernels. This is the only description of the long-input loop's shape,
 // shared by all five backends: the block/scramble structure and the stripe
 // counting are written once here, and each Arch supplies the vector steps.
 //
-// The three entry points mirror dispatch.go in the parent package:
+// The four entry points mirror dispatch.go in the parent package:
 //
 //	hashLong<B>(acc, in, n, sec, secretLimit)          one-shot, whole input
 //	accumBlocks<B>(acc, in, nbStripes, sec, secretLimit, soFar)   streaming
 //	accum<B>(acc, in, nbStripes, sec)                  one run, no scramble
+//	accumBlocks2<B>(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
+//	                                                   streaming, two runs
 
-// Funcs returns the three function definitions a backend generates, in the
+// Funcs returns the four function definitions a backend generates, in the
 // order EmitAll emits them.
 func Funcs(suffix string) []FuncDef {
 	return []FuncDef{
@@ -34,15 +38,36 @@ func Funcs(suffix string) []FuncDef {
 			Args: []string{"acc", "in", "nbStripes", "sec"},
 			Doc:  "absorbs nbStripes consecutive stripes against one secret position, with no scramble",
 		},
+		{
+			Name: "accumBlocks2" + suffix,
+			Args: []string{"acc", "in", "nbStripes", "sec", "secretLimit", "soFar", "in2", "nbStripes2"},
+			Doc:  "is accumBlocks over two runs, nbStripes stripes at in and then nbStripes2 at in2, as one walk of the block",
+		},
 	}
 }
 
-// EmitAll emits the three kernels into one instruction stream per function.
+// EmitAll emits the four kernels into one instruction stream per function.
 func EmitAll(new func() Arch) []Arch {
 	return []Arch{
 		emit(new(), emitHashLong),
 		emit(new(), emitAccumBlocks),
 		emit(new(), emitAccum),
+		emit(new(), emitAccumBlocks2),
+	}
+}
+
+// noOverlap refuses a kernel whose first ntmp temporaries share a register
+// with one of its nargs arguments. The two pools overlap on purpose at the
+// far end -- a kernel with few arguments may use the registers the eight-
+// argument one takes -- so each emitter states what it uses.
+func noOverlap(a Arch, nargs, ntmp int) {
+	for i := 0; i < nargs; i++ {
+		for j := 0; j < ntmp; j++ {
+			if a.ArgGPR(i) == a.TmpGPR(j) {
+				panic(fmt.Sprintf("asmgen: %s: temporary %d and argument %d share %s",
+					a.Name(), j, i, a.GPRName(a.TmpGPR(j))))
+			}
+		}
 	}
 }
 
@@ -72,6 +97,7 @@ func emitHashLong(a Arch) {
 	b := a.Build()
 	acc, in, n, sec, lim := a.ArgGPR(0), a.ArgGPR(1), a.ArgGPR(2), a.ArgGPR(3), a.ArgGPR(4)
 	blk, rem, cnt, s, end, tmp := a.TmpGPR(0), a.TmpGPR(1), a.TmpGPR(2), a.TmpGPR(3), a.TmpGPR(4), a.TmpGPR(5)
+	noOverlap(a, 5, 6)
 
 	a.Setup(true)
 	a.LoadAcc(a.TableGPR(), true)
@@ -155,6 +181,7 @@ func emitHashLong(a Arch) {
 func emitAccum(a Arch) {
 	acc, in, cnt, sec := a.ArgGPR(0), a.ArgGPR(1), a.ArgGPR(2), a.ArgGPR(3)
 	s := a.TmpGPR(0)
+	noOverlap(a, 4, 1)
 
 	// This kernel never scrambles, so it needs no multiplier.
 	a.Setup(false)
@@ -174,11 +201,38 @@ func emitAccum(a Arch) {
 //
 // The caller works out the new position within the block itself: it advances
 // by nbStripes and wraps, which needs no return value.
-func emitAccumBlocks(a Arch) {
+func emitAccumBlocks(a Arch) { emitBlockWalk(a, 1) }
+
+// emitAccumBlocks2 is the same walk over two runs of stripes, the second
+// picking up the block position where the first left it, with one prologue
+// and epilogue around both. It is for absorb's general path, where the run
+// is the stripes staged in the Digest's buffer followed by the ones straight
+// out of the caller's slice: the two are never contiguous, and the buffer
+// holds one stripe -- the one held back from the previous write in case it
+// was the message's last -- whenever writes come in whole kibibytes. Absorbed
+// in a call of its own, that stripe cost 123 instructions and 26 cycles on a
+// Redwood Cove, for four cycles of work; skipping the call outright, wrong
+// results and all, bounded the fusion at 20% of a 1 KiB write and 7% of a
+// 4 KiB one there.
+//
+// It is a second kernel rather than two more arguments on accumBlocks so that
+// the drain a small write makes, which has one run, pays nothing for it: the
+// seventh argument was tried that way once and cost 64-byte writes 5% on a
+// Zen 4.
+func emitAccumBlocks2(a Arch) { emitBlockWalk(a, 2) }
+
+func emitBlockWalk(a Arch, runs int) {
 	b := a.Build()
 	acc, in, left, sec := a.ArgGPR(0), a.ArgGPR(1), a.ArgGPR(2), a.ArgGPR(3)
 	lim, soFar := a.ArgGPR(4), a.ArgGPR(5)
 	nspb, s, k, cnt, tmp := a.TmpGPR(0), a.TmpGPR(1), a.TmpGPR(2), a.TmpGPR(3), a.TmpGPR(4)
+	var in2, left2 GPR
+	if runs == 2 {
+		in2, left2 = a.ArgGPR(6), a.ArgGPR(7)
+		noOverlap(a, 8, 5)
+	} else {
+		noOverlap(a, 6, 5)
+	}
 
 	a.Setup(true)
 	a.LoadAcc(acc, false)
@@ -194,9 +248,15 @@ func emitAccumBlocks(a Arch) {
 	a.MovRR(k, nspb)
 	a.SubRR(k, soFar)
 
-	loop, done := b.NewLabel("blocks"), b.NewLabel("bdone")
+	// out is where a run ends: the epilogue, or with two runs the switch to
+	// the second, which comes back to loop with s and k carried over.
+	loop, next, done := b.NewLabel("blocks"), b.NewLabel("bnext"), b.NewLabel("bdone")
+	out := done
+	if runs == 2 {
+		out = next
+	}
 	b.Label(loop)
-	a.BranchI(left, 0, LE, done)
+	a.BranchI(left, 0, LE, out)
 	if ns := a.FastBlockStripes(); ns > 0 {
 		// Whole blocks of the standard length run with the secret schedule in
 		// registers; see FastStripe. It covers only a position at a block
@@ -238,8 +298,11 @@ func emitAccumBlocks(a Arch) {
 		a.MovRR(tmp, cnt)
 		emitStripeLoop(a, in, s, cnt)
 
-		// Anything short of the whole run means the input ran out first.
-		a.BranchR(tmp, k, NE, done)
+		// Anything short of the whole run means the input ran out first;
+		// k then holds what is left of the block, and s, which the stripe
+		// loop advanced, where in it the next run picks up.
+		a.SubRR(k, tmp)
+		a.BranchI(k, 0, NE, out)
 
 		a.Materialize(false)
 		a.MovRR(tmp, sec)
@@ -248,6 +311,14 @@ func emitAccumBlocks(a Arch) {
 
 		a.MovRR(s, sec)
 		a.MovRR(k, nspb)
+		a.Jmp(loop)
+	}
+	if runs == 2 {
+		b.Label(next)
+		a.BranchI(left2, 0, LE, done)
+		a.MovRR(in, in2)
+		a.MovRR(left, left2)
+		a.MovRI(left2, 0)
 		a.Jmp(loop)
 	}
 	b.Label(done)

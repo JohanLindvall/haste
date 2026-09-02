@@ -24,6 +24,11 @@ func accumBlocksSSE2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsaf
 //go:noescape
 func accumSSE2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer)
 
+// accumBlocks2SSE2 is accumBlocks over two runs, nbStripes stripes at in and then nbStripes2 at in2, as one walk of the block.
+//
+//go:noescape
+func accumBlocks2SSE2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int, in2 unsafe.Pointer, nbStripes2 int)
+
 // hashLongAVX2 consumes a whole long input -- blocks, scrambles, trailing stripes and the overlapping final stripe -- into acc, starting from initAcc.
 //
 //go:noescape
@@ -39,6 +44,11 @@ func accumBlocksAVX2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsaf
 //go:noescape
 func accumAVX2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer)
 
+// accumBlocks2AVX2 is accumBlocks over two runs, nbStripes stripes at in and then nbStripes2 at in2, as one walk of the block.
+//
+//go:noescape
+func accumBlocks2AVX2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int, in2 unsafe.Pointer, nbStripes2 int)
+
 // hashLongAVX512 consumes a whole long input -- blocks, scrambles, trailing stripes and the overlapping final stripe -- into acc, starting from initAcc.
 //
 //go:noescape
@@ -53,3 +63,8 @@ func accumBlocksAVX512(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec uns
 //
 //go:noescape
 func accumAVX512(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer)
+
+// accumBlocks2AVX512 is accumBlocks over two runs, nbStripes stripes at in and then nbStripes2 at in2, as one walk of the block.
+//
+//go:noescape
+func accumBlocks2AVX512(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int, in2 unsafe.Pointer, nbStripes2 int)

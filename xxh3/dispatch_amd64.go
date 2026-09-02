@@ -95,7 +95,7 @@ func setBackend(name string) bool {
 	return false
 }
 
-// The three entry points are assembly, in dispatch_amd64.s: each reads
+// The four entry points are assembly, in dispatch_amd64.s: each reads
 // backend and jumps to the kernel it names. A Go switch here was a real call
 // between sum64NS and the kernel -- three cases cost 199 nodes against the
 // inliner's budget of 80 -- so a long hash reached its kernel two calls deep,
@@ -113,6 +113,9 @@ func accumStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsa
 
 //go:noescape
 func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int)
+
+//go:noescape
+func accumBlocks2(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int, in2 unsafe.Pointer, nbStripes2 int)
 
 //go:noescape
 func cpuid(eaxArg, ecxArg uint32) (eax, ebx, ecx, edx uint32)

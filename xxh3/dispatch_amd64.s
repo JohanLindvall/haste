@@ -1,4 +1,4 @@
-// Hand-written, not generated: the three kernel entry points, each a tail
+// Hand-written, not generated: the four kernel entry points, each a tail
 // jump to the kernel dispatch picked. See dispatch_amd64.go for why this is
 // assembly rather than a Go switch.
 
@@ -50,3 +50,16 @@ avx2:
 	JMP	·accumAVX2(SB)
 avx512:
 	JMP	·accumAVX512(SB)
+
+// func accumBlocks2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int, in2 unsafe.Pointer, nbStripes2 int)
+TEXT ·accumBlocks2(SB), NOSPLIT, $0-64
+	MOVBLZX	·backend(SB), AX
+	CMPB	AL, $2
+	JEQ	avx512
+	CMPB	AL, $1
+	JEQ	avx2
+	JMP	·accumBlocks2SSE2(SB)
+avx2:
+	JMP	·accumBlocks2AVX2(SB)
+avx512:
+	JMP	·accumBlocks2AVX512(SB)

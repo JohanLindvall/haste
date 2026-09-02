@@ -170,7 +170,7 @@ func (d *Digest) write(p []byte) {
 	// whether the period is learned turned out to depend on the number of
 	// taken branches per write, the caller's included, so no shape here can
 	// settle it. Recorded so the next reader does not chase it.
-	if d.bufUsed+n > internalBufferSize && d.overflow(p) {
+	if d.bufUsed+n > internalBufferSize && d.absorb(p) {
 		return
 	}
 	// The slot is formed by arithmetic rather than by indexing, which
@@ -229,61 +229,50 @@ func (d *Digest) write(p []byte) {
 	}
 }
 
-// overflow handles a write that does not fit the staging area. A large one
-// goes through absorb whole, and overflow reports true. Otherwise the staged
-// whole stripes are absorbed with one kernel call and the window and the
-// staged remainder slide down, so that p can then be staged like any other
-// write, and overflow reports false. Every staged whole stripe is safe to
-// take, because the write that did not fit continues the message past them.
+// absorb handles a write that does not fit the staging area, and reports
+// whether it took all of p.
 //
-// The drain is what a small write pays instead of absorb's general path:
-// that makes two calls, one for the staged bytes and one straight out of p,
-// and on a Zen 4 the call's fixed cost (accumulators loaded and stored,
-// prologue) was a third of a 256-byte Write; re-staging p is cheaper until
-// p is most of the staging area, which is where the line is drawn. The
-// bound also keeps the slide provably in bounds: at most 63 staged bytes
-// remain, so window + remainder + p fits. The counts are non-negative and
-// the divisions are by a power of two: taken as unsigned they are one shift
-// each, where a signed division by a constant is four instructions of
-// rounding on every one.
+// A small write drains: the staged whole stripes are absorbed with one
+// kernel call and the window and the staged remainder slide down, so that p
+// can then be staged by write like any other, and absorb reports false.
+// Every staged whole stripe is safe to take, because the write that did not
+// fit continues the message past them. That is what a small write pays
+// instead of the general path below: on a Zen 4 a kernel call's fixed cost
+// (accumulators loaded and stored, prologue) was a third of a 256-byte
+// Write, and re-staging p is cheaper until p is most of the staging area,
+// which is where the line is drawn. The bound also keeps the slide provably
+// in bounds: at most 63 staged bytes remain, so window + remainder + p fits.
 //
-// It is one function rather than a size test in write and a drain beside it
-// so that the block write jumps to has a call in it, which the compiler
-// takes as the unlikely side: staging then falls through, and a write pays
-// no taken branch to reach it.
-func (d *Digest) overflow(p []byte) bool {
-	if len(p) >= internalBufferSize-(stripeLen-1) {
-		d.absorb(p)
-		return true
-	}
+// A large write takes every stripe that is safe to take from the staged
+// bytes followed by p, leaves the window re-established, and absorb reports
+// true. A stripe is only safe once the message is known to continue past
+// it: the final stripe is absorbed by Sum64, from the end of the message,
+// and must not also be absorbed here. That is what the -1 holds back.
+//
+// Both paths are one function so that the block write jumps to has a call
+// in it, which the compiler takes as the unlikely side: staging then falls
+// through, and a write pays no taken branch to reach it. The counts below
+// are non-negative and the divisions are by a power of two: taken as
+// unsigned they are one shift each, where a signed division by a constant
+// is four instructions of rounding on every one.
+func (d *Digest) absorb(p []byte) bool {
 	// The secret and the position within the block are lifted out and the
 	// backend is called directly: the wrapper layer around it showed up as
 	// 9% of a small-write benchmark.
-	soFar := d.nbStripesSoFar
-	k := int(uint(d.bufUsed) / stripeLen)
-	accumBlocks(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), k, d.secretPtr(), d.secretLimit, soFar)
-	d.nbStripesSoFar = d.wrap(soFar + k)
-	// Slide the new window -- the last 64 bytes absorbed -- and the
-	// staged remainder down.
-	rem := int(uint(d.bufUsed) % stripeLen)
-	copy(d.buf[:stripeLen+rem], d.buf[k*stripeLen:stripeLen+d.bufUsed])
-	d.bufUsed = rem
-	return false
-}
-
-// absorb takes every stripe that is safe to take from the staged bytes
-// followed by p, and leaves the window re-established. It is the path of
-// a write too large to stage after a drain; see overflow for the rest.
-//
-// A stripe is only safe once the message is known to continue past it: the
-// final stripe is absorbed by Sum64, from the end of the message, and must not
-// also be absorbed here. That is what the -1 holds back.
-func (d *Digest) absorb(p []byte) {
-	// The secret and the position within the block are lifted out and the
-	// backend is called directly: this runs twice per Write, and the wrapper
-	// layer around it showed up as 9% of a small-write benchmark.
 	sec := d.secretPtr()
 	soFar := d.nbStripesSoFar
+
+	if len(p) < internalBufferSize-(stripeLen-1) {
+		k := int(uint(d.bufUsed) / stripeLen)
+		accumBlocks(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), k, sec, d.secretLimit, soFar)
+		d.nbStripesSoFar = d.wrap(soFar + k)
+		// Slide the new window -- the last 64 bytes absorbed -- and the
+		// staged remainder down.
+		rem := int(uint(d.bufUsed) % stripeLen)
+		copy(d.buf[:stripeLen+rem], d.buf[k*stripeLen:stripeLen+d.bufUsed])
+		d.bufUsed = rem
+		return false
+	}
 
 	nb := int(uint(d.bufUsed+len(p)-1) / stripeLen)
 
@@ -298,28 +287,32 @@ func (d *Digest) absorb(p []byte) {
 		d.bufUsed += pOff
 		staged++
 	}
-	if staged > 0 {
-		accumBlocks(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), staged, sec, d.secretLimit, soFar)
-		soFar = d.wrap(soFar + staged)
-		nb -= staged
-	}
 
-	if nb > 0 {
-		// The rest comes straight out of p. The window and what is left over
-		// are adjacent at its end, so one copy re-establishes both.
-		accumBlocks(&d.acc, unsafe.Pointer(&p[pOff]), nb, sec, d.secretLimit, soFar)
-		d.nbStripesSoFar = d.wrap(soFar + nb)
-		pOff += nb * stripeLen
+	// The staged stripes and then the rest straight out of p, in one call.
+	// The two runs are never contiguous, and a write of whole kibibytes
+	// stages exactly one stripe -- the one held back from the write before
+	// in case it was the message's last -- which in a call of its own cost
+	// 123 instructions and 26 cycles on a Redwood Cove for four cycles of
+	// work: a fifth of a 1 KiB write. Either count may be zero.
+	direct := nb - staged
+	accumBlocks2(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), staged, sec, d.secretLimit, soFar,
+		add(unsafe.Pointer(unsafe.SliceData(p)), uintptr(pOff)), direct)
+	d.nbStripesSoFar = d.wrap(soFar + nb)
+
+	if direct > 0 {
+		// The window and what is left over are adjacent at the end of what
+		// came out of p, so one copy re-establishes both.
+		pOff += direct * stripeLen
 		d.bufUsed = copy(d.buf[:], p[pOff-stripeLen:]) - stripeLen
-		return
+		return true
 	}
-	d.nbStripesSoFar = soFar
 
 	// Nothing came out of p, so the window is still inside the staging area.
 	// Slide it down with whatever it did not reach, then stage the rest.
 	src := stripeLen + staged*stripeLen
 	d.bufUsed = copy(d.buf[:], d.buf[src-stripeLen:stripeLen+d.bufUsed]) - stripeLen
 	d.bufUsed += copy(d.buf[stripeLen+d.bufUsed:], p[pOff:])
+	return true
 }
 
 // consumeStripes runs nbStripes stripes through acc, scrambling at each block

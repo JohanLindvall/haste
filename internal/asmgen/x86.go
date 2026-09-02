@@ -49,10 +49,16 @@ var x86GPRNames = map[GPR]string{
 //
 // R15 is reserved under dynamic linking and X15 is the zero register, so
 // neither appears above or in the vector pools below.
-var x86ArgGPR = []GPR{rDI, rSI, rDX, rCX, r8, r9}
+// The seventh and eighth argument registers are r14 and rAX. r14 is the
+// goroutine pointer in ABIInternal only, and every kernel here is ABI0; see
+// the ABI notes in CLAUDE.md, and the XXH64 kernel, which holds a prime
+// there. rAX is also the last temporary: only accumBlocks2 has eight
+// arguments and it uses five temporaries, and only hashLong uses six and it
+// has five arguments. noOverlap in kernel.go holds every emitter to that.
+var x86ArgGPR = []GPR{rDI, rSI, rDX, rCX, r8, r9, r14, rAX}
 
-// rAX is last: Setup uses it to stage the broadcast constant, and does so
-// before any kernel has a temporary live.
+// Setup stages the broadcast constant through r10, the first temporary,
+// before any kernel has one live.
 var x86TmpGPR = []GPR{r10, r11, r12, r13, rBX, rAX}
 
 // PrefetchDistance, when nonzero, makes every x86 stripe prefetch the input
@@ -452,8 +458,9 @@ func (x *x86) hi32(dst, src VReg) {
 }
 
 // Setup broadcasts PRIME32_1 for the scramble step, and does nothing at all
-// for a kernel that cannot reach one. It clobbers rAX, which the kernel has
-// nothing live in at that point.
+// for a kernel that cannot reach one. It stages the constant in r10, the
+// first temporary, which the kernel has nothing live in at that point; rAX
+// would be the eighth argument.
 //
 // The two narrower backends want the constant in every 32-bit element, because
 // they build the 64-bit product from two 32x32 multiplies; the AVX-512 one has
@@ -467,26 +474,26 @@ func (x *x86) Setup(scramble bool) {
 	// on a 32-bit host, where the generator and the test suite still have to
 	// build even though no kernel here runs there.
 	const prime32_1 uint32 = 0x9E3779B1
-	x.b.emit(func(m *Machine) { m.R[rAX] = uint64(prime32_1) }, "movl $%d, %%eax", prime32_1)
+	x.b.emit(func(m *Machine) { m.R[r10] = uint64(prime32_1) }, "movl $%d, %%r10d", prime32_1)
 	bcast32 := func(m *Machine) {
-		c := uint64(uint32(m.R[rAX]))
+		c := uint64(uint32(m.R[r10]))
 		for i := 0; i < x.lanes; i++ {
 			m.V[x.kprime][i] = c | c<<32
 		}
 	}
 	switch x.mode {
 	case modeSSE2:
-		x.b.emit(func(m *Machine) {}, "movd %%eax, %%xmm%d", int(x.kprime))
+		x.b.emit(func(m *Machine) {}, "movd %%r10d, %%xmm%d", int(x.kprime))
 		x.b.emit(bcast32, "pshufd $0, %s, %s", x.vec(x.kprime), x.vec(x.kprime))
 	case modeAVX2:
-		x.b.emit(func(m *Machine) {}, "vmovd %%eax, %%xmm%d", int(x.kprime))
+		x.b.emit(func(m *Machine) {}, "vmovd %%r10d, %%xmm%d", int(x.kprime))
 		x.b.emit(bcast32, "vpbroadcastd %%xmm%d, %s", int(x.kprime), x.vec(x.kprime))
 	default:
 		x.b.emit(func(m *Machine) {
 			for i := 0; i < x.lanes; i++ {
-				m.V[x.kprime][i] = m.R[rAX]
+				m.V[x.kprime][i] = m.R[r10]
 			}
-		}, "vpbroadcastq %%rax, %s", x.vec(x.kprime))
+		}, "vpbroadcastq %%r10, %s", x.vec(x.kprime))
 	}
 }
 

@@ -178,6 +178,28 @@ func TestKernelsMatchPortable(t *testing.T) {
 					}
 				}
 
+				// accumBlocks2: the same walk over two runs, the second at a
+				// separate address, with the first run stopping short of the
+				// boundary, on it, and past it, and either run empty.
+				for _, soFar := range []int{0, 1, perBlock - 1} {
+					for _, n1 := range []int{0, 1, perBlock - soFar, perBlock - soFar + 1, 2 * perBlock} {
+						for _, n2 := range []int{0, 1, perBlock - 1, perBlock, 2*perBlock + 3} {
+							if n1 < 0 || stripeLen*(n1+n2+3) > len(buf) {
+								continue
+							}
+							bp2 := unsafe.Pointer(&buf[stripeLen*(n1+3)])
+							want, got := initAcc, initAcc
+							accumBlocksGeneric(&want, bp, n1, sp, limit, soFar)
+							accumBlocksGeneric(&want, bp2, n2, sp, limit, (soFar+n1)%perBlock)
+							accumBlocks2(&got, bp, n1, sp, limit, soFar, bp2, n2)
+							if got != want {
+								t.Fatalf("accumBlocks2 secretLen=%d soFar=%d n1=%d n2=%d:\n got %v\nwant %v",
+									secLen, soFar, n1, n2, got, want)
+							}
+						}
+					}
+				}
+
 				// accumStripes: one run against one secret position. The count
 				// is capped by the secret, which has to hold a whole stripe at
 				// the last position the run reaches.

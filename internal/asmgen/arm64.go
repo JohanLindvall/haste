@@ -10,7 +10,12 @@ import "fmt"
 
 // Go's arm64 ABI reserves R18 (platform), R27 (assembler temporary), R28
 // (goroutine), R29 (frame pointer) and R30 (link register); none appear here.
-var armArgGPR = []GPR{0, 1, 2, 3, 4, 5}
+// The seventh and eighth argument registers are x26 and x11: only
+// accumBlocks2 has eight arguments, and it has no table for x26 to point at
+// and uses five temporaries, so the sixth, x11, is free. Every other register
+// below x26 is spoken for in the split kernels. noOverlap in kernel.go holds
+// every emitter to its share.
+var armArgGPR = []GPR{0, 1, 2, 3, 4, 5, 26, 11}
 var armTmpGPR = []GPR{6, 7, 8, 9, 10, 11}
 
 // armConstGPR carries the scramble constant into a vector register.

@@ -138,3 +138,20 @@ func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsaf
 		accumBlocksNEON(acc, in, nbStripes, sec, secretLimit, soFar)
 	}
 }
+
+func accumBlocks2(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int, in2 unsafe.Pointer, nbStripes2 int) {
+	switch backend {
+	case backendSVE2VL256:
+		accumBlocks2SVE2VL256(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
+	case backendSVE2VL512:
+		accumBlocks2SVE2VL512(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
+	case backendSVE2VL128:
+		accumBlocks2SVE2VL128(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
+	case backendNEONHybrid:
+		accumBlocks2NEONHybrid(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
+	case backendNEONHybrid2:
+		accumBlocks2NEONHybrid2(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
+	default:
+		accumBlocks2NEON(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
+	}
+}

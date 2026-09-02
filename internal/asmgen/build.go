@@ -184,6 +184,7 @@ func (f Function) Decl() string {
 	types := map[string]string{
 		"acc": "*[8]uint64", "in": "unsafe.Pointer", "sec": "unsafe.Pointer",
 		"n": "int", "nbStripes": "int", "secretLimit": "int", "soFar": "int",
+		"in2": "unsafe.Pointer", "nbStripes2": "int",
 		"lanes": "*[4]uint64", "seed": "uint64", "nbBlocks": "int", "split": "int",
 	}
 	var args []string
