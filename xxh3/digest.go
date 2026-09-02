@@ -301,9 +301,30 @@ func (d *Digest) absorb(p []byte) bool {
 
 	if direct > 0 {
 		// The window and what is left over are adjacent at the end of what
-		// came out of p, so one copy re-establishes both.
+		// came out of p: the last stripe absorbed, then the bytes held back,
+		// which are at least one, because nb was formed with a byte held
+		// back, and at most a stripe, because that is all the -1 can hold
+		// back. That is 65..128 bytes, copied
+		// as its first 64 and its last 64 with fixed moves, which overlap
+		// when the remainder is short and land exactly when it is a whole
+		// stripe -- every write of whole kibibytes. It used to be one call
+		// into memmove, whose bounds, the call and the reloads around it
+		// were some 50 of the 170 instructions a kibibyte write spent
+		// outside the kernel on a Neoverse N2.
 		pOff += direct * stripeLen
-		d.bufUsed = copy(d.buf[:], p[pOff-stripeLen:]) - stripeLen
+		rem := len(p) - pOff
+		src := add(unsafe.Pointer(unsafe.SliceData(p)), uintptr(pOff-stripeLen))
+		dst := unsafe.Pointer(&d.buf)
+		*(*[16]byte)(dst) = *(*[16]byte)(src)
+		*(*[16]byte)(add(dst, 16)) = *(*[16]byte)(add(src, 16))
+		*(*[16]byte)(add(dst, 32)) = *(*[16]byte)(add(src, 32))
+		*(*[16]byte)(add(dst, 48)) = *(*[16]byte)(add(src, 48))
+		src, dst = add(src, uintptr(rem)), add(dst, uintptr(rem))
+		*(*[16]byte)(dst) = *(*[16]byte)(src)
+		*(*[16]byte)(add(dst, 16)) = *(*[16]byte)(add(src, 16))
+		*(*[16]byte)(add(dst, 32)) = *(*[16]byte)(add(src, 32))
+		*(*[16]byte)(add(dst, 48)) = *(*[16]byte)(add(src, 48))
+		d.bufUsed = rem
 		return true
 	}
 
