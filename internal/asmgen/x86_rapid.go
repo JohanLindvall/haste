@@ -215,6 +215,13 @@ func (x *x86Rapid) SeedConst() { x.movSec(x.Seed(), 8) }
 // around mulx, and has none to spare beyond that.
 func (x *x86Rapid) HoldSecret(...int) {}
 
+// RoundPair is two Rounds here, in order: the x86 loop is bound by its
+// multiplier and its instruction count, not by how the two are spread.
+func (x *x86Rapid) RoundPair(lane0 GPR, off0, slot0 int, lane1 GPR, off1, slot1 int) {
+	x.Round(lane0, off0, slot0)
+	x.Round(lane1, off1, slot1)
+}
+
 func (x *x86Rapid) Round(lane GPR, off, slot int) {
 	// lane = mix(load(in+off) ^ secret[slot], load(in+off+8) ^ lane)
 	//

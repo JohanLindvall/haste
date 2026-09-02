@@ -232,6 +232,41 @@ func (a *arm64Rapid) Round(lane GPR, off, slot int) {
 	a.mix(lane, w0, w1)
 }
 
+// RoundPair is two lanes' rounds interleaved: both loads, the four xors,
+// the four multiplies with each lane's low and high halves together, then
+// the two folds. The second round has scratch registers of its own, x23,
+// x24 and x25, which nothing else in the kernel uses.
+//
+// Measured on a Neoverse N2 with the loop's instructions in every order a
+// probe could hold, as cycles per 224-byte pass: one round after another
+// 26.5, this 24.0, the two multiplies of a lane apart (mul, mul, umulh,
+// umulh) 25.2, three lanes at a time 24.6, four or seven 26.6, the folds a
+// pair late 24.5, the next pair's loads early 24.5. It is not the lanes'
+// chains, which broken outright measure the same 26.5, and not the loads,
+// which replaced by register moves measure 29.3; it is how the dispatcher
+// spreads a stream of xors and multiplies over pipes only two of which
+// multiply, and this order is the one it spreads best. Not measured on
+// an Apple core, whose loop is at its multiplier already.
+func (a *arm64Rapid) RoundPair(lane0 GPR, off0, slot0 int, lane1 GPR, off1, slot1 int) {
+	if !a.held[slot0] || !a.held[slot1] {
+		panic("asmgen: arm64 RoundPair needs its secret words held")
+	}
+	w0, w1, h0 := a.tmp(), a.A(), a.tmp2()
+	v0, v1, h1 := GPR(23), GPR(24), GPR(25)
+	a.ldp(w0, w1, a.In(), off0)
+	a.ldp(v0, v1, a.In(), off1)
+	a.eor(w0, w0, a.secReg(slot0))
+	a.eor(w1, w1, lane0)
+	a.eor(v0, v0, a.secReg(slot1))
+	a.eor(v1, v1, lane1)
+	a.mul(lane0, w0, w1)
+	a.umulh(h0, w0, w1)
+	a.mul(lane1, v0, v1)
+	a.umulh(h1, v0, v1)
+	a.eor(lane0, lane0, h0)
+	a.eor(lane1, lane1, h1)
+}
+
 // DualMul is off: mul and umulh are three-operand and unconstrained, so
 // there is no second form to choose between.
 func (a *arm64Rapid) DualMul() bool { return false }
