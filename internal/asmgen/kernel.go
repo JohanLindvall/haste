@@ -103,17 +103,14 @@ func emitHashLong(a Arch) {
 	a.LoadAcc(a.TableGPR(), true)
 
 	// end = in + n - 64, the address of the final stripe.
-	a.MovRR(end, in)
-	a.AddRR(end, n)
+	a.AddRRR(end, in, n)
 	a.SubRI(end, stripeLen)
 
 	// blk = (secretLimit / 8) * 64, the block length in bytes.
-	a.MovRR(blk, lim)
-	a.ShrRI(blk, 3)
+	a.ShrRRI(blk, lim, 3)
 	a.ShlRI(blk, 6)
 
-	a.MovRR(rem, n)
-	a.SubRI(rem, 1)
+	a.SubRRI(rem, n, 1)
 
 	blockLoop, afterBlocks := b.NewLabel("block"), b.NewLabel("tail")
 	if ns := a.FastBlockStripes(); ns > 0 {
@@ -125,8 +122,7 @@ func emitHashLong(a Arch) {
 		a.BranchI(lim, int64(ns*secretConsumeRate), NE, generic)
 		a.BranchI(rem, int64(ns*stripeLen*minFastBlocks), LT, generic)
 		a.LoadSecretRegs(sec)
-		a.MovRR(tmp, sec)
-		a.AddRR(tmp, lim)
+		a.AddRRR(tmp, sec, lim)
 		b.Label(fast)
 		for k := 0; k < ns; k++ {
 			a.FastStripe(k, in, stripeLen*k)
@@ -142,14 +138,12 @@ func emitHashLong(a Arch) {
 	b.Label(blockLoop)
 	a.BranchR(rem, blk, LT, afterBlocks)
 	{
-		a.MovRR(cnt, lim)
-		a.ShrRI(cnt, 3)
+		a.ShrRRI(cnt, lim, 3)
 		a.MovRR(s, sec)
 		emitStripeLoop(a, in, s, cnt)
 
 		a.Materialize(false)
-		a.MovRR(tmp, sec)
-		a.AddRR(tmp, lim)
+		a.AddRRR(tmp, sec, lim)
 		a.Scramble(tmp, 0)
 
 		a.SubRR(rem, blk)
@@ -158,16 +152,14 @@ func emitHashLong(a Arch) {
 	b.Label(afterBlocks)
 
 	// The stripes after the last whole block reuse the secret from its start.
-	a.MovRR(cnt, rem)
-	a.ShrRI(cnt, 6)
+	a.ShrRRI(cnt, rem, 6)
 	a.MovRR(s, sec)
 	emitStripeLoop(a, in, s, cnt)
 
 	// The final stripe is taken from the end of the input, overlapping
 	// whatever came before it, under a secret deliberately misaligned from the
 	// per-stripe schedule.
-	a.MovRR(tmp, sec)
-	a.AddRR(tmp, lim)
+	a.AddRRR(tmp, sec, lim)
 	a.SubRI(tmp, secretLastAccStart)
 	a.Stripe(Standalone, end, 0, tmp, 0)
 
@@ -237,16 +229,12 @@ func emitBlockWalk(a Arch, runs int) {
 	a.Setup(true)
 	a.LoadAcc(acc, false)
 
-	a.MovRR(nspb, lim)
-	a.ShrRI(nspb, 3)
+	a.ShrRRI(nspb, lim, 3)
 
 	// The first run is however much of the current block is left; every run
 	// after a scramble is a whole block.
-	a.MovRR(s, soFar)
-	a.ShlRI(s, 3)
-	a.AddRR(s, sec)
-	a.MovRR(k, nspb)
-	a.SubRR(k, soFar)
+	a.AddShl(s, sec, soFar, 3)
+	a.SubRRR(k, nspb, soFar)
 
 	// out is where a run ends: the epilogue, or with two runs the switch to
 	// the second, which comes back to loop with s and k carried over.
@@ -272,8 +260,7 @@ func emitBlockWalk(a Arch, runs int) {
 		a.BranchI(lim, int64(ns*secretConsumeRate), NE, slow)
 		a.BranchR(k, nspb, NE, slow)
 		a.LoadSecretRegs(sec)
-		a.MovRR(tmp, sec)
-		a.AddRR(tmp, lim)
+		a.AddRRR(tmp, sec, lim)
 		b.Label(fast)
 		for i := 0; i < ns; i++ {
 			a.FastStripe(i, in, stripeLen*i)
@@ -287,12 +274,7 @@ func emitBlockWalk(a Arch, runs int) {
 		b.Label(slow)
 	}
 	{
-		// cnt = min(k, left)
-		a.MovRR(cnt, k)
-		skip := b.NewLabel("min")
-		a.BranchR(cnt, left, LE, skip)
-		a.MovRR(cnt, left)
-		b.Label(skip)
+		a.Min(cnt, k, left)
 
 		a.SubRR(left, cnt)
 		a.MovRR(tmp, cnt)
@@ -305,8 +287,7 @@ func emitBlockWalk(a Arch, runs int) {
 		a.BranchI(k, 0, NE, out)
 
 		a.Materialize(false)
-		a.MovRR(tmp, sec)
-		a.AddRR(tmp, lim)
+		a.AddRRR(tmp, sec, lim)
 		a.Scramble(tmp, 0)
 
 		a.MovRR(s, sec)

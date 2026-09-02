@@ -28,22 +28,18 @@ TEXT ·hashLongNEONHybrid(SB), NOSPLIT, $0-40
 	WORD $0x6f00e405 // movi v5.2d, #0x0
 	WORD $0xa9424f51 // ldp x17, x19, [x26, #32]
 	WORD $0xa9435754 // ldp x20, x21, [x26, #48]
-	WORD $0xaa0103ea // mov x10, x1
-	WORD $0x8b02014a // add x10, x10, x2
+	WORD $0x8b02002a // add x10, x1, x2
 	WORD $0xd101014a // sub x10, x10, #0x40
-	WORD $0xaa0403e6 // mov x6, x4
-	WORD $0xd343fcc6 // lsr x6, x6, #3
+	WORD $0xd343fc86 // lsr x6, x4, #3
 	WORD $0xd37ae4c6 // lsl x6, x6, #6
-	WORD $0xaa0203e7 // mov x7, x2
-	WORD $0xd10004e7 // sub x7, x7, #0x1
+	WORD $0xd1000447 // sub x7, x2, #0x1
 	// .Lblock1:
 	WORD $0xeb0600ff // cmp x7, x6
-	WORD $0x540019eb // b.lt 388 <kernel+0x388> // b.tstop
-	WORD $0xaa0403e8 // mov x8, x4
-	WORD $0xd343fd08 // lsr x8, x8, #3
+	WORD $0x540019ab // b.lt 374 <kernel+0x374> // b.tstop
+	WORD $0xd343fc88 // lsr x8, x4, #3
 	WORD $0xaa0303e9 // mov x9, x3
 	WORD $0xf1001108 // subs x8, x8, #0x4
-	WORD $0x54000fab // b.lt 254 <kernel+0x254> // b.tstop
+	WORD $0x54000fab // b.lt 244 <kernel+0x244> // b.tstop
 	WORD $0xa9425d36 // ldp x22, x23, [x9, #32]
 	WORD $0xa9436538 // ldp x24, x25, [x9, #48]
 	// .Lunroll3:
@@ -168,11 +164,11 @@ TEXT ·hashLongNEONHybrid(SB), NOSPLIT, $0-40
 	WORD $0x91040021 // add x1, x1, #0x100
 	WORD $0x91008129 // add x9, x9, #0x20
 	WORD $0xf1001108 // subs x8, x8, #0x4
-	WORD $0x54fff0ea // b.ge 6c <kernel+0x6c> // b.tcont
+	WORD $0x54fff0ea // b.ge 5c <kernel+0x5c> // b.tcont
 	// .Lone4:
 	WORD $0x91001108 // add x8, x8, #0x4
 	WORD $0xf100011f // cmp x8, #0x0
-	WORD $0x5400046d // b.le 2e8 <kernel+0x2e8>
+	WORD $0x5400046d // b.le 2d8 <kernel+0x2d8>
 	// .Lonebody6:
 	WORD $0xad404430 // ldp q16, q17, [x1]
 	WORD $0xad404d32 // ldp q18, q19, [x9]
@@ -207,7 +203,7 @@ TEXT ·hashLongNEONHybrid(SB), NOSPLIT, $0-40
 	WORD $0x91010021 // add x1, x1, #0x40
 	WORD $0x91002129 // add x9, x9, #0x8
 	WORD $0xf1000508 // subs x8, x8, #0x1
-	WORD $0x54fffbec // b.gt 260 <kernel+0x260>
+	WORD $0x54fffbec // b.gt 250 <kernel+0x250>
 	// .Ldone5:
 	WORD $0x6e044090 // ext v16.16b, v4.16b, v4.16b, #8
 	WORD $0x4ef08400 // add v0.2d, v0.2d, v16.2d
@@ -215,8 +211,7 @@ TEXT ·hashLongNEONHybrid(SB), NOSPLIT, $0-40
 	WORD $0x6e0540b0 // ext v16.16b, v5.16b, v5.16b, #8
 	WORD $0x4ef08421 // add v1.2d, v1.2d, v16.2d
 	WORD $0x6f00e405 // movi v5.2d, #0x0
-	WORD $0xaa0303eb // mov x11, x3
-	WORD $0x8b04016b // add x11, x11, x4
+	WORD $0x8b04006b // add x11, x3, x4
 	WORD $0xca51be31 // eor x17, x17, x17, lsr #47
 	WORD $0xf940116d // ldr x13, [x11, #32]
 	WORD $0xca0d0231 // eor x17, x17, x13
@@ -248,13 +243,12 @@ TEXT ·hashLongNEONHybrid(SB), NOSPLIT, $0-40
 	WORD $0x4eae9c21 // mul v1.4s, v1.4s, v14.4s
 	WORD $0x2eaf8201 // umlal v1.2d, v16.2s, v15.2s
 	WORD $0xcb0600e7 // sub x7, x7, x6
-	WORD $0x17ffff31 // b 48 <kernel+0x48>
+	WORD $0x17ffff33 // b 3c <kernel+0x3c>
 	// .Ltail2:
-	WORD $0xaa0703e8 // mov x8, x7
-	WORD $0xd346fd08 // lsr x8, x8, #6
+	WORD $0xd346fce8 // lsr x8, x7, #6
 	WORD $0xaa0303e9 // mov x9, x3
 	WORD $0xf1001108 // subs x8, x8, #0x4
-	WORD $0x54000fab // b.lt 58c <kernel+0x58c> // b.tstop
+	WORD $0x54000fab // b.lt 574 <kernel+0x574> // b.tstop
 	WORD $0xa9425d36 // ldp x22, x23, [x9, #32]
 	WORD $0xa9436538 // ldp x24, x25, [x9, #48]
 	// .Lunroll7:
@@ -379,11 +373,11 @@ TEXT ·hashLongNEONHybrid(SB), NOSPLIT, $0-40
 	WORD $0x91040021 // add x1, x1, #0x100
 	WORD $0x91008129 // add x9, x9, #0x20
 	WORD $0xf1001108 // subs x8, x8, #0x4
-	WORD $0x54fff0ea // b.ge 3a4 <kernel+0x3a4> // b.tcont
+	WORD $0x54fff0ea // b.ge 38c <kernel+0x38c> // b.tcont
 	// .Lone8:
 	WORD $0x91001108 // add x8, x8, #0x4
 	WORD $0xf100011f // cmp x8, #0x0
-	WORD $0x5400046d // b.le 620 <kernel+0x620>
+	WORD $0x5400046d // b.le 608 <kernel+0x608>
 	// .Lonebody10:
 	WORD $0xad404430 // ldp q16, q17, [x1]
 	WORD $0xad404d32 // ldp q18, q19, [x9]
@@ -418,10 +412,9 @@ TEXT ·hashLongNEONHybrid(SB), NOSPLIT, $0-40
 	WORD $0x91010021 // add x1, x1, #0x40
 	WORD $0x91002129 // add x9, x9, #0x8
 	WORD $0xf1000508 // subs x8, x8, #0x1
-	WORD $0x54fffbec // b.gt 598 <kernel+0x598>
+	WORD $0x54fffbec // b.gt 580 <kernel+0x580>
 	// .Ldone9:
-	WORD $0xaa0303eb // mov x11, x3
-	WORD $0x8b04016b // add x11, x11, x4
+	WORD $0x8b04006b // add x11, x3, x4
 	WORD $0xd1001d6b // sub x11, x11, #0x7
 	WORD $0xad404550 // ldp q16, q17, [x10]
 	WORD $0xad404d72 // ldp q18, q19, [x11]
@@ -483,28 +476,21 @@ TEXT ·accumBlocksNEONHybrid(SB), NOSPLIT, $0-48
 	WORD $0x6f00e405 // movi v5.2d, #0x0
 	WORD $0xa9424c11 // ldp x17, x19, [x0, #32]
 	WORD $0xa9435414 // ldp x20, x21, [x0, #48]
-	WORD $0xaa0403e6 // mov x6, x4
-	WORD $0xd343fcc6 // lsr x6, x6, #3
-	WORD $0xaa0503e7 // mov x7, x5
-	WORD $0xd37df0e7 // lsl x7, x7, #3
-	WORD $0x8b0300e7 // add x7, x7, x3
-	WORD $0xaa0603e8 // mov x8, x6
-	WORD $0xcb050108 // sub x8, x8, x5
+	WORD $0xd343fc86 // lsr x6, x4, #3
+	WORD $0x8b050c67 // add x7, x3, x5, lsl #3
+	WORD $0xcb0500c8 // sub x8, x6, x5
 	// .Lblocks1:
 	WORD $0xf100005f // cmp x2, #0x0
-	WORD $0x54001acd // b.le 3a0 <kernel+0x3a0>
-	WORD $0xaa0803e9 // mov x9, x8
-	WORD $0xeb02013f // cmp x9, x2
-	WORD $0x5400004d // b.le 5c <kernel+0x5c>
-	WORD $0xaa0203e9 // mov x9, x2
-	// .Lmin4:
+	WORD $0x54001a6d // b.le 384 <kernel+0x384>
+	WORD $0xeb02011f // cmp x8, x2
+	WORD $0x9a82d109 // csel x9, x8, x2, le
 	WORD $0xcb090042 // sub x2, x2, x9
 	WORD $0xaa0903ea // mov x10, x9
 	WORD $0xf1001129 // subs x9, x9, #0x4
-	WORD $0x54000fab // b.lt 25c <kernel+0x25c> // b.tstop
+	WORD $0x54000fab // b.lt 244 <kernel+0x244> // b.tstop
 	WORD $0xa9425cf6 // ldp x22, x23, [x7, #32]
 	WORD $0xa94364f8 // ldp x24, x25, [x7, #48]
-	// .Lunroll5:
+	// .Lunroll4:
 	WORD $0xad404430 // ldp q16, q17, [x1]
 	WORD $0xad404cf2 // ldp q18, q19, [x7]
 	WORD $0x6e321e12 // eor v18.16b, v16.16b, v18.16b
@@ -626,12 +612,12 @@ TEXT ·accumBlocksNEONHybrid(SB), NOSPLIT, $0-48
 	WORD $0x91040021 // add x1, x1, #0x100
 	WORD $0x910080e7 // add x7, x7, #0x20
 	WORD $0xf1001129 // subs x9, x9, #0x4
-	WORD $0x54fff0ea // b.ge 74 <kernel+0x74> // b.tcont
-	// .Lone6:
+	WORD $0x54fff0ea // b.ge 5c <kernel+0x5c> // b.tcont
+	// .Lone5:
 	WORD $0x91001129 // add x9, x9, #0x4
 	WORD $0xf100013f // cmp x9, #0x0
-	WORD $0x5400046d // b.le 2f0 <kernel+0x2f0>
-	// .Lonebody8:
+	WORD $0x5400046d // b.le 2d8 <kernel+0x2d8>
+	// .Lonebody7:
 	WORD $0xad404430 // ldp q16, q17, [x1]
 	WORD $0xad404cf2 // ldp q18, q19, [x7]
 	WORD $0x6e321e12 // eor v18.16b, v16.16b, v18.16b
@@ -665,19 +651,18 @@ TEXT ·accumBlocksNEONHybrid(SB), NOSPLIT, $0-48
 	WORD $0x91010021 // add x1, x1, #0x40
 	WORD $0x910020e7 // add x7, x7, #0x8
 	WORD $0xf1000529 // subs x9, x9, #0x1
-	WORD $0x54fffbec // b.gt 268 <kernel+0x268>
-	// .Ldone7:
+	WORD $0x54fffbec // b.gt 250 <kernel+0x250>
+	// .Ldone6:
 	WORD $0xcb0a0108 // sub x8, x8, x10
 	WORD $0xf100011f // cmp x8, #0x0
-	WORD $0x54000541 // b.ne 3a0 <kernel+0x3a0> // b.any
+	WORD $0x54000521 // b.ne 384 <kernel+0x384> // b.any
 	WORD $0x6e044090 // ext v16.16b, v4.16b, v4.16b, #8
 	WORD $0x4ef08400 // add v0.2d, v0.2d, v16.2d
 	WORD $0x6f00e404 // movi v4.2d, #0x0
 	WORD $0x6e0540b0 // ext v16.16b, v5.16b, v5.16b, #8
 	WORD $0x4ef08421 // add v1.2d, v1.2d, v16.2d
 	WORD $0x6f00e405 // movi v5.2d, #0x0
-	WORD $0xaa0303ea // mov x10, x3
-	WORD $0x8b04014a // add x10, x10, x4
+	WORD $0x8b04006a // add x10, x3, x4
 	WORD $0xca51be31 // eor x17, x17, x17, lsr #47
 	WORD $0xf940114d // ldr x13, [x10, #32]
 	WORD $0xca0d0231 // eor x17, x17, x13
@@ -710,7 +695,7 @@ TEXT ·accumBlocksNEONHybrid(SB), NOSPLIT, $0-48
 	WORD $0x2eaf8201 // umlal v1.2d, v16.2s, v15.2s
 	WORD $0xaa0303e7 // mov x7, x3
 	WORD $0xaa0603e8 // mov x8, x6
-	WORD $0x17ffff2a // b 44 <kernel+0x44>
+	WORD $0x17ffff2d // b 34 <kernel+0x34>
 	// .Lbdone3:
 	WORD $0x6e044090 // ext v16.16b, v4.16b, v4.16b, #8
 	WORD $0x4ef08400 // add v0.2d, v0.2d, v16.2d
@@ -936,28 +921,21 @@ TEXT ·accumBlocks2NEONHybrid(SB), NOSPLIT, $0-64
 	WORD $0x6f00e405 // movi v5.2d, #0x0
 	WORD $0xa9424c11 // ldp x17, x19, [x0, #32]
 	WORD $0xa9435414 // ldp x20, x21, [x0, #48]
-	WORD $0xaa0403e6 // mov x6, x4
-	WORD $0xd343fcc6 // lsr x6, x6, #3
-	WORD $0xaa0503e7 // mov x7, x5
-	WORD $0xd37df0e7 // lsl x7, x7, #3
-	WORD $0x8b0300e7 // add x7, x7, x3
-	WORD $0xaa0603e8 // mov x8, x6
-	WORD $0xcb050108 // sub x8, x8, x5
+	WORD $0xd343fc86 // lsr x6, x4, #3
+	WORD $0x8b050c67 // add x7, x3, x5, lsl #3
+	WORD $0xcb0500c8 // sub x8, x6, x5
 	// .Lblocks1:
 	WORD $0xf100005f // cmp x2, #0x0
-	WORD $0x54001acd // b.le 3a0 <kernel+0x3a0>
-	WORD $0xaa0803e9 // mov x9, x8
-	WORD $0xeb02013f // cmp x9, x2
-	WORD $0x5400004d // b.le 5c <kernel+0x5c>
-	WORD $0xaa0203e9 // mov x9, x2
-	// .Lmin4:
+	WORD $0x54001a6d // b.le 384 <kernel+0x384>
+	WORD $0xeb02011f // cmp x8, x2
+	WORD $0x9a82d109 // csel x9, x8, x2, le
 	WORD $0xcb090042 // sub x2, x2, x9
 	WORD $0xaa0903ea // mov x10, x9
 	WORD $0xf1001129 // subs x9, x9, #0x4
-	WORD $0x54000fab // b.lt 25c <kernel+0x25c> // b.tstop
+	WORD $0x54000fab // b.lt 244 <kernel+0x244> // b.tstop
 	WORD $0xa9425cf6 // ldp x22, x23, [x7, #32]
 	WORD $0xa94364f8 // ldp x24, x25, [x7, #48]
-	// .Lunroll5:
+	// .Lunroll4:
 	WORD $0xad404430 // ldp q16, q17, [x1]
 	WORD $0xad404cf2 // ldp q18, q19, [x7]
 	WORD $0x6e321e12 // eor v18.16b, v16.16b, v18.16b
@@ -1079,12 +1057,12 @@ TEXT ·accumBlocks2NEONHybrid(SB), NOSPLIT, $0-64
 	WORD $0x91040021 // add x1, x1, #0x100
 	WORD $0x910080e7 // add x7, x7, #0x20
 	WORD $0xf1001129 // subs x9, x9, #0x4
-	WORD $0x54fff0ea // b.ge 74 <kernel+0x74> // b.tcont
-	// .Lone6:
+	WORD $0x54fff0ea // b.ge 5c <kernel+0x5c> // b.tcont
+	// .Lone5:
 	WORD $0x91001129 // add x9, x9, #0x4
 	WORD $0xf100013f // cmp x9, #0x0
-	WORD $0x5400046d // b.le 2f0 <kernel+0x2f0>
-	// .Lonebody8:
+	WORD $0x5400046d // b.le 2d8 <kernel+0x2d8>
+	// .Lonebody7:
 	WORD $0xad404430 // ldp q16, q17, [x1]
 	WORD $0xad404cf2 // ldp q18, q19, [x7]
 	WORD $0x6e321e12 // eor v18.16b, v16.16b, v18.16b
@@ -1118,19 +1096,18 @@ TEXT ·accumBlocks2NEONHybrid(SB), NOSPLIT, $0-64
 	WORD $0x91010021 // add x1, x1, #0x40
 	WORD $0x910020e7 // add x7, x7, #0x8
 	WORD $0xf1000529 // subs x9, x9, #0x1
-	WORD $0x54fffbec // b.gt 268 <kernel+0x268>
-	// .Ldone7:
+	WORD $0x54fffbec // b.gt 250 <kernel+0x250>
+	// .Ldone6:
 	WORD $0xcb0a0108 // sub x8, x8, x10
 	WORD $0xf100011f // cmp x8, #0x0
-	WORD $0x54000541 // b.ne 3a0 <kernel+0x3a0> // b.any
+	WORD $0x54000521 // b.ne 384 <kernel+0x384> // b.any
 	WORD $0x6e044090 // ext v16.16b, v4.16b, v4.16b, #8
 	WORD $0x4ef08400 // add v0.2d, v0.2d, v16.2d
 	WORD $0x6f00e404 // movi v4.2d, #0x0
 	WORD $0x6e0540b0 // ext v16.16b, v5.16b, v5.16b, #8
 	WORD $0x4ef08421 // add v1.2d, v1.2d, v16.2d
 	WORD $0x6f00e405 // movi v5.2d, #0x0
-	WORD $0xaa0303ea // mov x10, x3
-	WORD $0x8b04014a // add x10, x10, x4
+	WORD $0x8b04006a // add x10, x3, x4
 	WORD $0xca51be31 // eor x17, x17, x17, lsr #47
 	WORD $0xf940114d // ldr x13, [x10, #32]
 	WORD $0xca0d0231 // eor x17, x17, x13
@@ -1163,14 +1140,14 @@ TEXT ·accumBlocks2NEONHybrid(SB), NOSPLIT, $0-64
 	WORD $0x2eaf8201 // umlal v1.2d, v16.2s, v15.2s
 	WORD $0xaa0303e7 // mov x7, x3
 	WORD $0xaa0603e8 // mov x8, x6
-	WORD $0x17ffff2a // b 44 <kernel+0x44>
+	WORD $0x17ffff2d // b 34 <kernel+0x34>
 	// .Lbnext2:
 	WORD $0xf100017f // cmp x11, #0x0
-	WORD $0x540000ad // b.le 3b8 <kernel+0x3b8>
+	WORD $0x540000ad // b.le 39c <kernel+0x39c>
 	WORD $0xaa1a03e1 // mov x1, x26
 	WORD $0xaa0b03e2 // mov x2, x11
 	WORD $0xd280000b // mov x11, #0x0 // #0
-	WORD $0x17ffff24 // b 44 <kernel+0x44>
+	WORD $0x17ffff27 // b 34 <kernel+0x34>
 	// .Lbdone3:
 	WORD $0x6e044090 // ext v16.16b, v4.16b, v4.16b, #8
 	WORD $0x4ef08400 // add v0.2d, v0.2d, v16.2d

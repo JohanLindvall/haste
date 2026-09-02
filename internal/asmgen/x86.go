@@ -221,6 +221,26 @@ func (x *x86) SubBranch(r GPR, imm int64, c Cond, label string) {
 	x.branch(c, label)
 }
 
+// The three-operand forms are a move and the two-operand form, in the
+// order the kernels emitted them before the forms existed, so that every
+// x86 kernel regenerates byte for byte.
+func (x *x86) AddRRR(dst, a, b GPR)           { x.MovRR(dst, a); x.AddRR(dst, b) }
+func (x *x86) SubRRR(dst, a, b GPR)           { x.MovRR(dst, a); x.SubRR(dst, b) }
+func (x *x86) SubRRI(dst, src GPR, imm int64) { x.MovRR(dst, src); x.SubRI(dst, imm) }
+func (x *x86) ShrRRI(dst, src GPR, sh uint)   { x.MovRR(dst, src); x.ShrRI(dst, sh) }
+func (x *x86) AddShl(dst, a, b GPR, sh uint)  { x.MovRR(dst, b); x.ShlRI(dst, sh); x.AddRR(dst, a) }
+
+// Min is a move, a compare and a conditional move over a branch, which is
+// what the block walk did by hand; the label is allocated where it was so
+// the names in the listing stay the same.
+func (x *x86) Min(dst, a, b GPR) {
+	x.MovRR(dst, a)
+	skip := x.b.NewLabel("min")
+	x.BranchR(dst, b, LE, skip)
+	x.MovRR(dst, b)
+	x.b.Label(skip)
+}
+
 func (x *x86) BranchR(a, b GPR, c Cond, label string) {
 	x.b.emit(func(m *Machine) { m.setCmp(m.R[a], m.R[b]) },
 		"cmpq %s, %s", x.GPRName(b), x.GPRName(a))

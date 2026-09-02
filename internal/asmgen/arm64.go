@@ -209,6 +209,45 @@ func (a *arm64) ShlRI(dst GPR, sh uint) {
 		"lsl %s, %s, #%d", a.GPRName(dst), a.GPRName(dst), sh)
 }
 
+func (a *arm64) AddRRR(dst, x, y GPR) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[x] + m.R[y] },
+		"add %s, %s, %s", a.GPRName(dst), a.GPRName(x), a.GPRName(y))
+}
+
+func (a *arm64) SubRRR(dst, x, y GPR) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[x] - m.R[y] },
+		"sub %s, %s, %s", a.GPRName(dst), a.GPRName(x), a.GPRName(y))
+}
+
+func (a *arm64) SubRRI(dst, src GPR, imm int64) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[src] - uint64(imm) },
+		"sub %s, %s, #%d", a.GPRName(dst), a.GPRName(src), imm)
+}
+
+func (a *arm64) ShrRRI(dst, src GPR, sh uint) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[src] >> sh },
+		"lsr %s, %s, #%d", a.GPRName(dst), a.GPRName(src), sh)
+}
+
+func (a *arm64) AddShl(dst, x, y GPR, sh uint) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[x] + m.R[y]<<sh },
+		"add %s, %s, %s, lsl #%d", a.GPRName(dst), a.GPRName(x), a.GPRName(y), sh)
+}
+
+// Min is a compare and a conditional select, signed like every count the
+// kernels compare.
+func (a *arm64) Min(dst, x, y GPR) {
+	a.b.emit(func(m *Machine) { m.setCmp(m.R[x], m.R[y]) },
+		"cmp %s, %s", a.GPRName(x), a.GPRName(y))
+	a.b.emit(func(m *Machine) {
+		if LE.eval(m.cmpA, m.cmpB) {
+			m.R[dst] = m.R[x]
+		} else {
+			m.R[dst] = m.R[y]
+		}
+	}, "csel %s, %s, %s, le", a.GPRName(dst), a.GPRName(x), a.GPRName(y))
+}
+
 var armCC = map[Cond]string{LT: "lt", GE: "ge", EQ: "eq", NE: "ne", GT: "gt", LE: "le"}
 
 func (a *arm64) BranchI(r GPR, imm int64, c Cond, label string) {
