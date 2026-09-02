@@ -159,11 +159,12 @@ implementations:
 | 1 Mi | **11692** | 13356 | 57586 |
 
 **97 GB/s** at 64 KiB against 83, and 90 GB/s at a mebibyte. Streaming one in
-4 KiB pieces: **63.2 GB/s** against 34.0 and 17.9; in 64-byte pieces 16.2
-against 11.0 and 8.3, and in 16-byte pieces 5.3 against 3.4 and 3.1, where a
-write is mostly the copy that stages it and this one makes that copy without
-calling memmove. Ahead of the other XXH3 port at every size except 16 bytes,
-where the two are within a percent.
+4 KiB pieces: **67.2 GB/s** against 34.0 and 18.2; in 1 KiB pieces 45.9
+against 32.9 and 17.4; in 64-byte pieces 17.0 against 11.9 and 8.4, and in
+16-byte pieces 5.4 against 3.5 and 3.2, where a write is mostly the copy that
+stages it and this one makes that copy without calling memmove. Ahead of the
+other XXH3 port at every size except 16 bytes, where the two are within a
+percent.
 (Retaken 2026-09-02, after the long path lost its wrapper call and its
 accumulator copy -- 256 bytes to a kibibyte are 5-7% quicker than the
 previous take -- on a machine holding 4.6 GHz; the previous take ran a few

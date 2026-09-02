@@ -154,6 +154,13 @@ for a in 386 arm mips mipsle mips64 s390x ppc64 ppc64le riscv64 loong64 arm64; d
 done
 ```
 
+**Run a test binary from inside the module tree.** `TestGeneratedFilesUpToDate`
+finds the checked-in files by walking up to `go.mod`, and since the stub
+files joined the check it does so under `-short` as well, so a binary run
+from `/tmp` or a scratch directory fails that test instead of skipping it.
+The commands above run from the repository root; CI's qemu job does the
+same.
+
 **Pin `GOOS` in that last loop.** Without it, every iteration on a macOS
 checkout asks for `darwin/386`, `darwin/mips` and so on, the toolchain
 refuses the pair before it compiles a line, and the loop still exits 0 -- so
@@ -1328,7 +1335,9 @@ worth nothing.
      1 KiB writes and -3.2% at 4 KiB, one call fewer per write at both, with
      the drain path below a kibibyte untouched; the same skip-the-call bound
      read -20% and -7% there, and what the fusion cannot reach is the
-     scramble the skipped call also skipped. Not re-measured on the Zen 4.
+     scramble the skipped call also skipped. Re-measured on the Zen 4 with
+     the rest of that pass: -18% at 1 KiB writes and -9% at 4 KiB, see the
+     Zen 4 bullet at the end of the streaming pass under Redwood Cove.
   2. Absorbing that stripe in Go instead loses: `accumulate512Generic` is
      9.2ns against the 7.7ns call it would replace.
   3. Holding the accumulators in split form in the Digest, so no fold is
@@ -2129,6 +2138,18 @@ core barring a wider one.
     group, a half group and three. 1-2% off a 512-byte hash and off 1 KiB
     writes, under 1% off a kibibyte, level from 4 KiB; placed ahead of the
     zero test instead, it cost 16 KiB 0.8% for a taken branch per block.
+  - **The whole pass re-measured on the Zen 4** (2026-09, the branch before
+    it against the branch after, interleaved, `bench/pstat`, cycles per
+    mebibyte streamed): 16-byte writes level (-0.1%, on 9% fewer
+    instructions), 64-byte -5.6%, 256-byte +2.7% over five rounds each with
+    2.3% fewer instructions, 1 KiB -18.1%, 4 KiB -9.3%, 16 KiB -4.3%; the
+    one-shot path from 256 bytes to 16 KiB and the AVX2 kernel at 1..16 KiB
+    within a percent either way. The drain-test mispredict above does not
+    happen on this core: 0.000 mispredicts per write at 16 and 64 bytes on
+    the pulled tree against 0.008 and 0.001 before, with taken branches per
+    write 7.3 -> 8.2 and 6.3 -> 7.1. The 256-byte cell is the one to look
+    at if that write size matters; it is under the 8% this file asks for
+    before a small-write number counts, and was not chased.
 - **XXH3-128 of an empty input costs 9.5 cycles against zeebo's 6.0**, 62
   instructions against 38, because zeebo compiles the default secret's
   bitflips in as constants and haste loads them through the secret pointer.
