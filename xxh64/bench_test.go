@@ -47,7 +47,10 @@ func BenchmarkDigest(b *testing.B) {
 }
 
 // BenchmarkBackends runs the same sizes on every kernel this machine can
-// execute, which is how the arm64 dispatch was decided.
+// execute, which is how the arm64 dispatch was decided and how the amd64
+// prime form is judged: the two forms are the same hash, and on amd64 the
+// one not selected is reached through a jump the selected one does not pay,
+// so the short lengths here measure the form and its dispatch together.
 func BenchmarkBackends(b *testing.B) {
 	selected := Backend()
 	defer setBackend(selected)
@@ -56,7 +59,7 @@ func BenchmarkBackends(b *testing.B) {
 			continue
 		}
 		b.Run(name, func(b *testing.B) {
-			for _, n := range []int{32, 64, 256, 1024, 65536} {
+			for _, n := range []int{4, 8, 16, 32, 64, 256, 1024, 65536} {
 				buf := testBuffer(n)
 				b.Run(fmt.Sprint(n), func(b *testing.B) {
 					b.SetBytes(int64(n))
