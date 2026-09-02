@@ -36,6 +36,17 @@ var backendNames = map[backendID]string{
 	backendSVE2VL512:   "sve2-vl512",
 }
 
+// dispatch_arm64.s compares backend against these values by number; an
+// index that is not a constant zero refuses to compile if they ever move.
+var (
+	_ = [1]struct{}{}[backendNEON]
+	_ = [1]struct{}{}[backendNEONHybrid-1]
+	_ = [1]struct{}{}[backendNEONHybrid2-2]
+	_ = [1]struct{}{}[backendSVE2VL128-3]
+	_ = [1]struct{}{}[backendSVE2VL256-4]
+	_ = [1]struct{}{}[backendSVE2VL512-5]
+)
+
 var backend = pickBackend()
 
 func pickBackend() backendID {
@@ -88,70 +99,24 @@ func setBackend(name string) bool {
 	return false
 }
 
-func hashLong(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) {
-	switch backend {
-	case backendSVE2VL256:
-		hashLongSVE2VL256(acc, in, n, sec, secretLimit)
-	case backendSVE2VL512:
-		hashLongSVE2VL512(acc, in, n, sec, secretLimit)
-	case backendSVE2VL128:
-		hashLongSVE2VL128(acc, in, n, sec, secretLimit)
-	case backendNEONHybrid:
-		hashLongNEONHybrid(acc, in, n, sec, secretLimit)
-	case backendNEONHybrid2:
-		hashLongNEONHybrid2(acc, in, n, sec, secretLimit)
-	default:
-		hashLongNEON(acc, in, n, sec, secretLimit)
-	}
-}
+// The four entry points are assembly, in dispatch_arm64.s: each reads
+// backend and jumps to the kernel it names, as the amd64 ones do. A Go
+// switch here was a real call between sum64NS and the kernel -- six cases
+// are far past the inliner's budget -- with a frame, a stack check and the
+// eight arguments spilled for the ABI0 call inside it: 22 instructions on
+// the way in and out, on a core that retires four a cycle. A tail jump
+// between two ABI0 functions with the same frame costs a byte load, a
+// compare and a taken branch, and is one call from wherever it is made.
+// Measured on a Neoverse N2, see CLAUDE.md.
 
-func accumStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer) {
-	switch backend {
-	case backendSVE2VL256:
-		accumSVE2VL256(acc, in, nbStripes, sec)
-	case backendSVE2VL512:
-		accumSVE2VL512(acc, in, nbStripes, sec)
-	case backendSVE2VL128:
-		accumSVE2VL128(acc, in, nbStripes, sec)
-	case backendNEONHybrid:
-		accumNEONHybrid(acc, in, nbStripes, sec)
-	case backendNEONHybrid2:
-		accumNEONHybrid2(acc, in, nbStripes, sec)
-	default:
-		accumNEON(acc, in, nbStripes, sec)
-	}
-}
+//go:noescape
+func hashLong(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
 
-func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int) {
-	switch backend {
-	case backendSVE2VL256:
-		accumBlocksSVE2VL256(acc, in, nbStripes, sec, secretLimit, soFar)
-	case backendSVE2VL512:
-		accumBlocksSVE2VL512(acc, in, nbStripes, sec, secretLimit, soFar)
-	case backendSVE2VL128:
-		accumBlocksSVE2VL128(acc, in, nbStripes, sec, secretLimit, soFar)
-	case backendNEONHybrid:
-		accumBlocksNEONHybrid(acc, in, nbStripes, sec, secretLimit, soFar)
-	case backendNEONHybrid2:
-		accumBlocksNEONHybrid2(acc, in, nbStripes, sec, secretLimit, soFar)
-	default:
-		accumBlocksNEON(acc, in, nbStripes, sec, secretLimit, soFar)
-	}
-}
+//go:noescape
+func accumStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer)
 
-func accumBlocks2(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int, in2 unsafe.Pointer, nbStripes2 int) {
-	switch backend {
-	case backendSVE2VL256:
-		accumBlocks2SVE2VL256(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
-	case backendSVE2VL512:
-		accumBlocks2SVE2VL512(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
-	case backendSVE2VL128:
-		accumBlocks2SVE2VL128(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
-	case backendNEONHybrid:
-		accumBlocks2NEONHybrid(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
-	case backendNEONHybrid2:
-		accumBlocks2NEONHybrid2(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
-	default:
-		accumBlocks2NEON(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
-	}
-}
+//go:noescape
+func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int)
+
+//go:noescape
+func accumBlocks2(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int, in2 unsafe.Pointer, nbStripes2 int)
