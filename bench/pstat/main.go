@@ -16,9 +16,10 @@
 //
 // The bench regexp must select exactly one cell; anchor each element, since
 // go test matches the elements of a benchmark name separately and "8"
-// matches "128". Two event tables are built in, Zen 4's and the Golden Cove
-// line's (Redwood Cove included); the vendor in /proc/cpuinfo picks one and
-// -cpu overrides it. -events takes any list for another core. On a hybrid
+// matches "128". Three event tables are built in, Zen 4's, the Golden Cove
+// line's (Redwood Cove included) and the Neoverse N2's; the vendor in
+// /proc/cpuinfo picks one, arm64 the third, and -cpu overrides it. -events
+// takes any list for another core. On a hybrid
 // Intel part every event is asked of the P-core PMU alone, which is where
 // -core pins the cell, so the E-core's copy of each counter does not shadow
 // it. The Intel topdown group prints its four metrics as a share of slots
@@ -31,6 +32,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -104,16 +106,38 @@ var tables = map[string]table{
 	},
 }
 
+func init() {
+	// The Neoverse N2 has six programmable counters beside the cycle
+	// counter, so its groups are six wide. These thirteen are the events a
+	// Hyper-V guest sees of it -- the sysfs list under
+	// /sys/bus/event_source/devices/armv8_pmuv3_0/events; everything the
+	// N2's JSON tables add (ase_spec, dp_spec, ld_spec, stall_slot_*, ...)
+	// is accepted there and counts zero. stall_frontend and stall_backend
+	// are cycles, so beside cyc= they read directly as a share.
+	tables["arm"] = table{
+		groups: map[string][]string{
+			"core": {"inst_retired", "op_retired", "br_retired", "br_mis_pred_retired", "stall_frontend", "stall_backend"},
+			"spec": {"inst_spec", "op_spec", "br_pred", "br_mis_pred", "l1d_cache", "l1d_cache_refill"},
+		},
+		short: map[string]string{
+			"inst_retired": "inst", "op_retired": "ops", "br_retired": "brn", "br_mis_pred_retired": "misp",
+			"stall_frontend": "fe_stall", "stall_backend": "be_stall",
+			"inst_spec": "inst_spec", "op_spec": "ops_spec", "br_pred": "brpred", "br_mis_pred": "brmisp_spec",
+			"l1d_cache": "l1d", "l1d_cache_refill": "l1d_refill",
+		},
+	}
+}
+
 var cellRE = regexp.MustCompile(`(?m)^(\S+?)(?:-\d+)?\s+(\d+)\s+([\d.]+) ns/op`)
 
 func main() {
 	bin := flag.String("bin", "", "test binary to run")
 	bench := flag.String("bench", "", "-test.bench regexp selecting exactly one cell")
-	groupList := flag.String("groups", "core", "comma-separated event groups; amd: core, front, mem, tokens, fp; intel: core, topdown, front, mem, ports, exec")
+	groupList := flag.String("groups", "core", "comma-separated event groups; amd: core, front, mem, tokens, fp; intel: core, topdown, front, mem, ports, exec; arm: core, spec")
 	events := flag.String("events", "", "explicit comma-separated events, at most five, instead of -groups")
 	benchtime := flag.String("benchtime", "1s", "-test.benchtime for each run")
 	core := flag.Int("core", 2, "core to pin the benchmark to")
-	cpu := flag.String("cpu", "", "event table: amd or intel (default: the vendor in /proc/cpuinfo)")
+	cpu := flag.String("cpu", "", "event table: amd, intel or arm (default: the vendor in /proc/cpuinfo, or arm on arm64)")
 	flag.Parse()
 	if *bin == "" || *bench == "" {
 		fmt.Fprintln(os.Stderr, "pstat: -bin and -bench are required")
@@ -181,7 +205,12 @@ func main() {
 }
 
 // vendor reads the CPU vendor from /proc/cpuinfo and names its event table.
+// An arm64 /proc/cpuinfo carries an implementer code rather than a vendor
+// string, and the one table here is the Neoverse N2's.
 func vendor() string {
+	if runtime.GOARCH == "arm64" {
+		return "arm"
+	}
 	b, err := os.ReadFile("/proc/cpuinfo")
 	if err == nil {
 		s := string(b)
@@ -246,7 +275,12 @@ func run(bin, bench string, evs []string, benchtime string, core int, pmu string
 			ev = strings.TrimSuffix(ev[i+1:], "/")
 		}
 		if ev == "task-clock" {
+			// perf prints it in milliseconds with the unit column saying
+			// so, or -- this arm64 build -- in nanoseconds with it empty.
 			clockMS = v
+			if f[1] != "msec" {
+				clockMS = v / 1e6
+			}
 			continue
 		}
 		if on, e := strconv.ParseFloat(f[4], 64); e == nil && on < 90 && ev != "cycles" {
