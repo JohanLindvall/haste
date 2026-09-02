@@ -143,24 +143,33 @@ implementations:
 
 | size | haste | zeebo/xxh3 | cespare (XXH64) |
 |-----:|--------:|-----------:|----------------:|
-| 4 | **2.19** | 2.39 | 2.46 |
-| 8 | **2.17** | 2.39 | 2.46 |
-| 16 | 1.99 | 1.98 | 3.10 |
-| 32 | **2.42** | 2.47 | 6.04 |
-| 64 | **3.19** | 3.54 | 8.00 |
-| 128 | **5.18** | 5.45 | 11.4 |
-| 240 | **9.34** | 10.7 | 17.7 |
-| 256 | **9.28** | 13.5 | 18.0 |
-| 512 | **11.3** | 16.2 | 31.2 |
-| 1 Ki | **15.7** | 21.8 | 57.6 |
-| 4 Ki | **46.9** | 52.3 | 217 |
-| 16 Ki | **160** | 186 | 847 |
-| 64 Ki | **635** | 741 | 3418 |
-| 1 Mi | **11248** | 12632 | 55476 |
+| 4 | **2.13** | 2.34 | 2.45 |
+| 8 | **2.20** | 2.43 | 2.52 |
+| 16 | 2.04 | 2.03 | 3.20 |
+| 32 | **2.48** | 2.54 | 6.26 |
+| 64 | **3.31** | 3.66 | 8.25 |
+| 128 | **5.39** | 5.65 | 11.8 |
+| 240 | **9.66** | 11.1 | 18.3 |
+| 256 | **8.98** | 14.2 | 18.6 |
+| 512 | **10.8** | 16.8 | 32.4 |
+| 1 Ki | **15.2** | 22.8 | 59.9 |
+| 4 Ki | **48.0** | 55.3 | 228 |
+| 16 Ki | **168** | 199 | 893 |
+| 64 Ki | **674** | 790 | 3567 |
+| 1 Mi | **11692** | 13356 | 57586 |
 
-**103 GB/s** at 64 KiB against 88, and 93 GB/s at a mebibyte. Streaming one in
-4 KiB pieces: **64.7 GB/s** against 35.8 and 18.7. Ahead of the other XXH3
-port at every size except 16 bytes, where the two are within a percent.
+**97 GB/s** at 64 KiB against 83, and 90 GB/s at a mebibyte. Streaming one in
+4 KiB pieces: **67.2 GB/s** against 34.0 and 18.2; in 1 KiB pieces 45.9
+against 32.9 and 17.4; in 64-byte pieces 17.0 against 11.9 and 8.4, and in
+16-byte pieces 5.4 against 3.5 and 3.2, where a write is mostly the copy that
+stages it and this one makes that copy without calling memmove. Ahead of the
+other XXH3 port at every size except 16 bytes, where the two are within a
+percent.
+(Retaken 2026-09-02, after the long path lost its wrapper call and its
+accumulator copy -- 256 bytes to a kibibyte are 5-7% quicker than the
+previous take -- on a machine holding 4.6 GHz; the previous take ran a few
+percent higher throughout on a cooler one, with the kernels unchanged, so
+compare columns, not takes.)
 
 The same benchmark on a Core Ultra 9 185H (Redwood Cove P-core, Meteor Lake),
 which has **no AVX-512** and therefore exercises the AVX2 kernel:

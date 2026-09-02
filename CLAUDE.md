@@ -14,6 +14,8 @@ under `internal/asmgen` or any `.s` file.
 | `xxh3/generic.go` | portable implementation: mid-size ladders, accumulator loop, convergence |
 | `xxh3/digest.go` | streaming `Digest`; same output as `XXH3_update`, different staging |
 | `xxh3/dispatch_{amd64,arm64}.go` | CPU detection and backend selection |
+| `xxh3/dispatch_amd64.s` | hand-written: the four entry points as tail jumps to the kernel `backend` names |
+| `xxh3/dispatch_arm64.s` | the same four for arm64 |
 | `xxh3/dispatch.go` | the same three entry points for purego / other architectures |
 | `xxh3/stub_{amd64,arm64}.go` | **generated** Go declarations for the kernels |
 | `xxh3/xxh_*_{amd64,arm64}.s` | **generated** kernels |
@@ -28,6 +30,7 @@ under `internal/asmgen` or any `.s` file.
 | `bench/xxhash.h` | vendored reference C, v0.8.3, compiled in through cgo |
 | `bench/sweep` | every length one at a time |
 | `bench/mdtable` | `go test -bench` output to a markdown table |
+| `bench/pstat` | one benchmark cell under `perf stat`, reported per operation |
 | `bench/mkbenchmarks.sh` | a bench run's artifacts to `benchmarks.md` |
 | `.github/workflows/` | `ci.yml` on every push, `bench.yml` by hand |
 | `benchmarks.md` | **generated** by `bench.yml`; do not edit |
@@ -35,7 +38,7 @@ under `internal/asmgen` or any `.s` file.
 `bench/` is its own module on purpose: the library itself must keep importing
 nothing outside the standard library.
 
-## The three kernel entry points
+## The four kernel entry points
 
 Everything architecture-specific is behind exactly these:
 
@@ -43,12 +46,61 @@ Everything architecture-specific is behind exactly these:
 hashLong(acc, in, n, sec, secretLimit)   // whole long input: blocks, scrambles, final stripe
 accumBlocks(acc, in, nbStripes, sec, secretLimit, soFar)  // streaming: walks block boundaries
 accumStripes(acc, in, nbStripes, sec)    // one run, one secret position, no scramble
+accumBlocks2(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)  // two runs, one walk
 ```
+
+`accumBlocks2` is `accumBlocks` over two runs of stripes -- the ones staged
+in the Digest and then the ones straight out of the caller's slice -- as one
+walk of the block, the second run picking up the position where the first
+stopped. It is absorb's general path: a write of whole kibibytes always
+finds exactly one stripe staged, the one held back from the write before in
+case it was the message's last, and absorbing it in a call of its own cost
+123 instructions and 26 cycles on a Redwood Cove for four cycles of work.
+One emitter with a run count produces it for every backend. It is a fourth
+kernel rather than two more arguments on `accumBlocks` so that the drain a
+small write makes pays nothing; see the seventh-argument note under
+streaming for what that cost when it was tried the other way.
 
 `accumBlocks` exists because driving the block walk from Go costs a load, fold
 and store of the accumulators at every 1 KiB boundary: 12% of a large single
 Write. It takes the position within the current block and does not report the
 new one, because the caller can derive it — advance by nbStripes and wrap.
+
+`hashLong` starts from `initAcc` itself and only writes `acc`. Every one-shot
+hash begins from the same eight words, so the caller used to copy them onto
+its stack and the kernel then loaded what had just been stored -- in 16-byte
+pieces, because a wider load cannot be fed from the store queue. The kernel
+now takes the address of the global in its prologue (`LEAQ ·initAcc(SB), R9`
+on amd64, `MOVD $·initAcc(SB), R26` on arm64: the one `Table` a vector kernel
+has) and reads it at full width, and the copy is gone. The portable
+`hashLongGeneric` does the same, so a caller passing garbage in gets the
+right answer from every backend, which is what the tests hand it. Measured on
+a Zen 4 within one binary, copy against no copy: -1.5% at 256 bytes, -1.8% at
+512, -1.9% at a kibibyte, -0.5% at 4 KiB; unmeasured on arm64, where it can
+only remove eight stores and eight loads from Go.
+
+On amd64 all four entry points are assembly, in `dispatch_amd64.s`: each
+reads `backend` and tail-jumps to the kernel it names, so a Go caller reaches
+a kernel in one direct call. They used to be a Go switch, which at three
+cases costs 199 nodes against the inliner's budget of 80 and so was a real
+call between `sum64NS` and the kernel; the streaming path went through a
+function variable to skip it, at the price of an indirect call and of every
+argument escaping. Measured on a Zen 4 within one binary, the switch against
+the jump: -3.6% at 256 bytes, -3.4% at 512, -2.6% at a kibibyte, -0.7% at
+4 KiB; streaming a mebibyte, 3-6% at write sizes from 16 bytes to a kibibyte,
+nothing at 64 KiB. With the copy above it takes `Sum64` 6-7% down over
+256..1024 bytes and `Sum128` 4-7%. arm64 has the same in
+`dispatch_arm64.s` (2026-09), measured on a Neoverse N2 with the counters:
+the Go switch there was six cases, a stack check, a frame and the eight
+arguments spilled again for the ABI0 call -- 22 instructions on the way in
+and out of every kernel, on a core that retires four a cycle -- and the jump
+takes 16-26 instructions off each entry. Cycles per hash, same harness:
+-3.1% at 256 bytes, -2.0% at 512, nothing from a kibibyte up where the
+kernel hides it, and 2-3% off a mebibyte streamed in 1 KiB writes. The
+hybrid the Neoverse cores take is tested first and falls through to its
+jump, so it pays a byte load, a compare, a not-taken branch and the jump;
+plain NEON is next. The Go switch remains only for purego and the
+architectures without kernels.
 
 `secretLimit` is `len(secret) - 64`, **not** `nbStripesPerBlock * 8`. They
 differ when the secret length is not a multiple of 8, and the reference uses
@@ -112,6 +164,13 @@ for a in 386 arm mips mipsle mips64 s390x ppc64 ppc64le riscv64 loong64 arm64; d
 done
 ```
 
+**Run a test binary from inside the module tree.** `TestGeneratedFilesUpToDate`
+finds the checked-in files by walking up to `go.mod`, and since the stub
+files joined the check it does so under `-short` as well, so a binary run
+from `/tmp` or a scratch directory fails that test instead of skipping it.
+The commands above run from the repository root; CI's qemu job does the
+same.
+
 **Pin `GOOS` in that last loop.** Without it, every iteration on a macOS
 checkout asks for `darwin/386`, `darwin/mips` and so on, the toolchain
 refuses the pair before it compiles a line, and the loop still exits 0 -- so
@@ -150,7 +209,7 @@ Four things check the kernels, and they do not overlap as much as they look:
 | `TestBackendsNative` | the linked `.s`, through the public API | C-derived vectors |
 | `TestKernelsMatchPortable` | the linked `.s`, called directly | `xxh3/generic.go` |
 | `TestSimulatedBackends` | the generator's instruction stream | `xxh3/generic.go` |
-| `TestGeneratedFilesUpToDate` | the generator, both packages' backends | the checked-in `.s` |
+| `TestGeneratedFilesUpToDate` | the generator, every package's backends | the checked-in `.s`, and the stub files (which need no assembler, so they are checked under `-short` too) |
 
 `TestKernelsMatchPortable` is the only one that reaches `accumBlocks` under a
 custom secret. The reference vectors are one-shot, so a custom secret in them
@@ -370,7 +429,86 @@ simply disappear.
   cycles/op -- the ramp cancels -- and trust ratios between paired probes
   over absolutes. Branch-miss and frontend-stall counts are reliable nulls:
   when both are zero and cycles moved, suspect fetch geometry, not
-  prediction.
+  prediction. `bench/pstat` does that arithmetic for one cell:
+
+      go run ./pstat -bin /tmp/b.test -bench 'BenchmarkCompare64/^64$/^haste-xxh3$' -groups core,front,mem
+
+  prints cycles, instructions, ops, branches taken and mispredicted,
+  front-end-starved and back-end-stalled dispatch slots, loads, stores and
+  the store-forwarding events per hash, one run of the cell per group of
+  five events so nothing is multiplexed. Anchor every element of the name:
+  `go test` matches them separately, and `8` matches `128`. It carries
+  three event tables, Zen 4's, the Golden Cove line's and the Neoverse N2's;
+  the vendor in `/proc/cpuinfo` picks one and arm64 the third. The Intel
+  groups are `core`, `topdown` (printed as a share of slots), `front`,
+  `mem`, `ports` and `exec`; the arm ones `core` (instructions, ops and
+  branches retired, mispredicts, and the front-end and back-end stall
+  cycles, which beside `cyc=` read directly as a share) and `spec` (the
+  speculative counts, and L1D accesses and refills). On a hybrid part
+  every event is asked of the P-core PMU alone, because perf reports each
+  one twice there and the E-core's copy of `cycles` shadowed the other under
+  the same name. `-events` takes any list. Two Intel traps: `mem_inst_retired`
+  and `mem_load_retired` live on the first four counters, so a fifth event
+  beside them is multiplexed rather than refused (pstat warns), and a
+  branch-miss profile wants `-e cpu_core/br_misp_retired.all_branches/pp`
+  with `-b` for the LBR stack, which is the history the predictor saw.
+  Three arm traps, from an Azure Cobalt 100 VM: a Hyper-V guest sees
+  thirteen of the N2's events -- the sysfs list under
+  `/sys/bus/event_source/devices/armv8_pmuv3_0/events` -- and every event
+  the N2's JSON tables add on top (`ase_spec`, `dp_spec`, `ld_spec`,
+  `stall_slot_*`, ...) is accepted and counts zero, so there is no
+  per-pipe view there; the guest has six programmable counters beside the
+  cycle counter, which is why the arm groups are six wide; and perf 6.17
+  prints `task-clock` in nanoseconds with an empty unit column, which pstat
+  now reads by the unit rather than assuming milliseconds -- it read every
+  count as zero before. On a two-core VM pass `-core 1`; the default is a
+  third core the box does not have.
+
+- **What each path costs on this core, per hash** (2026-09, `bench/pstat`,
+  cycles / instructions / taken branches / dispatch slots starved by the
+  front end):
+
+  | bytes | haste XXH3 | zeebo/xxh3 | haste XXH64 | cespare/xxhash | haste rapidhash |
+  |---|---|---|---|---|---|
+  | 4 | 9.9 / 51 / 5.0 / 0% | 11.0 / 56 / 5.0 / 9% | 13.0 / 60 / 7.9 / 23% | 11.0 / 57 / 6.0 / 8% | 8.3 / 45 / 5.0 / 0% |
+  | 16 | 9.0 / 47 / 5.0 / 0% | 9.0 / 47 / 5.0 / 0% | 14.0 / 70 / 7.9 / 1% | 14.1 / 72 / 7.0 / 0% | 8.2 / 44 / 5.0 / 0% |
+  | 64 | 14.6 / 75 / 4.0 / 0% | 16.3 / 88 / 6.0 / 0% | 36.8 / 143 / 10.0 / 0% | 38.4 / 137 / 8.0 / 0% | 12.6 / 70 / 6.0 / 0% |
+  | 256 | 38.9 / 179 / 12.9 / 0% | 64.9 / 191 / 13.0 / 0% | 83.9 / 272 / 13.0 / 0% | 86.5 / 273 / 13.9 / 0% | 36.3 / 158 / 7.0 / 0% |
+  | 1024 | 65.1 / 262 / 13.9 / 0% | 102.2 / 301 / 9.0 / 0% | 277.2 / 787 / 25.0 / 1% | 278.3 / 825 / 38.0 / 0% | 119.1 / 457 / 9.0 / 0% |
+  | 16384 | 755.7 / 1866 / 27.4 / 0% | 884.9 / 2395 / 24.5 / 0% | 4106.5 / 11073 / 266.0 / 0% | 4113.1 / 11813 / 519.0 / 0% | 1827.0 / 6469 / 79.7 / 0% |
+
+  No cell mispredicts. Below 32 bytes every hash here is renamer-bound at
+  about five ops a cycle, so instructions are cycles; the XXH64 4-byte row
+  is the one where the front end, not the renamer, is short. From 256 bytes
+  XXH3 is on its kernel and the Go around it, and from a kibibyte XXH64 is
+  at its multiplier and rapidhash near its.
+- **A counter names the resource, not the cost.** Three things the 2026-09
+  counter pass flagged and measured, so the next pass does not repeat them:
+  - The one-shot long path retires six store-to-load-interlock failures
+    (`ls_bad_status2.stli_other`) per hash at every size -- the merge's
+    eight scalar loads of accumulators the kernel stored as four 16-byte
+    pieces. Storing them as eight 64-bit words (`vmovq`, `vpextrq`) takes
+    the count to 0.35 and costs 3-4% at 256..1024 bytes: the three extra
+    extracts are dearer than the forwards that fail, which the cache
+    satisfies a few cycles later while the merge's multiplies are still
+    waiting on each other anyway.
+  - XXH64 at 4 and 8 bytes runs 13.0 cycles against cespare/xxhash's 11.0,
+    with 7.9 taken branches per hash against 6.0 and the front end starved
+    23% of its dispatch slots against 8%. Every subset of the tail's
+    combined-mask skips, which remove one or two of those branches, was
+    then timed as its own symbol in one binary and lost 2-4% over 1..40
+    bytes; see `TailSkips` in `internal/asmgen/x86_xxh64.go`. The branches
+    are what the counters show and not what the cycles are.
+  - The AVX-512 fast loop at 16 KiB: 7.7 ops per stripe, 2.93 cycles per
+    stripe against the 2.78 its ALU count models, no mispredicts, 58% of
+    cycles stalled on the FP register file. That stall is the front end
+    running ahead of a loop that is at its throughput, not a shortage.
+
+  Where the counters did pay, the win was instructions, in Go: a 64-byte
+  streaming Write spent 31% of its cycles in `runtime.memmove` and 36% in
+  `write` itself, for a copy the compiler can do in four SSE moves, and
+  `absorb` was dividing signed ints by the stripe length in four
+  instructions each. See the streaming notes.
 - **The fleet's rows are not equally trustworthy, and the differences are
   large.** The same benchmark, `Sum64` of 64 KiB through XXH3, across three
   independent dispatches of `bench.yml`:
@@ -451,25 +589,44 @@ simply disappear.
   ABI0 call it emits (`XORPS X15, X15; MOVQ TLS, R14`, in
   `cmd/compile/internal/amd64/ssa.go`, `OpAMD64CALLstatic`). So an ABI0 leaf
   may clobber them, which is what cespare/xxhash has always done with R14.
-  The XXH64 kernel takes R14 up on that and holds P4 there; nothing yet uses
-  X15, which would give the vector pools a sixteenth register.
+  The XXH64 kernel takes R14 up on that and holds P4 there, and the vector
+  kernels' seventh argument register is R14 too, with RAX the eighth: only
+  `accumBlocks2` has eight arguments, and RAX was only ever staging the
+  scramble constant, which now goes through R10. `noOverlap` in
+  `internal/asmgen/kernel.go` holds every emitter to the argument and
+  temporary registers it declares, since the two pools overlap at the far
+  end on purpose. Nothing yet uses X15, which would give the vector pools a
+  sixteenth register.
 - **Go ABI, arm64**: R18 is platform-reserved, R27 is the assembler's
   temporary, R28 holds g, R29/R30 are frame and link. R12–R17 and R19–R25 are
-  free. All V registers are scratch.
+  free. All V registers are scratch. The split kernels spend every one of
+  those, so `accumBlocks2`'s two extra arguments arrive in x26, the table
+  register no kernel but `hashLong` needs, and x11, the sixth temporary that
+  only `hashLong` uses.
 - Kernels are `NOSPLIT` with a zero frame and make no calls, so they need no
   stack maps. Keep it that way; adding a CALL inside one would corrupt the
   stack.
 - `sum64` and `sum128` are `//go:nosplit`. The linker verifies the budget at
   build time, so a violation is a build failure, not a runtime bug.
-- **Accumulator load width, amd64**: `LoadAcc` and `StoreAcc` read and write the
-  eight accumulators in 128-bit pieces, never in one 256- or 512-bit access.
-  The array they address comes from Go -- a copy of `initAcc`, or a `Digest`
-  field -- and the compiler builds it out of 16-byte moves, because that is all
+- **Accumulator load width, amd64**: `LoadAcc` and `StoreAcc` read and write a
+  caller's eight accumulators in 128-bit pieces, never in one 256- or 512-bit
+  access. That array comes from Go -- a `Digest` field, on the streaming
+  path -- and the compiler builds it out of 16-byte moves, because that is all
   the amd64 baseline has. A wider load spanning several of those stores cannot
   be satisfied from the store queue: it waits for them to reach the cache.
-  Restoring the single wide access costs a quarter of a 256-byte hash. It is
-  not free -- three extra instructions on AVX-512 -- but it is paid once per
-  call and the stall it removes is not.
+  Restoring the single wide access cost a quarter of a 256-byte hash back
+  when the one-shot path copied `initAcc` the same way. It is not free --
+  three extra instructions on AVX-512 -- but it is paid once per call and the
+  stall it removes is not. The one exception is `hashLong`, which reads
+  `initAcc` -- a global written once at init -- at full width, because there
+  is nothing in the store queue for it to wait on. A single wide *store* was
+  measured too and is noise (-0.9% to +1.8% over 256..4096 bytes), so the
+  pieces stay on that side.
+- **`hashLong`'s `acc` is output only.** Every backend and the portable path
+  start from `initAcc` and ignore what the array holds; `TestKernelsMatchPortable`
+  and the simulator hand them garbage to prove it. The kernels reach the table
+  through `TableGPR` -- r9 on amd64, x26 on arm64 -- and the prologue refuses a
+  kernel whose table register also carries an argument.
 - **AVX-512 requires DQ, not just F**: the scramble multiplies whole 64-bit
   lanes with `VPMULLQ`, which is AVX512DQ. `pickBackend` checks for both. A
   machine with F but not DQ (Knights Landing) must land on AVX2.
@@ -480,12 +637,12 @@ simply disappear.
   - **arm64** loads `$·primes(SB)` into a register and reads five words off
     it, because five 64-bit immediates would be four instructions each in
     code with no constant pool.
-  - **amd64 emits both forms and picks by CPUID vendor.** Intel takes the
-    primes in registers, loaded RIP-relative, with P3 as a `movabs` at its
-    two cold uses; everything else takes the pointer. Neither is better
-    everywhere -- see the vendor-split bullet in the XXH64 notes. The
-    kernel itself tests the form and jumps, so the entry point still
-    reaches it in one direct call.
+  - **amd64 emits both forms and picks by CPUID vendor, and on AMD by
+    model.** Intel and Zen 4 take the primes in registers, loaded
+    RIP-relative, with P3 as a `movabs` at its two cold uses; everything
+    else takes the pointer. Neither is better everywhere -- see the
+    vendor-split bullet in the XXH64 notes. The kernel itself tests the form
+    and jumps, so the entry point still reaches it in one direct call.
 
   `primes` in `xxh64.go` must stay `[7]uint64` in that order: the five
   primes, then the arm64 lane-round form, then the amd64 prime form. Only
@@ -531,16 +688,20 @@ class), with all three packages' own entry points:
 
 | bytes | XXH3-64 | XXH64 | rapidhash |
 |---|---|---|---|
-| 0-16 | 1.99 | 3.04 | **1.92** |
-| 17-32 | 2.33 | 4.51 | **2.23** |
-| 33-64 | 3.20 | 8.50 | **2.83** |
-| 65-128 | 4.56 | 10.83 | **4.25** |
-| 129-240 | 7.94 | 15.60 | **7.16** |
-| 241-512 | **9.97** | 25.44 | 12.62 |
+| 0-16 | 2.06 | 3.21 | **2.00** |
+| 17-32 | **2.30** | 4.68 | 2.34 |
+| 33-64 | 3.25 | 8.67 | **2.85** |
+| 65-128 | 4.85 | 11.08 | **4.43** |
+| 129-240 | 7.89 | 15.98 | **7.47** |
+| 241-512 | **9.17** | 26.36 | 12.86 |
 
-rapidhash is the fastest of the three at every class below 241 bytes and
-XXH3 above it, decisively: 102 GB/s against 42 at 64 KiB, because one has a
-vector kernel and the other is folded multiplies. XXH64 is slowest
+(Re-swept 2026-09-02 after the long path lost its wrapper call and its
+accumulator copy; the earlier sweep read 9.97 at 241-512 for XXH3 and a few
+percent lower across the board on a cooler machine, so read the columns
+against each other rather than against the previous table.) rapidhash is the
+fastest of the three at every class below 241 bytes but 17-32, where the two
+are within 2%, and XXH3 above it, decisively: 102 GB/s against 42 at 64 KiB,
+because one has a vector kernel and the other is folded multiplies. XXH64 is slowest
 everywhere and is here because it is the hash existing Go code already
 computes. For a key that is already an integer, all three packages'
 fixed-size entry points beat all of these -- 0.87 to 1.63 ns -- by skipping
@@ -607,16 +768,18 @@ anything on top of that.
   Redwood Cove and costs a Zen 3 5-17% over 8..256; reaching them through a
   pointer is the reverse. Neither is understood. The generator emits
   `sum64<B>Ptr` and `sum64<B>NSPtr` beside the register-form kernels, and
-  `dispatch_amd64.go` writes `primes[6]` from the CPUID vendor string at
-  init: Intel gets registers, everything else gets the pointer, which is the
-  older and more widely measured of the two.
+  `dispatch_amd64.go` writes `primes[6]` from CPUID at init: Intel and Zen 4
+  get registers, everything else gets the pointer, which is the older and
+  more widely measured of the two.
 
-  The vendor is coarser than the evidence -- the loss is Zen 3's alone, and
-  Zen 4-class parts read level either way -- and it is free to be coarse for
-  that reason: the pointer form costs a Zen 4 nothing. Narrowing it further
-  would not be a family check either, since Zen 3 and Zen 4 share family
-  0x19 and part below it, so it would be a model list on the terms
-  `cpu_linux_arm64.go` sets for the MIDR one.
+  The loss is Zen 3's alone, and Zen 3 and Zen 4 share family 0x19 and part
+  below it, so telling them apart is the model list `zen4Model` keeps, on
+  the terms `cpu_core_arm64.go` sets for the MIDR one. Zen 4 is on it
+  because the register form as the fall-through measured level to 4% ahead
+  of the pointer form behind its jump at every length from 4 bytes to a
+  kibibyte, in one binary, over four relinked layouts (2026-09; the table
+  is under "The x86 XXH64 primes" below). Zen 5, family 0x1A, is not on it
+  until one is measured.
 
   The choice is made *inside* the kernel -- `CMPB ·primes+48(SB), $0` and a
   jump to the other symbol -- for the reason the arm64 lane round is:
@@ -781,11 +944,29 @@ anything on top of that.
   good as its phase balance -- sample both phases and mean them, or quote a
   band. Single-binary comparisons at these lengths carry +/-5-8% and settle
   nothing.
-- **Unroll two, odd block first.** The loop is chain-bound, not
-  overhead-bound, but the N2 model prices the two loop instructions per block
-  at ~11% of the fused form's 16-instruction block, and pairing halves them.
-  `ldp x` reaches ±512 bytes, which allows the pair; unroll four would need a
-  second base register.
+- **Unroll four on arm64, two on x86, the leftover blocks first** (2026-09,
+  `BlockUnroll` in the generator). The two-block loop is 15.5 instructions a
+  block, and on a Neoverse N2, which fetches about four a cycle and does a
+  block's eight multiplies in four, that put it at both bounds at once, so
+  where the linker placed the loop head decided its speed. Measured at
+  16 KiB with the head padded to every 4-byte placement mod 64: 4.07 cycles
+  a block at the best four placements, 4.4 at four others, 4.2 between --
+  and no rule in it that survived a second sweep, the same head mod 64
+  reading 4.07 in one and 4.24 in the other. cespare/xxhash's one-block loop
+  swings the same way, 4.03 in one binary and 5.05 in another. At four
+  blocks an iteration every placement reads 4.05, and eight the same, so
+  four it is; the placement effect is gone with the instructions, not
+  chased. Through the package's own harness: -1.9% at 64 bytes, -5.4% at
+  256, -6.5% at a kibibyte, level at 64 KiB where the two-block loop had
+  drawn a good placement; in the compare harness 16 KiB went from 2242 to
+  2076 cycles a hash, from 6.5% behind cespare to 1.5% ahead, with 4.7%
+  fewer instructions. Streaming: 1 KiB writes -4.6%, 16 KiB -4.1%, and
+  64-byte writes level in one relinked layout and 2% behind in two others
+  -- a placement draw on the Go glue, the one-shot 64-byte hash being 2%
+  ahead in all three. x86 keeps two, where the loop is at its multiplier and
+  the unroll was not measured; an Apple core has not been measured with
+  four either, and its split form's odd-block prologue grows by two blocks.
+  `ldp x` reaches ±512 bytes, so the four blocks need no second base.
 - **Streaming**: `Digest` stages up to a block and hands whole blocks from the
   caller's slice straight to the `blocks` kernel; the tail and merge run in
   Go once per Sum64.
@@ -915,7 +1096,8 @@ rapidhash is **1.13x at 64 KiB and 1 MiB** (55.2 GB/s against 49.0). Below a
 few hundred bytes that column is cgo overhead and says nothing -- it reads
 5.1x at 256 bytes.
 
-**On arm64 the loop is bound by the multiplier, and it is finished.** x86
+**On an Apple M2 the loop is bound by the multiplier, and it is finished
+there.** x86
 gets both halves of a product from one `mulq`; arm64 needs `mul` and `umulh`,
 so the same 224-byte iteration issues 28 multiplies rather than 14, and an
 Apple M2 retires exactly two per cycle -- probed at 16 independent `mul`, 16
@@ -950,6 +1132,45 @@ traded away does not appear here either -- an M2 reads +0.9 to +1.1% at 256,
 where the other core read -0.9% -- so the trade it describes is a win at both
 ends on this one. Two arm64 cores, two different numbers, same direction
 above 4 KiB.
+
+**On a Neoverse N2 it is not at the multiplier, and the order of the
+rounds is worth 9%** (2026-09, `RoundPair`). The same pass measured 26.5
+cycles there against 14 for its 28 multiplies -- `mul` and `umulh` both
+issue two a cycle on that core, probed -- and about 21 for its 87
+instructions at the 4.2 a cycle the core dispatches. Every order a probe
+could hold, cycles per 224-byte pass:
+
+  | order of the rounds' instructions | cyc/pass |
+  |---|---|
+  | one round after another (shipped until then) | 26.5 |
+  | two lanes: loads, four xors, `mul umulh mul umulh`, two folds | **24.0** |
+  | the same with the multiplies `mul mul umulh umulh` | 25.2 |
+  | the same with each lane's fold right after its multiplies | 25.0 |
+  | three lanes at a time | 24.6 |
+  | four, or seven | 26.6 |
+  | fourteen | 29.2 |
+  | two lanes, the next pair's loads early, or the folds a pair late | 24.5 |
+
+  It is not the lanes' chains: with the fold written to a dead register, so
+  that nothing carries from round to round, the loop measures the same 26.5.
+  It is not the loads: replaced by register moves it measures 29.3, the
+  moves being instructions. It is the mix -- without the multiplies the
+  xors and loads take 14.2 cycles, without the xors the multiplies take
+  15.3, and with both they take the sum -- which is how the dispatcher
+  spreads a stream of xors and multiplies over pipes only two of which
+  multiply, and the two-lane order is the one it spreads best. The x86
+  face emits two rounds for a pair and regenerates byte for byte. Compare
+  harness, cycles per hash: 256 bytes 47.1 to 45.8, 512 88.6 to 86.3, 1 KiB
+  139.8 to 130.0, 4 KiB 506 to 473, 16 KiB 1941 to 1797, and nothing at 64
+  bytes and below, where no pair runs. Not measured on an M2, where the loop
+  is at its multiplier and the same instructions in another order should
+  cost nothing; measure before assuming.
+
+  One trap from the probes, for whoever writes the next one: a buffer that
+  is allocated and never written is the kernel's zero page four times over,
+  and a VIPT L1 with an index wider than a page cannot hold four virtual
+  names of one physical line at once. The probe read 45.6 cycles a pass and
+  250 L1 refills a call until its buffer was filled.
 
 **The short classes are call-bound and multiply-bound together, and every
 length is within a couple of cycles of the sum.** Measured on an M2 P-core
@@ -1078,6 +1299,16 @@ worth nothing.
   speed as NEON, because at VL=128 both sit on the algorithm's 16-vector-op
   floor. purego is the mirror image: 3.2% stalls at 5.12 IPC is a path that
   never waits and simply issues 2.4x the instructions.
+- **The portable long loop spills on amd64, and only there.** Under
+  `-tags purego` on a Zen 4 it retires 106 instructions per stripe at 5.5
+  IPC, against 64 the source implies and the 73.7 an N2 measures (below):
+  the difference is the accumulators spilling around the pair-wise walk,
+  which fourteen registers cannot hold. It is not worth chasing -- nothing
+  dispatches to purego on amd64 -- and it is not what the RISC targets see,
+  whose thirty-two registers hold the loop. The portable XXH64 block loop
+  reads 36 instructions per block there against the kernel's 21.6, at the
+  same imul-bound cycles; the portable rapidhash 180 per 224-byte iteration
+  against the kernel's 88, most of it `mulq`'s register shuffling.
 - **purego cannot shed its truncation from Go source.** Its lane is `eor`,
   `lsr`, `movwu`, `madd` where the kernel's is `eor`, `lsr`, `umaddl` -- the
   `movwu` is 8 instructions a stripe, 15% of the loop, and it is there because
@@ -1114,13 +1345,13 @@ worth nothing.
      keep the old path untouched. This supersedes half of the rejected
      seventh-argument idea below: the small-write case now gets its one-call
      drain without the argument every call would pay for.
-  2. **absorb dispatches through accumBlocksStream**, a function variable on
-     amd64 (the dispatch switch was 18% of a 256-byte Write there; an
-     indirect call is two cycles) and an inlined wrapper everywhere else, so
-     arm64 and purego compile to exactly the code they had. consumeStripes
-     must keep calling the switch: a call through a function variable makes
-     its arguments escape, and digestLong's accumulator copy lives on the
-     stack (TestNoAlloc is the tripwire).
+  2. **absorb calls accumBlocks directly.** On amd64 that used to be a
+     function variable that skipped the dispatch switch (the switch was 18%
+     of a 256-byte Write there; an indirect call is two cycles), and
+     consumeStripes could not use it because a call through a function
+     variable makes its arguments escape. The switch is now assembly -- see
+     the entry points section -- so every caller makes the same direct call,
+     the variable is gone, and TestNoAlloc still holds.
 - Streaming was profiled rather than guessed at, and the guess was wrong: for
   1 KiB writes, `runtime.memmove` was under 5% while the Go glue around the
   kernel (`consumeStripes`, the dispatch wrapper, the block-position modulo)
@@ -1159,10 +1390,13 @@ worth nothing.
   an empty Go call is 1.77ns, `accumBlocks` with nbStripes=0 is 5.02ns, and
   with one stripe 7.70ns. So a call is 1.77ns of Go plus 3.25ns of kernel
   prologue and epilogue, and a stripe is ~2.5ns. Use those numbers before
-  restructuring anything on the streaming path.
+  restructuring anything on the streaming path. They were taken through
+  the Go switch; the tail jump has since taken 22 instructions out of that
+  path on arm64, and they have not been re-taken as nanoseconds.
 - Still on the table for streaming, both measured and rejected for now:
-  0. The one-shot path for 1 KiB spends about 45ns: 38 in the kernel, 4 in
-     mergeAccs, 2 copying initAcc. **Moving the merge into the kernel was
+  0. The one-shot path for 1 KiB spent about 45ns: 38 in the kernel, 4 in
+     mergeAccs, 2 copying initAcc -- the copy has since gone, see the entry
+     points section. **Moving the merge into the kernel was
      implemented and measured: it is neutral to 0.8% worse, and was reverted.**
      The reason is visible in the generated code -- arm64 needs four
      movz/movk to materialize each 64-bit constant, where Go's compiler loads
@@ -1179,6 +1413,16 @@ worth nothing.
      It also consumes the last spare arm64 register (x26), leaving the ABI
      with no room. Skipping the call entirely -- wrong results, timing only --
      bounds the whole idea at +13% for 1 KiB writes.
+
+     **Resolved 2026-09 as a fourth entry point rather than an argument**:
+     `accumBlocks2` walks both runs in one call and only the general path
+     calls it, so the drain pays nothing. On a Redwood Cove it is -8.0% at
+     1 KiB writes and -3.2% at 4 KiB, one call fewer per write at both, with
+     the drain path below a kibibyte untouched; the same skip-the-call bound
+     read -20% and -7% there, and what the fusion cannot reach is the
+     scramble the skipped call also skipped. Re-measured on the Zen 4 with
+     the rest of that pass: -18% at 1 KiB writes and -9% at 4 KiB, see the
+     Zen 4 bullet at the end of the streaming pass under Redwood Cove.
   2. Absorbing that stripe in Go instead loses: `accumulate512Generic` is
      9.2ns against the 7.7ns call it would replace.
   3. Holding the accumulators in split form in the Digest, so no fold is
@@ -1230,9 +1474,26 @@ worth nothing.
   2% slower, a two-accumulator tail in the 129..240 ladder 1.4% slower
   (16.00 -> 16.22ns at 240 bytes), and only mergeAccs -- which runs once, with
   nothing after it to overlap -- gained from it.
-- Two more streaming ideas measured and dropped, both in the staging path:
-  replacing the short-write `copy` with inline word moves is worth nothing
-  (memmove was not the cost), and Write's fast path cannot be inlined at all.
+- **Small writes are staged with fixed-size moves, not `copy`** (2026-09).
+  Profiled on a Zen 4 at 64-byte writes, `runtime.memmove` was 31% of the
+  cycles and the kernel 17%: the call, memmove's own size dispatch and its
+  return were most of what a write cost. `write` now copies up to 64 bytes
+  itself with overlapping pairs of 16-, 8-, 4- or 1-byte moves, which the
+  compiler lowers to plain loads and stores; p and the staging area never
+  alias, so the overlap is safe. It is 16 bytes at most per move on purpose:
+  a 32-byte array copy is lowered to a call into memmove, which is what the
+  first draft did for 32..64 bytes and measured +41% at 64-byte writes for
+  it. With `absorb`'s stripe arithmetic made unsigned beside it -- a signed
+  division by 64 is four instructions of rounding, every one of them on the
+  path of a write -- a mebibyte streamed in 16-byte writes takes 29% fewer
+  cycles, in 64-byte writes 18% fewer and in 256-byte writes 5% fewer, with
+  a kibibyte and 4 KiB level (-0.5%, +0.1%); the store-forwarding failures
+  the counters showed at 16-byte writes went from 40,505 per mebibyte to
+  1,728. An earlier note here had inline word moves measuring nothing on a
+  Neoverse N2; that was a different core and a copy that still called
+  memmove for anything past a word.
+- One more streaming idea measured and dropped: Write's fast path cannot be
+  inlined at all.
   A method call returning `(int, error)` costs 70 of the 80-node budget on its
   own, so no branch and no copy fits beside one. That is why Write is a thin
   wrapper around `write` rather than handling the common case itself.
@@ -1242,6 +1503,86 @@ worth nothing.
   crossover term as a parameter purely to stay under the budget. Check with
   `go build -gcflags='-m=2'` before restructuring these — an accidental
   non-inlined call in the short path costs 5-15%.
+
+#### The 2026-09 counter pass, on an Azure Cobalt 100 VM
+
+Two Neoverse N2 cores at 3.39 GHz under Hyper-V, `perf` working through
+`bench/pstat`'s arm table (see Benchmarking for what the guest exposes).
+What each path costs per hash after the pass, cycles / instructions /
+branches retired, with the competitor in the same binary:
+
+| bytes | haste XXH3 | zeebo/xxh3 | haste XXH64 | cespare/xxhash | haste rapidhash |
+|---|---|---|---|---|---|
+| 4 | 9.8 / 49 / 6.0 | 9.9 / 54 / 7.0 | 10.4 / 48 / 9.2 | 10.9 / 46 / 8.9 | 9.7 / 47 / 8.0 |
+| 16 | 10.7 / 50 / 5.0 | 10.8 / 56 / 6.0 | 14.3 / 56 / 9.0 | 14.4 / 53 / 8.9 | 9.8 / 46 / 7.0 |
+| 64 | 18.7 / 85 / 8.0 | 24.6 / 116 / 8.0 | 29.6 / 109 / 13.9 | 30.8 / 107 / 11.0 | 18.5 / 69 / 9.0 |
+| 256 | 60.6 / 269 / 15.1 | 84.6 / 323 / 16.2 | 57.1 / 197 / 16.0 | 63.4 / 202 / 17.0 | 45.8 / 161 / 11.1 |
+| 1024 | 141.7 / 634 / 18.4 | 274 / 911 / 28.9 | 153.8 / 549 / 22.4 | 168 / 583 / 41.2 | 130.0 / 454 / 12.5 |
+| 16384 | 1935 / 8615 / 147 | 4411 / 12125 / 81 | 2075 / 7562 / 151 | 2104 / 8189 / 524 | 1797 / 6266 / 56.5 |
+
+No cell mispredicts, and below 64 bytes every hash here is at the
+dispatcher's width -- about 4.5 instructions a cycle -- so instructions are
+cycles, as on the Zen 4. Where the pass started from, cycles: XXH3 65.0 at
+256 bytes, 145.6 at a kibibyte, 1952 at 16 KiB; XXH64 61.1, 164.9, 2240;
+rapidhash 47.1, 139.8, 1942. Nothing under 64 bytes moved, and nothing was
+meant to.
+
+The core, probed with Go assembly loops (`mul`, `umulh`, `madd`, `eor`,
+`add`, 16 independent or 8 chained): `mul` and `umulh` issue two a cycle at
+latencies 2 and 3, `madd` one a cycle with its accumulate forwarded in one
+cycle, so a block's four `madd` and four `mul` fit the two multiply pipes
+only if they split evenly; the fused XXH64 round chains at 4.0 cycles and
+the split one at 4.0 too, so the form choice on this core is about issue
+and not latency; and `eor` or `add` alone, or two of them to a multiply,
+all sustain 4.2 instructions a cycle, which is the width everything here
+is measured against.
+
+Four things the counters found, each recorded in full where it lives:
+
+- **The XXH64 lane loop's speed was the linker's choice.** Two blocks an
+  iteration put it at the fetch bound and the multiplier bound at once,
+  and its head's placement swung it 4.07 to 4.41 cycles a block; four
+  blocks an iteration read 4.05 at every placement. XXH64 notes.
+- **The rapidhash loop was 90% above its multiplier and 25% above its
+  dispatch bound**, and the order of the rounds was the difference:
+  two lanes' loads, xors, multiplies and folds together, 26.5 to 24.0
+  cycles a pass. rapidhash notes.
+- **The Go switch in front of every kernel** was 22 instructions a call
+  here; it is a tail jump now, as on amd64. Entry points.
+- **The kernels' prologues were two instructions where arm64 does one**
+  (`mov` then `lsr`, `mov` then `add`, a compare and a branch for a
+  minimum), which the generator's integer surface now spells as
+  three-operand forms -- `AddRRR`, `ShrRRI`, `AddShl`, `Min` and the
+  rest, one instruction on arm64 and the old two on x86, so every x86
+  kernel regenerated byte for byte. Five instructions off a one-shot
+  call and two off every block: 256 bytes 62.9 to 60.7 cycles, 512 90.5 to
+  87.9, a kibibyte 145.3 to 141.7, 1 KiB writes 1.2%.
+
+And streaming, per mebibyte, before and after the pass, with the
+`absorb` change from the same pass (the window copy for a large write
+was a `memmove` of 65..128 bytes with its bounds, spills and reloads
+around it, some 50 of the 170 instructions a kibibyte write spent outside
+the kernel; it is eight fixed 16-byte moves now, the first 64 and the
+last 64 of the span, and 30 instructions fewer a write):
+
+| write | before | after | zeebo/xxh3 |
+|---|---|---|---|
+| 16 B | 952k | 948k | 1413k |
+| 64 B | 384k | 381k | 637k |
+| 256 B | 295k | 290k | 476k |
+| 1 KiB | 189k | 175k | 415k |
+| 4 KiB | 152k | 147k | 397k |
+
+The 4 KiB cell spreads 3% run to run on this VM, so read its column as a
+direction. What is left, from the same counters: the stripe loop at 7.6
+cycles a stripe is the dispatch bound of its 30.5 instructions, and it
+measures the same in both harnesses, so it has no placement lottery to
+fix; the one-shot fixed cost at 256 bytes is about 115 instructions, of
+which the merge is 55 in Go and four are the zeroing of the accumulator
+array the compiler owes a `//go:noescape` callee; and a 16-byte write is
+37 instructions in `write`, about 12 in the caller's loop and a
+sixty-fourth of a drain, 14.5 cycles, with nothing left to take but the
+frame a function that calls `absorb` has to have.
 
 ### arm64, measured on Apple M2 (Avalanche P-core, 3.49 GHz, macOS)
 
@@ -1274,7 +1615,8 @@ model from the N2's.
 - **Calls are cheap here:** an empty Go call with sum64's signature is
   0.86ns (3 cycles) against 1.77 on the N2; `accumNEON` with no stripes is
   3.44ns, one stripe 4.36; `mergeAccs` 2.6ns; the `acc := initAcc` copy
-  1.0ns.
+  1.0ns -- which the kernels now do without, unmeasured here; see the entry
+  points section.
 
 What that makes of the kernels:
 
@@ -1500,9 +1842,38 @@ trades one for the other.
 The ceiling for any of this is the kernel from before the split, which had
 one form and no test at all: 2.71 ns at 4 bytes against 2.98 shipped. That
 quarter of a nanosecond is what a two-form dispatch costs a short hash, and
-none of the four structures recovered it. It is left as it is. Callers with
-an integer key have `Sum64Uint32`, `Sum64Uint64` and `Sum64Uint128`, which
-reach neither the kernel nor the dispatch.
+none of the four structures recovered it. Callers with an integer key have
+`Sum64Uint32`, `Sum64Uint64` and `Sum64Uint128`, which reach neither the
+kernel nor the dispatch.
+
+**What did ship for Zen 4 is the model list** (2026-09): `pickPrimeForm`
+hands family 0x19 models 0x10-0x1F, 0x60-0x7F and 0xA0-0xAF the register
+form, so on those cores the fall-through is the form the core wants and the
+jump is never taken. The measurement behind it is the two forms forced in
+one binary -- `BenchmarkBackends` in `xxh64`, which now runs 4, 8 and 16
+bytes too -- over four relinked layouts, register form as the fall-through
+against pointer form behind its jump, on the 8840HS:
+
+| bytes | L0 | L1 | L2 | L3 |
+|---|---|---|---|---|
+| 4 | -3.4% | -0.9% | -0.0% | +0.4% |
+| 8 | -2.5% | -0.9% | -0.0% | +0.0% |
+| 16 | -3.5% | -0.7% | -0.4% | -0.6% |
+| 32 | -2.7% | -1.4% | -1.0% | -0.6% |
+| 64 | -3.6% | -3.3% | -3.1% | -2.6% |
+| 256 | -4.2% | -3.9% | -3.6% | -3.6% |
+| 1024 | -2.5% | -1.5% | -1.9% | -2.0% |
+
+Negative is the register form ahead. It is ahead or level in every cell,
+most at 64..256 bytes, and by far less at 4..16 than the 20-30% the
+paragraphs above record for the same jump: a fifth layout of the same tree
+even read the pointer form 1-4% ahead there, so the short-length figure
+above was one layout's draw as much as the dispatch. The direction is
+consistent, and it is what the list is on. Against cespare/xxhash in the
+same binary (bench/compare_test.go, one layout) this core now reads 1-5%
+ahead at every length from 16 bytes to 4 KiB and level from 16 KiB up --
+and 13% behind at 4 and 8 bytes, which is the tail-shape item below and
+wider here than the 5-7% it records.
 
 **Confirmed on a Zen 4 directly**, and as the change itself rather than as a
 ratio against cespare: the current tree against the same tree with only the
@@ -1743,7 +2114,23 @@ unrolling.
   The longer rungs keep the call; inlining them all was not measured to pay
   and would bloat a nosplit function.
 - **Measured and rejected**: a `prefetcht0` a block ahead in the fast loop
-  (neutral at 64 KiB, slightly negative at 1 MiB); a second pair of accumulator
+  (neutral at 64 KiB, slightly negative at 1 MiB) -- and, 2026-09, one per
+  stripe the way zeebo/xxh3 issues them, at every distance tried, through
+  the `-prefetch` flag `internal/asmgen/gen` keeps for the purpose: 1 KiB
+  and 2 KiB ahead cost 2-4% at 4..64 KiB and 20-23% at 8 MiB and 64 MiB,
+  where the hardware prefetcher was already doing the work; 512 bytes ahead
+  read 1-3% slower everywhere once interleaved with the tree without it, and
+  the -6% at 1 MiB it showed in a first pass was clock drift. The knob stays
+  because an Intel core has not answered the same question. Three shapes of
+  the AVX-512 fast stripe, interleaved against the shipped one at 4..64 KiB:
+  `vpshufd` for the high halves instead of `vpsrlq` (+1.5% at 16 KiB, +2.4%
+  at 64 KiB), the data accumulate issued straight after its load ahead of
+  the keyed chain (+1.3%, +1.2%), and both (+2.1%, +2.4%). The counters on
+  that loop at 16 KiB say why nothing there moves: 7.7 ops per stripe, no
+  mispredicts, 58% of cycles stalled on the FP register file, 2.93 cycles
+  per stripe against the 2.78 the ALU count models with the per-block
+  scramble in -- it is at 95% of its bound and the rest is scheduling. Also
+  rejected: a second pair of accumulator
   chains (the loop is throughput-bound, not latency-bound); mixing the five-
   and six-instruction stripe forms; an `and`-plus-`add` scramble on AVX2 that
   trades one operation per block for a mask register materialized on every
@@ -1804,19 +2191,21 @@ core barring a wider one.
   64% of the hash. Where it goes, by profile: the kernel 40%, `mergeAccs`
   28%, `sum64NS`'s own dispatch and the `initAcc` copy 16%, and the
   `hashLong` wrapper 9%.
-- **The `hashLong` wrapper is worth 4.5% at 256..1024 bytes and is not
-  taken.** It is a three-way switch over `backend`, which costs 199 nodes
-  against the inliner's budget of 80, so it stays a real call and the kernel
-  is two calls from `sum64NS` where it could be one. Collapsing it to a
+- **The `hashLong` wrapper was worth 4.5% at 256..1024 bytes, and is now
+  taken.** It was a three-way switch over `backend`, which costs 199 nodes
+  against the inliner's budget of 80, so it stayed a real call and the kernel
+  was two calls from `sum64NS` where it could be one. Collapsing it to a
   single call -- verified by hardcoding `hashLongAVX2`, which does inline at
-  cost 64 -- takes 256 bytes from 47.5 to 45.4 cycles, 512 from 65.5 to 62.6,
+  cost 64 -- took 256 bytes from 47.5 to 45.4 cycles, 512 from 65.5 to 62.6,
   1024 from 99.1 to 94.6, and nothing at 4 KiB where the kernel hides it.
-  Three ways to get it, all rejected: a func variable is one call and would
-  inline, but escape analysis cannot see through it and would put `acc` on
-  the heap; splitting the rare backends behind a second function is still two
-  calls and 125 nodes; duplicating the switch into a fused long-path function
-  per architecture means six copies of the convergence. Worth revisiting if
-  the inliner's treatment of calls changes.
+  Three ways were rejected: a func variable is one call and would inline, but
+  escape analysis cannot see through it and would put `acc` on the heap;
+  splitting the rare backends behind a second function is still two calls
+  and 125 nodes; duplicating the switch into a fused long-path function per
+  architecture means six copies of the convergence. The fourth is what
+  shipped (2026-09): the switch as assembly, a byte load and a tail jump to
+  the kernel, in `dispatch_amd64.s`. See the entry points section for what
+  it measured on a Zen 4; this core has not re-measured it.
 - **The three changes this core motivated, each re-measured on the merged
   tree at both alignment phases.** Every one was taken as before/after
   binaries of the same commit pair, medians of five, and repeated with a
@@ -1862,12 +2251,70 @@ core barring a wider one.
   cespare/xxhash at every size. Streaming a mebibyte: +16% at 16-byte
   writes, +1% at 64, −2% at 256, +17% at 1 KiB, +66% at 4 KiB.
 
-  The residual at 64- and 256-byte writes is call depth: `Write` -> `write`
+  The residual at 64- and 256-byte writes was call depth: `Write` -> `write`
   -> `absorb` -> `accumBlocks` -> kernel against zeebo's `Write` ->
   `updateString` -> kernel, which it reaches by putting its backend dispatch
   inline as a chain of `if hasAVX2` on package-level bools instead of behind
-  a wrapper. The same inliner budget that blocks the `hashLong` fix blocks
-  this one.
+  a wrapper. `accumBlocks` is a tail jump now rather than a switch, which
+  took 3-6% off those write sizes on a Zen 4, and the 2026-09 streaming pass
+  below took the rest: against main, per mebibyte, 16-byte writes now take
+  34% fewer cycles on this core, 64-byte 20%, 256-byte 17%, 1 KiB 16%, 4 KiB
+  5%, and zeebo/xxh3 in the same binary takes 22% more than this at 64-byte
+  writes, 17% at 256 and 33% at 1 KiB.
+- **Streaming, 2026-09, with the counters.** Everything here is per
+  mebibyte streamed, `bench/pstat` on this core, against the tree before it.
+  - **`write` was 39% of a 64-byte write and retiring at the core's width**,
+    so its instructions were its cost: 46 for a 64-byte write, of which the
+    stack check, the bounds check on the staging slot and the empty-write
+    test were seven paid for nothing. It is nosplit, forms the slot by
+    arithmetic, and lets the empty write fall out of the last case; 16-byte
+    writes -4.4% cycles and -8.6% instructions, 64-byte -3.0% and -6.4%,
+    256-byte level. **What is left in it is twelve LEAs, and they are the
+    compiler's:** a 16-byte move takes only a base register and a constant,
+    every base+index+constant address is folded into one three-operand LEA
+    and then emitted as two, and writing the trailing moves from the ends
+    of p and its slot changed nothing, because the constant is folded back
+    in before it can become a displacement. Eight-byte moves would fold the
+    index and save two instructions of the twenty; not taken.
+  - **The drain test is mispredicted every time it is taken at 16- and
+    64-byte writes, and each miss takes a return mispredict with it.** Per
+    mebibyte at 64-byte writes: 982 mispredicted taken conditionals and 976
+    mispredicted returns, one of each per drain of the staging area, where
+    zeebo/xxh3 has 15 mispredicts of any kind; `int_misc.clear_resteer_cycles`
+    puts them at 23k of 358k cycles, 6.7%, and 3.3% at 16-byte writes; at
+    256-byte writes, a period of four, there are none. The return miss is
+    the wrong path: the staging path is short, so its RET has popped the
+    return stack before the test resolves, and a drain written with no call
+    in it at all still mispredicts its return once per drain. Inverting the
+    branch by making the drain a loop body moved the miss to the not-taken
+    side and removed nothing. A standalone probe with the same shape was
+    predicted at 8 and 14 taken branches per write and not at 7, 8.4 or 17,
+    so whether the period is learned is the path history's hash, the
+    caller's branches included, and no shape inside `write` settles it.
+    Recorded so the next reader does not chase it; the fix that would work
+    is a longer period, which is a larger staging area, and that trade was
+    already measured against copy cost when the area went to a block.
+  - **The one-stripe call is gone from the general path**: see
+    `accumBlocks2` under the entry points. At 1 KiB writes the kernel was
+    77% of the cost and a quarter of that was the staged stripe's own call.
+  - **A half-width group in the stripe loop's remainder**, for the AVX2
+    kernel's unroll of eight: a power-of-two length leaves fifteen stripes
+    after its last whole block, which was a group and seven singles and is a
+    group, a half group and three. 1-2% off a 512-byte hash and off 1 KiB
+    writes, under 1% off a kibibyte, level from 4 KiB; placed ahead of the
+    zero test instead, it cost 16 KiB 0.8% for a taken branch per block.
+  - **The whole pass re-measured on the Zen 4** (2026-09, the branch before
+    it against the branch after, interleaved, `bench/pstat`, cycles per
+    mebibyte streamed): 16-byte writes level (-0.1%, on 9% fewer
+    instructions), 64-byte -5.6%, 256-byte +2.7% over five rounds each with
+    2.3% fewer instructions, 1 KiB -18.1%, 4 KiB -9.3%, 16 KiB -4.3%; the
+    one-shot path from 256 bytes to 16 KiB and the AVX2 kernel at 1..16 KiB
+    within a percent either way. The drain-test mispredict above does not
+    happen on this core: 0.000 mispredicts per write at 16 and 64 bytes on
+    the pulled tree against 0.008 and 0.001 before, with taken branches per
+    write 7.3 -> 8.2 and 6.3 -> 7.1. The 256-byte cell is the one to look
+    at if that write size matters; it is under the 8% this file asks for
+    before a small-write number counts, and was not chased.
 - **XXH3-128 of an empty input costs 9.5 cycles against zeebo's 6.0**, 62
   instructions against 38, because zeebo compiles the default secret's
   bitflips in as constants and haste loads them through the secret pointer.

@@ -10,7 +10,12 @@ import "fmt"
 
 // Go's arm64 ABI reserves R18 (platform), R27 (assembler temporary), R28
 // (goroutine), R29 (frame pointer) and R30 (link register); none appear here.
-var armArgGPR = []GPR{0, 1, 2, 3, 4, 5}
+// The seventh and eighth argument registers are x26 and x11: only
+// accumBlocks2 has eight arguments, and it has no table for x26 to point at
+// and uses five temporaries, so the sixth, x11, is free. Every other register
+// below x26 is spoken for in the split kernels. noOverlap in kernel.go holds
+// every emitter to its share.
+var armArgGPR = []GPR{0, 1, 2, 3, 4, 5, 26, 11}
 var armTmpGPR = []GPR{6, 7, 8, 9, 10, 11}
 
 // armConstGPR carries the scramble constant into a vector register.
@@ -139,9 +144,12 @@ func (a *arm64) Unroll() int      { return a.unroll }
 func (a *arm64) SecretImm() bool  { return !a.sve }
 func (a *arm64) ArgGPR(i int) GPR { return armArgGPR[i] }
 
-// The vector kernels return nothing and read no table.
+// The vector kernels return nothing. The one table any of them reads is
+// initAcc, in hashLong, and x26 is the highest register no kernel here
+// touches: the split kernels reach x25, and x27 and up are the assembler's
+// and the runtime's.
 func (a *arm64) RetGPR() GPR      { return -1 }
-func (a *arm64) TableGPR() GPR    { return -1 }
+func (a *arm64) TableGPR() GPR    { return 26 }
 func (a *arm64) TmpGPR(i int) GPR { return armTmpGPR[i] }
 
 func (a *arm64) GPRName(r GPR) string { return fmt.Sprintf("x%d", int(r)) }
@@ -199,6 +207,45 @@ func (a *arm64) ShrRI(dst GPR, sh uint) {
 func (a *arm64) ShlRI(dst GPR, sh uint) {
 	a.b.emit(func(m *Machine) { m.R[dst] <<= sh },
 		"lsl %s, %s, #%d", a.GPRName(dst), a.GPRName(dst), sh)
+}
+
+func (a *arm64) AddRRR(dst, x, y GPR) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[x] + m.R[y] },
+		"add %s, %s, %s", a.GPRName(dst), a.GPRName(x), a.GPRName(y))
+}
+
+func (a *arm64) SubRRR(dst, x, y GPR) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[x] - m.R[y] },
+		"sub %s, %s, %s", a.GPRName(dst), a.GPRName(x), a.GPRName(y))
+}
+
+func (a *arm64) SubRRI(dst, src GPR, imm int64) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[src] - uint64(imm) },
+		"sub %s, %s, #%d", a.GPRName(dst), a.GPRName(src), imm)
+}
+
+func (a *arm64) ShrRRI(dst, src GPR, sh uint) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[src] >> sh },
+		"lsr %s, %s, #%d", a.GPRName(dst), a.GPRName(src), sh)
+}
+
+func (a *arm64) AddShl(dst, x, y GPR, sh uint) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[x] + m.R[y]<<sh },
+		"add %s, %s, %s, lsl #%d", a.GPRName(dst), a.GPRName(x), a.GPRName(y), sh)
+}
+
+// Min is a compare and a conditional select, signed like every count the
+// kernels compare.
+func (a *arm64) Min(dst, x, y GPR) {
+	a.b.emit(func(m *Machine) { m.setCmp(m.R[x], m.R[y]) },
+		"cmp %s, %s", a.GPRName(x), a.GPRName(y))
+	a.b.emit(func(m *Machine) {
+		if LE.eval(m.cmpA, m.cmpB) {
+			m.R[dst] = m.R[x]
+		} else {
+			m.R[dst] = m.R[y]
+		}
+	}, "csel %s, %s, %s, le", a.GPRName(dst), a.GPRName(x), a.GPRName(y))
 }
 
 var armCC = map[Cond]string{LT: "lt", GE: "ge", EQ: "eq", NE: "ne", GT: "gt", LE: "le"}
@@ -686,7 +733,9 @@ func (a *arm64) mul4s(dst, x, y VReg) {
 
 func (a *arm64) Finish() {}
 
-func (a *arm64) LoadAcc(p GPR) {
+// LoadAcc reads in whatever width the register file has; a table and a
+// caller's array are the same to it, so constant is unused here.
+func (a *arm64) LoadAcc(p GPR, constant bool) {
 	for i := 0; i < a.nvec; i++ {
 		a.vload(a.accA[i], p, a.vl*i)
 		a.vzero(a.accB[i])

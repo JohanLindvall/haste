@@ -24,11 +24,12 @@ import (
 // under qemu.
 
 // simRegion lays out the memory a kernel sees: accumulators, then input, then
-// secret, each padded so an overrun lands in the padding and panics.
+// secret, then the initAcc table, each padded so an overrun lands in the
+// padding and panics.
 type simRegion struct {
 	mem            []byte
 	accAt, inAt    uint64
-	secAt          uint64
+	secAt, initAt  uint64
 	m              *asmgen.Machine
 	accOff, secOff int
 }
@@ -38,19 +39,24 @@ func newSimRegion(acc *[accNB]uint64, in, sec []byte) *simRegion {
 	accOff := pad
 	inOff := accOff + 8*accNB + pad
 	secOff := inOff + len(in) + pad
-	mem := make([]byte, secOff+len(sec)+pad)
+	initOff := secOff + len(sec) + pad
+	mem := make([]byte, initOff+8*accNB+pad)
 	for i, v := range acc {
 		binary.LittleEndian.PutUint64(mem[accOff+8*i:], v)
 	}
 	copy(mem[inOff:], in)
 	copy(mem[secOff:], sec)
+	for i, v := range initAcc {
+		binary.LittleEndian.PutUint64(mem[initOff+8*i:], v)
+	}
 
 	m := asmgen.NewMachine(mem, accNB)
 	return &simRegion{
 		mem: mem, m: m, accOff: accOff, secOff: secOff,
-		accAt: m.Base + uint64(accOff),
-		inAt:  m.Base + uint64(inOff),
-		secAt: m.Base + uint64(secOff),
+		accAt:  m.Base + uint64(accOff),
+		inAt:   m.Base + uint64(inOff),
+		secAt:  m.Base + uint64(secOff),
+		initAt: m.Base + uint64(initOff),
 	}
 }
 
@@ -62,10 +68,13 @@ func (r *simRegion) acc() [accNB]uint64 {
 	return acc
 }
 
-// simHashLong runs a backend's hashLong kernel over the given input.
+// simHashLong runs a backend's hashLong kernel over the given input. The
+// kernel starts from the initAcc table, whose address the prologue would put
+// in TableGPR; acc is handed over as it is and must be ignored on entry.
 func simHashLong(t *testing.T, k asmgen.Arch, acc *[accNB]uint64, in, sec []byte) {
 	t.Helper()
 	r := newSimRegion(acc, in, sec)
+	r.m.R[k.TableGPR()] = r.initAt
 	r.m.R[k.ArgGPR(0)] = r.accAt
 	r.m.R[k.ArgGPR(1)] = r.inAt
 	r.m.R[k.ArgGPR(2)] = uint64(len(in))
@@ -105,6 +114,26 @@ func simAccumBlocks(t *testing.T, k asmgen.Arch, acc *[accNB]uint64, in, sec []b
 	*acc = r.acc()
 }
 
+// simAccumBlocks2 runs the two-run kernel: nbStripes stripes from the start
+// of in, then nbStripes2 more from gap stripes further on, so that the second
+// run is not the continuation of the first in memory.
+func simAccumBlocks2(t *testing.T, k asmgen.Arch, acc *[accNB]uint64, in, sec []byte, nbStripes, soFar, gap, nbStripes2 int) {
+	t.Helper()
+	r := newSimRegion(acc, in, sec)
+	r.m.R[k.ArgGPR(0)] = r.accAt
+	r.m.R[k.ArgGPR(1)] = r.inAt
+	r.m.R[k.ArgGPR(2)] = uint64(nbStripes)
+	r.m.R[k.ArgGPR(3)] = r.secAt
+	r.m.R[k.ArgGPR(4)] = uint64(len(sec) - stripeLen)
+	r.m.R[k.ArgGPR(5)] = uint64(soFar)
+	r.m.R[k.ArgGPR(6)] = r.inAt + uint64(stripeLen*(nbStripes+gap))
+	r.m.R[k.ArgGPR(7)] = uint64(nbStripes2)
+	if err := r.m.Run(k.Build().Insts()); err != nil {
+		t.Fatal(err)
+	}
+	*acc = r.acc()
+}
+
 // simLengths spans every structural boundary of the long path: the first
 // length that reaches it, exact multiples of the stripe and block, and inputs
 // long enough to need several blocks and an unrolled remainder.
@@ -121,7 +150,7 @@ func TestSimulatedBackends(t *testing.T) {
 		b := b
 		t.Run(b.Name, func(t *testing.T) {
 			kernels := asmgen.EmitAll(b.New)
-			hashLongK, blocksK, accumK := kernels[0], kernels[1], kernels[2]
+			hashLongK, blocksK, accumK, blocks2K := kernels[0], kernels[1], kernels[2], kernels[3]
 
 			for _, n := range simLengths {
 				in := buf[:n]
@@ -129,7 +158,7 @@ func TestSimulatedBackends(t *testing.T) {
 				hashLongGeneric(&want, unsafe.Pointer(&in[0]), n,
 					unsafe.Pointer(&kSecret), secretDefaultSize-stripeLen)
 
-				got := initAcc
+				got := garbageAcc // output only, and must be ignored on entry
 				simHashLong(t, hashLongK, &got, in, sec)
 				if got != want {
 					t.Fatalf("hashLong len=%d:\n got %v\nwant %v", n, got, want)
@@ -172,6 +201,28 @@ func TestSimulatedBackends(t *testing.T) {
 					if got != want {
 						t.Fatalf("accumBlocks soFar=%d stripes=%d:\n got %v\nwant %v",
 							soFar, stripes, got, want)
+					}
+				}
+			}
+
+			// accumBlocks2 must carry the block position from the first run
+			// into the second, wherever the first stops: short of the
+			// boundary, on it, or past it, and either run may be empty.
+			for _, soFar := range []int{0, 1, 15} {
+				for _, n1 := range []int{0, 1, 15, 16, 17} {
+					for _, n2 := range []int{0, 1, 15, 16, 31, 33} {
+						const gap = 3
+						in := buf[:stripeLen*(n1+gap+n2)]
+						got, want := initAcc, initAcc
+						accumBlocksGeneric(&want, unsafe.Pointer(&in[0]), n1,
+							unsafe.Pointer(&kSecret), secretDefaultSize-stripeLen, soFar)
+						accumBlocksGeneric(&want, add(unsafe.Pointer(&buf[0]), uintptr(stripeLen*(n1+gap))), n2,
+							unsafe.Pointer(&kSecret), secretDefaultSize-stripeLen, (soFar+n1)%((secretDefaultSize-stripeLen)/secretConsumeRate))
+						simAccumBlocks2(t, blocks2K, &got, in, sec, n1, soFar, gap, n2)
+						if got != want {
+							t.Fatalf("accumBlocks2 soFar=%d n1=%d n2=%d:\n got %v\nwant %v",
+								soFar, n1, n2, got, want)
+						}
 					}
 				}
 			}
@@ -266,26 +317,54 @@ func moduleRoot(t *testing.T) string {
 }
 
 // TestGeneratedFilesUpToDate regenerates every backend -- the XXH3 ones here
-// and the XXH64 ones in xxh64/ -- and compares it with what is checked in, so
-// that an edit to the generator cannot silently leave the shipped assembly
-// behind.
+// and the XXH64 and rapidhash ones in their packages -- and compares it with
+// what is checked in, so that an edit to the generator cannot silently leave
+// the shipped assembly behind. The stub files, one per package and
+// architecture, are checked the same way; they need no assembler, so they
+// are checked even where the assembly is skipped.
 func TestGeneratedFilesUpToDate(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs the system assembler")
-	}
 	root := moduleRoot(t)
+	if !testing.Short() {
+		for _, b := range asmgen.AllBackends() {
+			t.Run(b.Filename(), func(t *testing.T) {
+				got, err := asmgen.Generate(b)
+				if err != nil {
+					t.Skipf("cannot assemble for %s: %v", b.GOARCH, err)
+				}
+				want, err := os.ReadFile(filepath.Join(root, b.Filename()))
+				if err != nil {
+					t.Fatalf("%v (run go generate ./...)", err)
+				}
+				if got != string(want) {
+					t.Errorf("%s is stale; run go generate ./...", b.Filename())
+				}
+			})
+		}
+	}
+	// The stubs, grouped as the generator groups them.
+	type key struct{ dir, goarch string }
+	byPkg := map[key][]asmgen.Backend{}
+	var keys []key
 	for _, b := range asmgen.AllBackends() {
-		t.Run(b.Filename(), func(t *testing.T) {
-			got, err := asmgen.Generate(b)
+		k := key{b.Dir, b.GOARCH}
+		if _, seen := byPkg[k]; !seen {
+			keys = append(keys, k)
+		}
+		byPkg[k] = append(byPkg[k], b)
+	}
+	for _, k := range keys {
+		name := filepath.Join(k.dir, "stub_"+k.goarch+".go")
+		t.Run(name, func(t *testing.T) {
+			got, err := asmgen.GenerateStubs(k.goarch, byPkg[k])
 			if err != nil {
-				t.Skipf("cannot assemble for %s: %v", b.GOARCH, err)
+				t.Fatal(err)
 			}
-			want, err := os.ReadFile(filepath.Join(root, b.Filename()))
+			want, err := os.ReadFile(filepath.Join(root, name))
 			if err != nil {
 				t.Fatalf("%v (run go generate ./...)", err)
 			}
 			if got != string(want) {
-				t.Errorf("%s is stale; run go generate ./...", b.Filename())
+				t.Errorf("%s is stale; run go generate ./...", name)
 			}
 		})
 	}

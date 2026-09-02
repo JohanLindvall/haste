@@ -188,6 +188,17 @@ func (a *arm64Scalar) Neg(dst GPR) {
 
 func (a *arm64Scalar) ScratchGPR() GPR { return a.ArgGPR(2) }
 
+// BlockUnroll is four here. The fused loop at two blocks an iteration is
+// 15.5 instructions a block, and on a Neoverse N2, which fetches about
+// four a cycle and multiplies eight of them in the same four, where the
+// linker put the loop decided its speed: measured at 16 KiB over every
+// 4-byte placement of the loop head, 4.07 cycles a block at the best four
+// placements and 4.4 at four others, with cespare/xxhash's one-block loop
+// swinging 4.03 to 5.05 the same way between two binaries. At four blocks
+// an iteration every placement measures 4.05, unroll eight the same, so
+// four it is. The tests are in CLAUDE.md under the N2 notes.
+func (a *arm64Scalar) BlockUnroll() int { return 4 }
+
 // UnseededTwin is off here: the twin saves a handful of instructions that an
 // arm64 core with three-operand adds mostly does not pay, and no arm64 has
 // been measured with it. See the x86 face.
@@ -209,7 +220,8 @@ func (a *arm64Scalar) BranchMaskClear(r GPR, mask int64, label string) {
 	a.branch(EQ, label)
 }
 
-// TailMaskSkips is off here, keeping the kernel byte-identical: the M2 was
+// TailSkips is empty here, keeping the kernel byte-identical: the M2 was
 // already level with cespare/xxhash at these lengths, and the skips have not
-// been measured on an arm64 core. See the x86 face for what they buy there.
-func (a *arm64Scalar) TailMaskSkips() bool { return false }
+// been measured on an arm64 core. See the x86 face for what they measured
+// there, which is nothing to keep.
+func (a *arm64Scalar) TailSkips() int { return 0 }

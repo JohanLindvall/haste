@@ -49,17 +49,30 @@ var x86GPRNames = map[GPR]string{
 //
 // R15 is reserved under dynamic linking and X15 is the zero register, so
 // neither appears above or in the vector pools below.
-var x86ArgGPR = []GPR{rDI, rSI, rDX, rCX, r8, r9}
+// The seventh and eighth argument registers are r14 and rAX. r14 is the
+// goroutine pointer in ABIInternal only, and every kernel here is ABI0; see
+// the ABI notes in CLAUDE.md, and the XXH64 kernel, which holds a prime
+// there. rAX is also the last temporary: only accumBlocks2 has eight
+// arguments and it uses five temporaries, and only hashLong uses six and it
+// has five arguments. noOverlap in kernel.go holds every emitter to that.
+var x86ArgGPR = []GPR{rDI, rSI, rDX, rCX, r8, r9, r14, rAX}
 
-// rAX is last: Setup uses it to stage the broadcast constant, and does so
-// before any kernel has a temporary live.
+// Setup stages the broadcast constant through r10, the first temporary,
+// before any kernel has one live.
 var x86TmpGPR = []GPR{r10, r11, r12, r13, rBX, rAX}
+
+// PrefetchDistance, when nonzero, makes every x86 stripe prefetch the input
+// that many bytes ahead of itself. Experimental knob; see CLAUDE.md.
+var PrefetchDistance = 0
 
 type x86 struct {
 	b      *Builder
 	name   string
 	mode   int
 	unroll int
+	// prefetch is the distance ahead of each stripe's input to prefetch, in
+	// bytes, or 0 for none.
+	prefetch int
 
 	lanes int // 64-bit lanes per vector register
 	nvec  int // vector registers per 64-byte stripe
@@ -73,7 +86,7 @@ type x86 struct {
 }
 
 func newX86(name string, mode, unroll int) *x86 {
-	x := &x86{b: &Builder{}, name: name, mode: mode, unroll: unroll}
+	x := &x86{b: &Builder{}, name: name, mode: mode, unroll: unroll, prefetch: PrefetchDistance}
 	x.lanes = mode / 64
 	x.nvec = accNB / x.lanes
 	// Accumulators first, then a scratch pool, then the broadcast constant.
@@ -115,9 +128,11 @@ func (x *x86) Unroll() int      { return x.unroll }
 func (x *x86) SecretImm() bool  { return true }
 func (x *x86) ArgGPR(i int) GPR { return x86ArgGPR[i] }
 
-// The vector kernels return nothing and read no table.
+// The vector kernels return nothing. The one table any of them reads is
+// initAcc, in hashLong, which has five arguments; r9 is the sixth argument
+// register and free there. The prologue refuses the combination otherwise.
 func (x *x86) RetGPR() GPR      { return -1 }
-func (x *x86) TableGPR() GPR    { return -1 }
+func (x *x86) TableGPR() GPR    { return r9 }
 func (x *x86) TmpGPR(i int) GPR { return x86TmpGPR[i] }
 func (x *x86) GPRName(r GPR) string {
 	n, ok := x86GPRNames[r]
@@ -204,6 +219,26 @@ func (x *x86) SubBranch(r GPR, imm int64, c Cond, label string) {
 		m.R[r] -= uint64(imm)
 	}, "subq $%d, %s", imm, x.GPRName(r))
 	x.branch(c, label)
+}
+
+// The three-operand forms are a move and the two-operand form, in the
+// order the kernels emitted them before the forms existed, so that every
+// x86 kernel regenerates byte for byte.
+func (x *x86) AddRRR(dst, a, b GPR)           { x.MovRR(dst, a); x.AddRR(dst, b) }
+func (x *x86) SubRRR(dst, a, b GPR)           { x.MovRR(dst, a); x.SubRR(dst, b) }
+func (x *x86) SubRRI(dst, src GPR, imm int64) { x.MovRR(dst, src); x.SubRI(dst, imm) }
+func (x *x86) ShrRRI(dst, src GPR, sh uint)   { x.MovRR(dst, src); x.ShrRI(dst, sh) }
+func (x *x86) AddShl(dst, a, b GPR, sh uint)  { x.MovRR(dst, b); x.ShlRI(dst, sh); x.AddRR(dst, a) }
+
+// Min is a move, a compare and a conditional move over a branch, which is
+// what the block walk did by hand; the label is allocated where it was so
+// the names in the listing stay the same.
+func (x *x86) Min(dst, a, b GPR) {
+	x.MovRR(dst, a)
+	skip := x.b.NewLabel("min")
+	x.BranchR(dst, b, LE, skip)
+	x.MovRR(dst, b)
+	x.b.Label(skip)
 }
 
 func (x *x86) BranchR(a, b GPR, c Cond, label string) {
@@ -443,8 +478,9 @@ func (x *x86) hi32(dst, src VReg) {
 }
 
 // Setup broadcasts PRIME32_1 for the scramble step, and does nothing at all
-// for a kernel that cannot reach one. It clobbers rAX, which the kernel has
-// nothing live in at that point.
+// for a kernel that cannot reach one. It stages the constant in r10, the
+// first temporary, which the kernel has nothing live in at that point; rAX
+// would be the eighth argument.
 //
 // The two narrower backends want the constant in every 32-bit element, because
 // they build the 64-bit product from two 32x32 multiplies; the AVX-512 one has
@@ -458,26 +494,26 @@ func (x *x86) Setup(scramble bool) {
 	// on a 32-bit host, where the generator and the test suite still have to
 	// build even though no kernel here runs there.
 	const prime32_1 uint32 = 0x9E3779B1
-	x.b.emit(func(m *Machine) { m.R[rAX] = uint64(prime32_1) }, "movl $%d, %%eax", prime32_1)
+	x.b.emit(func(m *Machine) { m.R[r10] = uint64(prime32_1) }, "movl $%d, %%r10d", prime32_1)
 	bcast32 := func(m *Machine) {
-		c := uint64(uint32(m.R[rAX]))
+		c := uint64(uint32(m.R[r10]))
 		for i := 0; i < x.lanes; i++ {
 			m.V[x.kprime][i] = c | c<<32
 		}
 	}
 	switch x.mode {
 	case modeSSE2:
-		x.b.emit(func(m *Machine) {}, "movd %%eax, %%xmm%d", int(x.kprime))
+		x.b.emit(func(m *Machine) {}, "movd %%r10d, %%xmm%d", int(x.kprime))
 		x.b.emit(bcast32, "pshufd $0, %s, %s", x.vec(x.kprime), x.vec(x.kprime))
 	case modeAVX2:
-		x.b.emit(func(m *Machine) {}, "vmovd %%eax, %%xmm%d", int(x.kprime))
+		x.b.emit(func(m *Machine) {}, "vmovd %%r10d, %%xmm%d", int(x.kprime))
 		x.b.emit(bcast32, "vpbroadcastd %%xmm%d, %s", int(x.kprime), x.vec(x.kprime))
 	default:
 		x.b.emit(func(m *Machine) {
 			for i := 0; i < x.lanes; i++ {
-				m.V[x.kprime][i] = m.R[rAX]
+				m.V[x.kprime][i] = m.R[r10]
 			}
-		}, "vpbroadcastq %%rax, %s", x.vec(x.kprime))
+		}, "vpbroadcastq %%r10, %s", x.vec(x.kprime))
 	}
 }
 
@@ -489,19 +525,26 @@ func (x *x86) Finish() {
 	}
 }
 
-// LoadAcc reads the accumulators in 128-bit pieces rather than in one go.
+// LoadAcc reads the accumulators in 128-bit pieces rather than in one go,
+// unless they come from a constant table.
 //
-// They arrive from Go, and the two places they come from -- a copy of initAcc
-// on the long path, a Digest field on the streaming one -- are both written by
-// the compiler as 16-byte moves, because that is all the amd64 baseline has. A
-// 32- or 64-byte load spanning several of those stores cannot take its data
-// from the store queue: it waits for them to reach the cache. Loading in the
-// width they were written in forwards instead, and is worth 26% of a 256-byte
-// hash and 15% of a 1 KiB one on a Zen 4.
-func (x *x86) LoadAcc(p GPR) {
+// A caller's accumulators arrive from Go -- a Digest field, on the streaming
+// path -- written by the compiler as 16-byte moves, because that is all the
+// amd64 baseline has. A 32- or 64-byte load spanning several of those stores
+// cannot take its data from the store queue: it waits for them to reach the
+// cache. Loading in the width they were written in forwards instead, and was
+// worth 26% of a 256-byte hash and 15% of a 1 KiB one on a Zen 4 back when
+// the one-shot path copied initAcc the same way. That path now reads initAcc
+// itself, a global written once at init, where the wide load has nothing to
+// wait for and the pieces would only cost their inserts.
+func (x *x86) LoadAcc(p GPR, constant bool) {
 	w := x.mode / 8
 	for i := 0; i < x.nvec; i++ {
-		x.vloadPieces(x.accA[i], p, w*i)
+		if constant {
+			x.vload(x.accA[i], p, w*i)
+		} else {
+			x.vloadPieces(x.accA[i], p, w*i)
+		}
 		x.vzero(x.accB[i])
 	}
 }
@@ -565,11 +608,22 @@ func (x *x86) vstorePieces(src VReg, r GPR, off int) {
 // memory by the xor that consumes it.
 func (x *x86) GroupBegin(GPR) {}
 
+// prefetchIn touches the input a fixed distance ahead of the stripe at
+// in+inOff, when the backend asks for it. The simulator has nothing to do:
+// a prefetch changes no architectural state.
+func (x *x86) prefetchIn(in GPR, inOff int) {
+	if x.prefetch == 0 {
+		return
+	}
+	x.b.emit(func(m *Machine) {}, "prefetcht0 %s", x.mem(in, inOff+x.prefetch))
+}
+
 func (x *x86) Stripe(k int, in GPR, inOff int, sec GPR, secOff int) {
 	w := x.mode / 8
 	if k < 0 {
 		k = 0
 	}
+	x.prefetchIn(in, inOff)
 	for j := 0; j < x.nvec; j++ {
 		t := x.tmp[3*((k*x.nvec+j)%(len(x.tmp)/3)):]
 		d, key, h := t[0], t[1], t[2]
@@ -611,6 +665,7 @@ func (x *x86) FastStripe(k int, in GPR, inOff int) {
 	}
 	t := x.tmp[3*(k%(len(x.tmp)/3)):]
 	d, key, h := t[0], t[1], t[2]
+	x.prefetchIn(in, inOff)
 	x.vload(d, in, inOff)
 	x.vxor(key, d, x.secretRegs[k])
 	x.hi32(h, key)

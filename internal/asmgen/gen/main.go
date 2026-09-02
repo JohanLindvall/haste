@@ -20,8 +20,12 @@ import (
 func main() {
 	out := flag.String("out", ".", "directory to write generated files to")
 	only := flag.String("only", "", "generate just this backend")
-	dump := flag.Int("dump", -1, "print the assembler source of kernel N (0 hashLong, 1 accumBlocks, 2 accum; for the XXH64 backends 0 sum64, 1 blocks) instead of generating; use with -only")
+	prefetch := flag.Int("prefetch", 0, "experimental: x86 stripe prefetch distance in bytes")
+	tailSkips := flag.Int("tailskips", 0, "experimental: x86 XXH64 tail skip set (bits: 1 all, 2 words, 4 afterwords, 8 bytes)")
+	dump := flag.Int("dump", -1, "print the assembler source of kernel N (0 hashLong, 1 accumBlocks, 2 accum, 3 accumBlocks2; for the XXH64 backends 0 sum64, 1 blocks) instead of generating; use with -only")
 	flag.Parse()
+	asmgen.PrefetchDistance = *prefetch
+	asmgen.X86TailSkips = *tailSkips
 	log.SetFlags(0)
 	log.SetPrefix("asmgen: ")
 

@@ -208,6 +208,19 @@ type Arch interface {
 	SubRI(dst GPR, imm int64)
 	ShrRI(dst GPR, sh uint)
 	ShlRI(dst GPR, sh uint)
+	// The three-operand forms, for a result that lands in a register of
+	// its own: dst = x + y, dst = x - y, dst = src - imm, dst = src >> sh,
+	// dst = x + (y << sh), and dst = min(x, y) as signed. One instruction
+	// each on arm64; on x86 a move and the two-operand form, which is what
+	// the kernels there emitted anyway. They are worth six instructions of
+	// a one-shot kernel's prologue and two per block on a core that
+	// retires four a cycle.
+	AddRRR(dst, x, y GPR)
+	SubRRR(dst, x, y GPR)
+	SubRRI(dst, src GPR, imm int64)
+	ShrRRI(dst, src GPR, sh uint)
+	AddShl(dst, x, y GPR, sh uint)
+	Min(dst, x, y GPR)
 	// BranchI compares a against an immediate, BranchR against a register.
 	BranchI(a GPR, imm int64, c Cond, label string)
 	BranchR(a, b GPR, c Cond, label string)
@@ -226,8 +239,10 @@ type Arch interface {
 
 	// LoadAcc reads the eight accumulators from [p] into the product
 	// accumulator and zeroes the data accumulator; StoreAcc writes them back.
-	// StoreAcc must be preceded by Materialize.
-	LoadAcc(p GPR)
+	// StoreAcc must be preceded by Materialize. constant says that [p] is a
+	// long-lived table rather than memory the caller has just written, which
+	// on x86 decides the width of the load; see the x86 LoadAcc.
+	LoadAcc(p GPR, constant bool)
 	StoreAcc(p GPR)
 
 	// GroupBegin runs once before an unrolled group's loop body, with the

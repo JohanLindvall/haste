@@ -163,6 +163,14 @@ type XXH64Arch interface {
 	// the table's form slot; see XXH64Funcs.
 	Dual() bool
 
+	// BlockUnroll is how many blocks the lane loop runs per iteration, a
+	// power of two. The blocks the count leaves over run ahead of the loop,
+	// in binary. Two on x86, where the loop is at its multiplier and the
+	// overhead is hidden; four on arm64, where a two-block loop is at the
+	// front end's width as well and its speed then depends on where the
+	// linker put it -- see the arm64 backend.
+	BlockUnroll() int
+
 	// Block absorbs the block at in+off into the four lanes: for each lane,
 	// v = rol(v + word*P2, 31) * P1. How the loads and the rounds interleave
 	// is the architecture's -- x86 loads each word into X as it goes, arm64
@@ -221,13 +229,30 @@ type XXH64Arch interface {
 	// BranchZero branches if r is zero: cbz on arm64, test and jz on x86.
 	BranchZero(r GPR, label string)
 
-	// TailMaskSkips reports whether emitTail prefixes the per-bit guards
-	// with combined-mask skips. On for x86, where the win was measured; off
-	// for arm64, whose short hashes were already level with hand-written
-	// assembly on an M2, and whose kernel stays byte-identical until the
-	// skips are measured on one.
-	TailMaskSkips() bool
+	// TailSkips reports which combined-mask skips emitTail places ahead of
+	// the per-bit guards, as a set of the Skip* bits. Each skip lets a tail
+	// with none of the bytes its mask names leave in one taken branch
+	// instead of one per guard; each costs every other length a not-taken
+	// test. Which of them pay is the core's business -- see the x86 backend
+	// for the measured set, and arm64, which takes none.
+	TailSkips() int
 }
+
+// The skips emitTail can place, as TailSkips bits.
+const (
+	// SkipAll leaves for the finish when n&31 is zero: a stripe-multiple
+	// tail has nothing to do.
+	SkipAll = 1 << iota
+	// SkipWords leaves for the sub-word steps when n&24 is zero: no
+	// eight-byte step runs.
+	SkipWords
+	// SkipAfterWords leaves for the finish after the eight-byte steps when
+	// n&7 is zero.
+	SkipAfterWords
+	// SkipBytes leaves for the finish after the four-byte step when n&3 is
+	// zero.
+	SkipBytes
+)
 
 // EmitXXH64 emits the two kernels into one instruction stream per function.
 func EmitXXH64(new func() XXH64Arch) []Kernel {
@@ -360,23 +385,37 @@ func emitBlockLoops(a XXH64Arch, in, nb GPR, v [4]GPR) {
 }
 
 // emitBlockLoop absorbs nb blocks from in, advancing in past them. It runs
-// two blocks per iteration, with the odd block first: the loop is bound by
-// each lane's dependency chain, not by its own overhead, but the cores that
-// issue it fastest are the ones the two instructions of overhead per block
-// still show on.
+// BlockUnroll blocks per iteration, with the blocks the count leaves over
+// first: the loop is bound by each lane's dependency chain and by the
+// multiplier, not by its own overhead, but the cores that issue it fastest
+// are the ones the loop instructions per block still show on.
 func emitBlockLoop(a XXH64Arch, in, nb GPR, v [4]GPR, split bool) {
 	b := a.Build()
-	even, loop, done := b.NewLabel("even"), b.NewLabel("blocks"), b.NewLabel("bdone")
-	a.BranchBitClear(nb, 0, even)
-	a.Block(in, 0, v, split)
-	a.AddImm(in, 32)
-	b.Label(even)
-	a.Shr(nb, 1)
+	unroll := a.BlockUnroll()
+	if unroll&(unroll-1) != 0 || unroll < 1 {
+		panic("asmgen: BlockUnroll must be a power of two")
+	}
+	// The blocks the loop will not cover run first, in binary: one if bit
+	// 0 of the count is set, then two if bit 1, and so on.
+	shift := 0
+	for 1<<shift < unroll {
+		next := b.NewLabel("even")
+		a.BranchBitClear(nb, uint(shift), next)
+		for i := 0; i < 1<<shift; i++ {
+			a.Block(in, 32*i, v, split)
+		}
+		a.AddImm(in, int64(32<<shift))
+		b.Label(next)
+		shift++
+	}
+	loop, done := b.NewLabel("blocks"), b.NewLabel("bdone")
+	a.Shr(nb, uint(shift))
 	a.BranchZero(nb, done)
 	b.Label(loop)
-	a.Block(in, 0, v, split)
-	a.Block(in, 32, v, split)
-	a.AddImm(in, 64)
+	for i := 0; i < unroll; i++ {
+		a.Block(in, 32*i, v, split)
+	}
+	a.AddImm(in, int64(32*unroll))
 	a.SubBranch(nb, 1, NE, loop)
 	b.Label(done)
 }
@@ -416,10 +455,13 @@ func emitTail(a XXH64Arch, h, p, n GPR) {
 	// A tail that skipped the word steps lands past the whole-words test
 	// too: its n & 7 is all of n, and the n == 0 case already left through
 	// the first skip.
+	skips := a.TailSkips()
 	t4w := t4
-	if a.TailMaskSkips() {
-		t4w = b.NewLabel("t4w")
+	if skips&SkipAll != 0 {
 		a.BranchMaskClear(n, 31, fin)
+	}
+	if skips&SkipWords != 0 {
+		t4w = b.NewLabel("t4w")
 		a.BranchMaskClear(n, 24, t4w)
 	}
 	a.BranchBitClear(n, 4, t8)
@@ -429,8 +471,10 @@ func emitTail(a XXH64Arch, h, p, n GPR) {
 	a.BranchBitClear(n, 3, t4)
 	step8()
 	b.Label(t4)
-	if a.TailMaskSkips() {
+	if skips&SkipAfterWords != 0 {
 		a.BranchMaskClear(n, 7, fin)
+	}
+	if skips&SkipWords != 0 {
 		b.Label(t4w)
 	}
 	a.BranchBitClear(n, 2, t2)
@@ -441,7 +485,7 @@ func emitTail(a XXH64Arch, h, p, n GPR) {
 	a.Rol(h, 23)
 	a.MulAddPrime(h, 1, 2)
 	b.Label(t2)
-	if a.TailMaskSkips() {
+	if skips&SkipBytes != 0 {
 		a.BranchMaskClear(n, 3, fin)
 	}
 	a.BranchBitClear(n, 1, t1)
