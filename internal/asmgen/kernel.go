@@ -366,6 +366,40 @@ func emitStripeLoop(a Arch, in, s, cnt GPR) {
 	b.Label(single)
 	a.AddRI(cnt, int64(u))
 	a.BranchI(cnt, 0, LE, done)
+	if u >= 8 {
+		// A half-width group between the unrolled loop and the singles.
+		// Every power-of-two length leaves fifteen stripes after its last
+		// whole block, which at unroll 8 was one group and seven single
+		// iterations, each with its own pointer steps and count; this makes
+		// it one group, a half group and three. It sits after the zero test
+		// so that a run of whole groups -- every block of the block loop --
+		// leaves the way it did, with no extra branch taken; the test is a
+		// compare rather than the biased subtract above, so that the group
+		// path falls through with no jump over a fix-up. Measured on a
+		// Redwood Cove, AVX2: 1-2% off a 512-byte hash and off 1 KiB
+		// writes streamed, under 1% off a kibibyte, level at 4 KiB and up.
+		// With the compare ahead of the zero test instead, 16 KiB paid 0.8%
+		// for a taken branch per block.
+		half := u / 2
+		singles := b.NewLabel("singles")
+		a.BranchI(cnt, int64(half), LT, singles)
+		a.GroupBegin(s)
+		for k := 0; k < half; k++ {
+			if a.SecretImm() {
+				a.Stripe(k, in, stripeLen*k, s, secretConsumeRate*k)
+			} else {
+				a.Stripe(k, in, stripeLen*k, s, 0)
+				a.AddRI(s, secretConsumeRate)
+			}
+		}
+		a.AddRI(in, int64(stripeLen*half))
+		if a.SecretImm() {
+			a.AddRI(s, int64(secretConsumeRate*half))
+		}
+		a.SubRI(cnt, int64(half))
+		a.BranchI(cnt, 0, LE, done)
+		b.Label(singles)
+	}
 	loop := b.NewLabel("onebody")
 	b.Label(loop)
 	a.Stripe(Standalone, in, 0, s, 0)
