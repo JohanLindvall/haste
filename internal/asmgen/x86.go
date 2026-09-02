@@ -55,11 +55,18 @@ var x86ArgGPR = []GPR{rDI, rSI, rDX, rCX, r8, r9}
 // before any kernel has a temporary live.
 var x86TmpGPR = []GPR{r10, r11, r12, r13, rBX, rAX}
 
+// PrefetchDistance, when nonzero, makes every x86 stripe prefetch the input
+// that many bytes ahead of itself. Experimental knob; see CLAUDE.md.
+var PrefetchDistance = 0
+
 type x86 struct {
 	b      *Builder
 	name   string
 	mode   int
 	unroll int
+	// prefetch is the distance ahead of each stripe's input to prefetch, in
+	// bytes, or 0 for none.
+	prefetch int
 
 	lanes int // 64-bit lanes per vector register
 	nvec  int // vector registers per 64-byte stripe
@@ -73,7 +80,7 @@ type x86 struct {
 }
 
 func newX86(name string, mode, unroll int) *x86 {
-	x := &x86{b: &Builder{}, name: name, mode: mode, unroll: unroll}
+	x := &x86{b: &Builder{}, name: name, mode: mode, unroll: unroll, prefetch: PrefetchDistance}
 	x.lanes = mode / 64
 	x.nvec = accNB / x.lanes
 	// Accumulators first, then a scratch pool, then the broadcast constant.
@@ -574,11 +581,22 @@ func (x *x86) vstorePieces(src VReg, r GPR, off int) {
 // memory by the xor that consumes it.
 func (x *x86) GroupBegin(GPR) {}
 
+// prefetchIn touches the input a fixed distance ahead of the stripe at
+// in+inOff, when the backend asks for it. The simulator has nothing to do:
+// a prefetch changes no architectural state.
+func (x *x86) prefetchIn(in GPR, inOff int) {
+	if x.prefetch == 0 {
+		return
+	}
+	x.b.emit(func(m *Machine) {}, "prefetcht0 %s", x.mem(in, inOff+x.prefetch))
+}
+
 func (x *x86) Stripe(k int, in GPR, inOff int, sec GPR, secOff int) {
 	w := x.mode / 8
 	if k < 0 {
 		k = 0
 	}
+	x.prefetchIn(in, inOff)
 	for j := 0; j < x.nvec; j++ {
 		t := x.tmp[3*((k*x.nvec+j)%(len(x.tmp)/3)):]
 		d, key, h := t[0], t[1], t[2]
@@ -620,6 +638,7 @@ func (x *x86) FastStripe(k int, in GPR, inOff int) {
 	}
 	t := x.tmp[3*(k%(len(x.tmp)/3)):]
 	d, key, h := t[0], t[1], t[2]
+	x.prefetchIn(in, inOff)
 	x.vload(d, in, inOff)
 	x.vxor(key, d, x.secretRegs[k])
 	x.hi32(h, key)

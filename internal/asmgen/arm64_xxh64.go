@@ -209,7 +209,8 @@ func (a *arm64Scalar) BranchMaskClear(r GPR, mask int64, label string) {
 	a.branch(EQ, label)
 }
 
-// TailMaskSkips is off here, keeping the kernel byte-identical: the M2 was
+// TailSkips is empty here, keeping the kernel byte-identical: the M2 was
 // already level with cespare/xxhash at these lengths, and the skips have not
-// been measured on an arm64 core. See the x86 face for what they buy there.
-func (a *arm64Scalar) TailMaskSkips() bool { return false }
+// been measured on an arm64 core. See the x86 face for what they measured
+// there, which is nothing to keep.
+func (a *arm64Scalar) TailSkips() int { return 0 }

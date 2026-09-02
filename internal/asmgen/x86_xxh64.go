@@ -325,19 +325,31 @@ func (x *x86Scalar) BranchMaskClear(r GPR, mask int64, label string) {
 	x.branch(EQ, label)
 }
 
-// TailMaskSkips is off. It was on while the prologue materialized the five
-// primes with movabs: fifty bytes of ten-byte instructions, against which
-// skipping three or four taken branches in the tail was worth 12-17% of a 4-
-// or 8-byte hash. Holding the primes in registers removed that prologue, and
-// with it the thing the skips were paying for -- what is left is their cost,
-// two not-taken tests on every length whose tail runs more than one step.
-// Measured on a Zen 4, four relinked layouts each, every length 1..40: off
-// beats on by 4.8 points over 9..16 bytes and 3.2 over 17..32, for +1.2%
-// against cespare/xxhash on the whole range where on reads -0.8%, and the
-// per-layout aggregates do not overlap. Only 4 bytes prefers them (+8.5),
-// and a variant keeping just the n&3 skip does not recover that. The
-// generator keeps the mechanism for the core that wants it.
-func (x *x86Scalar) TailMaskSkips() bool { return false }
+// TailSkips is empty. The skips were on while the prologue materialized the
+// five primes with movabs: fifty bytes of ten-byte instructions, against
+// which skipping three or four taken branches in the tail was worth 12-17%
+// of a 4- or 8-byte hash. Holding the primes in registers removed that
+// prologue, and with it the thing the skips were paying for -- what is left
+// is their cost, a not-taken test on every length whose tail runs the steps
+// the skip would have jumped over. Measured on a Zen 4, four relinked
+// layouts each, every length 1..40: off beats all four skips by 4.8 points
+// over 9..16 bytes and 3.2 over 17..32.
+//
+// Re-measured in 2026-09 the other way round, with every subset of interest
+// as its own symbol in one binary, each kernel 64-byte aligned and one
+// benchmark loop calling all of them, so that neither the caller's nor the
+// kernel's placement differs between them: against no skips, the bytes skip
+// alone reads +2.8% over 1..40, the words skip alone +2.6%, the two together
+// +2.2% and all four +4.1%, with only 4 bytes (-7%) and 32 (-2%) gaining
+// from any of them. The counters had put the 4- and 8-byte deficit against
+// cespare/xxhash on two extra taken branches and a front end starved 23% of
+// its slots against 8%; removing the branches did not return the cycles, so
+// that is not where they go. X86TailSkips is the set the kernel takes, and
+// the generator's -tailskips flag is how a subset is tried.
+func (x *x86Scalar) TailSkips() int { return X86TailSkips }
+
+// X86TailSkips is the skip set the x86 kernel takes; see TailSkips.
+var X86TailSkips = 0
 
 func (x *x86Scalar) BranchZero(r GPR, label string) {
 	x.b.emit(func(m *Machine) { m.setCmp(m.R[r], 0) },
