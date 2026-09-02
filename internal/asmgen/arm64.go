@@ -139,9 +139,12 @@ func (a *arm64) Unroll() int      { return a.unroll }
 func (a *arm64) SecretImm() bool  { return !a.sve }
 func (a *arm64) ArgGPR(i int) GPR { return armArgGPR[i] }
 
-// The vector kernels return nothing and read no table.
+// The vector kernels return nothing. The one table any of them reads is
+// initAcc, in hashLong, and x26 is the highest register no kernel here
+// touches: the split kernels reach x25, and x27 and up are the assembler's
+// and the runtime's.
 func (a *arm64) RetGPR() GPR      { return -1 }
-func (a *arm64) TableGPR() GPR    { return -1 }
+func (a *arm64) TableGPR() GPR    { return 26 }
 func (a *arm64) TmpGPR(i int) GPR { return armTmpGPR[i] }
 
 func (a *arm64) GPRName(r GPR) string { return fmt.Sprintf("x%d", int(r)) }
@@ -686,7 +689,9 @@ func (a *arm64) mul4s(dst, x, y VReg) {
 
 func (a *arm64) Finish() {}
 
-func (a *arm64) LoadAcc(p GPR) {
+// LoadAcc reads in whatever width the register file has; a table and a
+// caller's array are the same to it, so constant is unused here.
+func (a *arm64) LoadAcc(p GPR, constant bool) {
 	for i := 0; i < a.nvec; i++ {
 		a.vload(a.accA[i], p, a.vl*i)
 		a.vzero(a.accB[i])

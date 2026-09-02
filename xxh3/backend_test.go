@@ -94,6 +94,10 @@ func TestBackendsAgree(t *testing.T) {
 	}
 }
 
+// garbageAcc is what hashLong is handed on entry, to prove it starts from
+// initAcc rather than from its argument.
+var garbageAcc = [accNB]uint64{^uint64(0), 1, 2, 3, 4, 5, 6, 7}
+
 // kernelSecretLens are secret lengths that move the block boundary. 137, 191
 // and 193 are the ones that matter: their secretLimit is not a multiple of
 // secretConsumeRate, so a kernel that placed the scramble key at
@@ -144,7 +148,8 @@ func TestKernelsMatchPortable(t *testing.T) {
 					if n < 241 || n > len(buf) {
 						continue
 					}
-					want, got := initAcc, initAcc
+					// acc is output only; both must ignore what it holds.
+					want, got := garbageAcc, garbageAcc
 					hashLongGeneric(&want, bp, n, sp, limit)
 					hashLong(&got, bp, n, sp, limit)
 					if got != want {

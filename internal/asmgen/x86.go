@@ -115,9 +115,11 @@ func (x *x86) Unroll() int      { return x.unroll }
 func (x *x86) SecretImm() bool  { return true }
 func (x *x86) ArgGPR(i int) GPR { return x86ArgGPR[i] }
 
-// The vector kernels return nothing and read no table.
+// The vector kernels return nothing. The one table any of them reads is
+// initAcc, in hashLong, which has five arguments; r9 is the sixth argument
+// register and free there. The prologue refuses the combination otherwise.
 func (x *x86) RetGPR() GPR      { return -1 }
-func (x *x86) TableGPR() GPR    { return -1 }
+func (x *x86) TableGPR() GPR    { return r9 }
 func (x *x86) TmpGPR(i int) GPR { return x86TmpGPR[i] }
 func (x *x86) GPRName(r GPR) string {
 	n, ok := x86GPRNames[r]
@@ -489,19 +491,26 @@ func (x *x86) Finish() {
 	}
 }
 
-// LoadAcc reads the accumulators in 128-bit pieces rather than in one go.
+// LoadAcc reads the accumulators in 128-bit pieces rather than in one go,
+// unless they come from a constant table.
 //
-// They arrive from Go, and the two places they come from -- a copy of initAcc
-// on the long path, a Digest field on the streaming one -- are both written by
-// the compiler as 16-byte moves, because that is all the amd64 baseline has. A
-// 32- or 64-byte load spanning several of those stores cannot take its data
-// from the store queue: it waits for them to reach the cache. Loading in the
-// width they were written in forwards instead, and is worth 26% of a 256-byte
-// hash and 15% of a 1 KiB one on a Zen 4.
-func (x *x86) LoadAcc(p GPR) {
+// A caller's accumulators arrive from Go -- a Digest field, on the streaming
+// path -- written by the compiler as 16-byte moves, because that is all the
+// amd64 baseline has. A 32- or 64-byte load spanning several of those stores
+// cannot take its data from the store queue: it waits for them to reach the
+// cache. Loading in the width they were written in forwards instead, and was
+// worth 26% of a 256-byte hash and 15% of a 1 KiB one on a Zen 4 back when
+// the one-shot path copied initAcc the same way. That path now reads initAcc
+// itself, a global written once at init, where the wide load has nothing to
+// wait for and the pieces would only cost their inserts.
+func (x *x86) LoadAcc(p GPR, constant bool) {
 	w := x.mode / 8
 	for i := 0; i < x.nvec; i++ {
-		x.vloadPieces(x.accA[i], p, w*i)
+		if constant {
+			x.vload(x.accA[i], p, w*i)
+		} else {
+			x.vloadPieces(x.accA[i], p, w*i)
+		}
 		x.vzero(x.accB[i])
 	}
 }

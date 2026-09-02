@@ -113,8 +113,11 @@ func sum64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed
 		if n > midsizeMax {
 			// The accumulator path is spelled out here rather than behind two
 			// more calls: at this length the calls are a measurable share of
-			// the cost, and 256 bytes is only four stripes of work.
-			acc := initAcc
+			// the cost, and 256 bytes is only four stripes of work. acc is
+			// output only: hashLong starts from initAcc itself, which spares
+			// this path a 64-byte copy that the kernel's first loads then
+			// waited on.
+			var acc [accNB]uint64
 			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
 			return mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1)
 		}
@@ -179,7 +182,7 @@ func sum64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed
 func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) uint64 {
 	if n > 16 {
 		if n > midsizeMax {
-			acc := initAcc
+			var acc [accNB]uint64
 			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
 			// The convergence is written out rather than reached through
 			// mergeAccs, which costs 287 nodes against the inliner's budget of
@@ -336,7 +339,7 @@ func sum128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, see
 		if n > midsizeMax {
 			// As in sum64, and worth more here: this path converges the
 			// accumulators twice.
-			acc := initAcc
+			var acc [accNB]uint64
 			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
 			return Uint128{
 				Lo: mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1),
@@ -412,7 +415,7 @@ func sum128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, see
 func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) Uint128 {
 	if n > 16 {
 		if n > midsizeMax {
-			acc := initAcc
+			var acc [accNB]uint64
 			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
 			// Both convergences written out, for the reason given in sum64NS.
 			// Here it removes two calls rather than one, and unlike there it

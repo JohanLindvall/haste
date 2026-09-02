@@ -24,11 +24,12 @@ import (
 // under qemu.
 
 // simRegion lays out the memory a kernel sees: accumulators, then input, then
-// secret, each padded so an overrun lands in the padding and panics.
+// secret, then the initAcc table, each padded so an overrun lands in the
+// padding and panics.
 type simRegion struct {
 	mem            []byte
 	accAt, inAt    uint64
-	secAt          uint64
+	secAt, initAt  uint64
 	m              *asmgen.Machine
 	accOff, secOff int
 }
@@ -38,19 +39,24 @@ func newSimRegion(acc *[accNB]uint64, in, sec []byte) *simRegion {
 	accOff := pad
 	inOff := accOff + 8*accNB + pad
 	secOff := inOff + len(in) + pad
-	mem := make([]byte, secOff+len(sec)+pad)
+	initOff := secOff + len(sec) + pad
+	mem := make([]byte, initOff+8*accNB+pad)
 	for i, v := range acc {
 		binary.LittleEndian.PutUint64(mem[accOff+8*i:], v)
 	}
 	copy(mem[inOff:], in)
 	copy(mem[secOff:], sec)
+	for i, v := range initAcc {
+		binary.LittleEndian.PutUint64(mem[initOff+8*i:], v)
+	}
 
 	m := asmgen.NewMachine(mem, accNB)
 	return &simRegion{
 		mem: mem, m: m, accOff: accOff, secOff: secOff,
-		accAt: m.Base + uint64(accOff),
-		inAt:  m.Base + uint64(inOff),
-		secAt: m.Base + uint64(secOff),
+		accAt:  m.Base + uint64(accOff),
+		inAt:   m.Base + uint64(inOff),
+		secAt:  m.Base + uint64(secOff),
+		initAt: m.Base + uint64(initOff),
 	}
 }
 
@@ -62,10 +68,13 @@ func (r *simRegion) acc() [accNB]uint64 {
 	return acc
 }
 
-// simHashLong runs a backend's hashLong kernel over the given input.
+// simHashLong runs a backend's hashLong kernel over the given input. The
+// kernel starts from the initAcc table, whose address the prologue would put
+// in TableGPR; acc is handed over as it is and must be ignored on entry.
 func simHashLong(t *testing.T, k asmgen.Arch, acc *[accNB]uint64, in, sec []byte) {
 	t.Helper()
 	r := newSimRegion(acc, in, sec)
+	r.m.R[k.TableGPR()] = r.initAt
 	r.m.R[k.ArgGPR(0)] = r.accAt
 	r.m.R[k.ArgGPR(1)] = r.inAt
 	r.m.R[k.ArgGPR(2)] = uint64(len(in))
@@ -129,7 +138,7 @@ func TestSimulatedBackends(t *testing.T) {
 				hashLongGeneric(&want, unsafe.Pointer(&in[0]), n,
 					unsafe.Pointer(&kSecret), secretDefaultSize-stripeLen)
 
-				got := initAcc
+				got := garbageAcc // output only, and must be ignored on entry
 				simHashLong(t, hashLongK, &got, in, sec)
 				if got != want {
 					t.Fatalf("hashLong len=%d:\n got %v\nwant %v", n, got, want)

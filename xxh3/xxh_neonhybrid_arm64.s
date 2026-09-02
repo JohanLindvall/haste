@@ -10,23 +10,24 @@
 
 // func hashLongNEONHybrid(acc *[8]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
 //
-// consumes a whole long input: blocks, scrambles, trailing stripes and the overlapping final stripe.
+// consumes a whole long input -- blocks, scrambles, trailing stripes and the overlapping final stripe -- into acc, starting from initAcc.
 TEXT ·hashLongNEONHybrid(SB), NOSPLIT, $0-40
 	MOVD acc+0(FP), R0
 	MOVD in+8(FP), R1
 	MOVD n+16(FP), R2
 	MOVD sec+24(FP), R3
 	MOVD secretLimit+32(FP), R4
+	MOVD $·initAcc(SB), R26
 	WORD $0xd28f362c // mov x12, #0x79b1 // #31153
 	WORD $0xf2b3c6ec // movk x12, #0x9e37, lsl #16
 	WORD $0x4e040d8f // dup v15.4s, w12
 	WORD $0x4f6055ee // shl v14.2d, v15.2d, #32
-	WORD $0x3cc00000 // ldur q0, [x0]
+	WORD $0x3cc00340 // ldur q0, [x26]
 	WORD $0x6f00e404 // movi v4.2d, #0x0
-	WORD $0x3cc10001 // ldur q1, [x0, #16]
+	WORD $0x3cc10341 // ldur q1, [x26, #16]
 	WORD $0x6f00e405 // movi v5.2d, #0x0
-	WORD $0xa9424c11 // ldp x17, x19, [x0, #32]
-	WORD $0xa9435414 // ldp x20, x21, [x0, #48]
+	WORD $0xa9424f51 // ldp x17, x19, [x26, #32]
+	WORD $0xa9435754 // ldp x20, x21, [x26, #48]
 	WORD $0xaa0103ea // mov x10, x1
 	WORD $0x8b02014a // add x10, x10, x2
 	WORD $0xd101014a // sub x10, x10, #0x40

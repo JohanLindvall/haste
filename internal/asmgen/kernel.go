@@ -17,7 +17,12 @@ func Funcs(suffix string) []FuncDef {
 		{
 			Name: "hashLong" + suffix,
 			Args: []string{"acc", "in", "n", "sec", "secretLimit"},
-			Doc:  "consumes a whole long input: blocks, scrambles, trailing stripes and the overlapping final stripe",
+			// The initial accumulators come from the table, not from acc,
+			// which is written and never read: every one-shot hash starts
+			// from initAcc, and loading it from the global spares the caller
+			// a 64-byte copy and the kernel a load that waits on it.
+			Table: "initAcc",
+			Doc:   "consumes a whole long input -- blocks, scrambles, trailing stripes and the overlapping final stripe -- into acc, starting from initAcc",
 		},
 		{
 			Name: "accumBlocks" + suffix,
@@ -53,13 +58,23 @@ func emit(a Arch, f func(Arch)) Arch {
 // one block remains". Holding one byte back is what guarantees the final
 // stripe always has 64 bytes to read, even when the input ends exactly on a
 // stripe boundary.
+//
+// The accumulators start from the initAcc table, whose address the prologue
+// puts in TableGPR, and acc is only written. The copy this replaces was made
+// by Go with 16-byte stores that the kernel's loads then had to wait for --
+// the reason LoadAcc reads a caller's array in pieces -- where a global that
+// was written once at init can be read at full width with nothing to wait on.
+// Measured on a Zen 4 within one binary, the copy against no copy: -1.5% at
+// 256 bytes, -1.8% at 512, -1.9% at a kibibyte, -0.5% at 4 KiB; with the
+// assembly dispatcher that landed beside it, Sum64 is 6-7% quicker over
+// 256..1024 bytes and Sum128 4-7%.
 func emitHashLong(a Arch) {
 	b := a.Build()
 	acc, in, n, sec, lim := a.ArgGPR(0), a.ArgGPR(1), a.ArgGPR(2), a.ArgGPR(3), a.ArgGPR(4)
 	blk, rem, cnt, s, end, tmp := a.TmpGPR(0), a.TmpGPR(1), a.TmpGPR(2), a.TmpGPR(3), a.TmpGPR(4), a.TmpGPR(5)
 
 	a.Setup(true)
-	a.LoadAcc(acc)
+	a.LoadAcc(a.TableGPR(), true)
 
 	// end = in + n - 64, the address of the final stripe.
 	a.MovRR(end, in)
@@ -143,7 +158,7 @@ func emitAccum(a Arch) {
 
 	// This kernel never scrambles, so it needs no multiplier.
 	a.Setup(false)
-	a.LoadAcc(acc)
+	a.LoadAcc(acc, false)
 	a.MovRR(s, sec)
 	emitStripeLoop(a, in, s, cnt)
 	a.Materialize(true)
@@ -166,7 +181,7 @@ func emitAccumBlocks(a Arch) {
 	nspb, s, k, cnt, tmp := a.TmpGPR(0), a.TmpGPR(1), a.TmpGPR(2), a.TmpGPR(3), a.TmpGPR(4)
 
 	a.Setup(true)
-	a.LoadAcc(acc)
+	a.LoadAcc(acc, false)
 
 	a.MovRR(nspb, lim)
 	a.ShrRI(nspb, 3)

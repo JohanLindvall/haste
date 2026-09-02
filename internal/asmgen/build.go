@@ -245,6 +245,12 @@ func prologue(k Kernel, def FuncDef) []string {
 		out = append(out, fmt.Sprintf("%s %s+%d(FP), %s", mov, name, 8*i, reg))
 	}
 	if def.Table != "" && k.TableGPR() >= 0 {
+		for i := range def.Args {
+			if k.ArgGPR(i) == k.TableGPR() {
+				panic(fmt.Sprintf("asmgen: %s keeps its table in %s, which holds argument %s",
+					def.Name, goRegName(k, k.TableGPR()), def.Args[i]))
+			}
+		}
 		if k.GOARCH() == "arm64" {
 			out = append(out, fmt.Sprintf("MOVD $·%s(SB), %s", def.Table, goRegName(k, k.TableGPR())))
 		} else {

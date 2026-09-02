@@ -226,8 +226,10 @@ type Arch interface {
 
 	// LoadAcc reads the eight accumulators from [p] into the product
 	// accumulator and zeroes the data accumulator; StoreAcc writes them back.
-	// StoreAcc must be preceded by Materialize.
-	LoadAcc(p GPR)
+	// StoreAcc must be preceded by Materialize. constant says that [p] is a
+	// long-lived table rather than memory the caller has just written, which
+	// on x86 decides the width of the load; see the x86 LoadAcc.
+	LoadAcc(p GPR, constant bool)
 	StoreAcc(p GPR)
 
 	// GroupBegin runs once before an unrolled group's loop body, with the

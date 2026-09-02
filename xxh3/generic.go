@@ -618,15 +618,19 @@ func scrambleGeneric(acc *[accNB]uint64, sec unsafe.Pointer) {
 	}
 }
 
-// hashLongGeneric consumes the whole input into acc: whole blocks each followed
-// by a scramble, then the trailing stripes, then the final stripe taken from
-// the very end of the input (which may overlap the previous one).
+// hashLongGeneric consumes the whole input into acc, starting from initAcc:
+// whole blocks each followed by a scramble, then the trailing stripes, then
+// the final stripe taken from the very end of the input (which may overlap
+// the previous one). acc is written, never read; every one-shot hash starts
+// from the same state, and the kernels take it from initAcc themselves rather
+// than have the caller copy it.
 //
 // It has the same signature as the assembly backends, and is what dispatch
 // falls back to where none of them apply. secretLimit is len(secret)-stripeLen:
 // both the scramble key and the final stripe's key are placed relative to it,
 // and it is not necessarily a multiple of secretConsumeRate.
 func hashLongGeneric(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) {
+	*acc = initAcc
 	nbStripesPerBlock := secretLimit / secretConsumeRate
 	blockLen := stripeLen * nbStripesPerBlock
 

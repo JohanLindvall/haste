@@ -10,20 +10,21 @@
 
 // func hashLongSVE2VL256(acc *[8]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
 //
-// consumes a whole long input: blocks, scrambles, trailing stripes and the overlapping final stripe.
+// consumes a whole long input -- blocks, scrambles, trailing stripes and the overlapping final stripe -- into acc, starting from initAcc.
 TEXT ·hashLongSVE2VL256(SB), NOSPLIT, $0-40
 	MOVD acc+0(FP), R0
 	MOVD in+8(FP), R1
 	MOVD n+16(FP), R2
 	MOVD sec+24(FP), R3
 	MOVD secretLimit+32(FP), R4
+	MOVD $·initAcc(SB), R26
 	WORD $0xd28f362c // mov x12, #0x79b1 // #31153
 	WORD $0xf2b3c6ec // movk x12, #0x9e37, lsl #16
 	WORD $0x05e0398f // mov z15.d, x12
 	WORD $0x25d8e3e0 // ptrue p0.d
-	WORD $0xa5e0a000 // ld1d {z0.d}, p0/z, [x0]
+	WORD $0xa5e0a340 // ld1d {z0.d}, p0/z, [x26]
 	WORD $0x25f8c004 // mov z4.d, #0
-	WORD $0xa5e1a001 // ld1d {z1.d}, p0/z, [x0, #1, mul vl]
+	WORD $0xa5e1a341 // ld1d {z1.d}, p0/z, [x26, #1, mul vl]
 	WORD $0x25f8c005 // mov z5.d, #0
 	WORD $0xaa0103ea // mov x10, x1
 	WORD $0x8b02014a // add x10, x10, x2
