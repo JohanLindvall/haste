@@ -26,6 +26,14 @@ var backendNames = map[backendID]string{
 	backendAVX512: "avx512",
 }
 
+// dispatch_amd64.s compares backend against these values by number; an
+// index that is not a constant zero refuses to compile if they ever move.
+var (
+	_ = [1]struct{}{}[backendSSE2]
+	_ = [1]struct{}{}[backendAVX2-1]
+	_ = [1]struct{}{}[backendAVX512-2]
+)
+
 var backend = pickBackend()
 
 func pickBackend() backendID {
@@ -82,62 +90,29 @@ func setBackend(name string) bool {
 			return false
 		}
 		backend = id
-		accumBlocksStream = pickAccumBlocks()
 		return true
 	}
 	return false
 }
 
-func hashLong(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) {
-	switch backend {
-	case backendAVX512:
-		hashLongAVX512(acc, in, n, sec, secretLimit)
-	case backendAVX2:
-		hashLongAVX2(acc, in, n, sec, secretLimit)
-	default:
-		hashLongSSE2(acc, in, n, sec, secretLimit)
-	}
-}
+// The three entry points are assembly, in dispatch_amd64.s: each reads
+// backend and jumps to the kernel it names. A Go switch here was a real call
+// between sum64NS and the kernel -- three cases cost 199 nodes against the
+// inliner's budget of 80 -- so a long hash reached its kernel two calls deep,
+// and the streaming path went through a function variable to avoid the same
+// switch, at the price of an indirect call and of every argument escaping.
+// A tail jump between two ABI0 functions with the same frame costs a byte
+// load, a compare and a taken branch, and is one call from wherever it is
+// made.
 
-func accumStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer) {
-	switch backend {
-	case backendAVX512:
-		accumAVX512(acc, in, nbStripes, sec)
-	case backendAVX2:
-		accumAVX2(acc, in, nbStripes, sec)
-	default:
-		accumSSE2(acc, in, nbStripes, sec)
-	}
-}
+//go:noescape
+func hashLong(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
 
-func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int) {
-	switch backend {
-	case backendAVX512:
-		accumBlocksAVX512(acc, in, nbStripes, sec, secretLimit, soFar)
-	case backendAVX2:
-		accumBlocksAVX2(acc, in, nbStripes, sec, secretLimit, soFar)
-	default:
-		accumBlocksSSE2(acc, in, nbStripes, sec, secretLimit, soFar)
-	}
-}
+//go:noescape
+func accumStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer)
 
-// accumBlocksStream is the streaming path's route to the same kernel. It is a
-// function variable rather than the switch above because absorb runs per
-// Write: the switch is one call level, and it measured 18% of a 256-byte
-// Write on a Zen 4, where an indirect call costs two cycles. The other
-// architectures keep the switch; see their dispatch files.
-var accumBlocksStream = pickAccumBlocks()
-
-func pickAccumBlocks() func(*[accNB]uint64, unsafe.Pointer, int, unsafe.Pointer, int, int) {
-	switch backend {
-	case backendAVX512:
-		return accumBlocksAVX512
-	case backendAVX2:
-		return accumBlocksAVX2
-	default:
-		return accumBlocksSSE2
-	}
-}
+//go:noescape
+func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int)
 
 //go:noescape
 func cpuid(eaxArg, ecxArg uint32) (eax, ebx, ecx, edx uint32)

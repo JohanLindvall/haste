@@ -4,7 +4,7 @@ package xxh3
 
 import "unsafe"
 
-// hashLong, accumStripes and scrambleAcc are the three entry points every
+// hashLong, accumBlocks and accumStripes are the three entry points every
 // backend provides. Everything above them is architecture-independent Go;
 // everything below is either the portable loop in generic.go or a generated
 // assembly kernel.
@@ -23,14 +23,6 @@ func hashLong(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, 
 
 func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int) {
 	accumBlocksGeneric(acc, in, nbStripes, sec, secretLimit, soFar)
-}
-
-// accumBlocksStream is what the streaming path calls; on amd64 it is a
-// function variable that skips the dispatch switch, which measured 18% of a
-// 256-byte Write there. Here it is a wrapper the compiler inlines, so absorb
-// compiles to exactly the call it made before the variable existed.
-func accumBlocksStream(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int) {
-	accumBlocks(acc, in, nbStripes, sec, secretLimit, soFar)
 }
 
 func accumStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer) {

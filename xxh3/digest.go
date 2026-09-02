@@ -183,7 +183,7 @@ func (d *Digest) absorb(p []byte) {
 	// at most 63 staged bytes remain, so window + remainder + p fits.
 	if len(p) < internalBufferSize-(stripeLen-1) {
 		k := d.bufUsed / stripeLen
-		accumBlocksStream(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), k, sec, d.secretLimit, soFar)
+		accumBlocks(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), k, sec, d.secretLimit, soFar)
 		d.nbStripesSoFar = d.wrap(soFar + k)
 		// Slide the new window -- the last 64 bytes absorbed -- and the
 		// staged remainder down, then stage p after them.
@@ -207,7 +207,7 @@ func (d *Digest) absorb(p []byte) {
 		staged++
 	}
 	if staged > 0 {
-		accumBlocksStream(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), staged, sec, d.secretLimit, soFar)
+		accumBlocks(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), staged, sec, d.secretLimit, soFar)
 		soFar = d.wrap(soFar + staged)
 		nb -= staged
 	}
@@ -215,7 +215,7 @@ func (d *Digest) absorb(p []byte) {
 	if nb > 0 {
 		// The rest comes straight out of p. The window and what is left over
 		// are adjacent at its end, so one copy re-establishes both.
-		accumBlocksStream(&d.acc, unsafe.Pointer(&p[pOff]), nb, sec, d.secretLimit, soFar)
+		accumBlocks(&d.acc, unsafe.Pointer(&p[pOff]), nb, sec, d.secretLimit, soFar)
 		d.nbStripesSoFar = d.wrap(soFar + nb)
 		pOff += nb * stripeLen
 		d.bufUsed = copy(d.buf[:], p[pOff-stripeLen:]) - stripeLen
@@ -232,9 +232,7 @@ func (d *Digest) absorb(p []byte) {
 
 // consumeStripes runs nbStripes stripes through acc, scrambling at each block
 // boundary the run crosses, and returns the new position within the block.
-// Only Sum64 uses it: absorb calls the backend directly. It goes through the
-// dispatch switch, not accumBlocksStream: a call through a function variable
-// makes its arguments escape, and acc here is digestLong's stack copy.
+// Only Sum64 uses it: absorb calls the backend directly.
 func (d *Digest) consumeStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes, soFar int) int {
 	accumBlocks(acc, in, nbStripes, d.secretPtr(), d.secretLimit, soFar)
 	return d.wrap(soFar + nbStripes)
