@@ -60,11 +60,33 @@ func (d *Digest) WriteString(s string) (int, error) {
 	return len(s), nil
 }
 
+// write stages partial blocks with bounded head/tail moves. The private
+// staging buffer does not alias the caller's input.
+//
+//go:nosplit
 func (d *Digest) write(p unsafe.Pointer, n int) {
 	d.total += uint64(n)
-	if d.n+n < blockLen {
-		copy(d.buf[d.n:], unsafe.Slice((*byte)(p), n))
+	if n < blockLen-d.n {
+		dst := unsafe.Add(unsafe.Pointer(&d.buf), d.n)
+		src := p
 		d.n += n
+		// Overlapping head/tail moves avoid a memmove call for at most 31 bytes.
+		// The input and the private staging buffer do not alias.
+		switch {
+		case n >= 16:
+			*(*[16]byte)(dst) = *(*[16]byte)(src)
+			*(*[16]byte)(unsafe.Add(dst, n-16)) = *(*[16]byte)(unsafe.Add(src, n-16))
+		case n >= 8:
+			*(*[8]byte)(dst) = *(*[8]byte)(src)
+			*(*[8]byte)(unsafe.Add(dst, n-8)) = *(*[8]byte)(unsafe.Add(src, n-8))
+		case n >= 4:
+			*(*[4]byte)(dst) = *(*[4]byte)(src)
+			*(*[4]byte)(unsafe.Add(dst, n-4)) = *(*[4]byte)(unsafe.Add(src, n-4))
+		case n > 0:
+			*(*byte)(dst) = *(*byte)(src)
+			*(*byte)(unsafe.Add(dst, n>>1)) = *(*byte)(unsafe.Add(src, n>>1))
+			*(*byte)(unsafe.Add(dst, n-1)) = *(*byte)(unsafe.Add(src, n-1))
+		}
 		return
 	}
 	// i walks the input; p is only ever offset by it while bytes remain,
@@ -78,7 +100,7 @@ func (d *Digest) write(p unsafe.Pointer, n int) {
 		blocks(&d.v, unsafe.Pointer(&d.buf), 1)
 		d.n = 0
 	}
-	if nb := (n - i) / blockLen; nb > 0 {
+	if nb := int(uint(n-i) / blockLen); nb > 0 {
 		blocks(&d.v, add(p, i), nb)
 		i += nb * blockLen
 	}

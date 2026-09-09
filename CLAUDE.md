@@ -1584,6 +1584,15 @@ array the compiler owes a `//go:noescape` callee; and a 16-byte write is
 sixty-fourth of a drain, 14.5 cycles, with nothing left to take but the
 frame a function that calls `absorb` has to have.
 
+#### The 2026-09-09 native Go path pass
+
+XXH64 small streaming writes now use bounded head/tail moves, like XXH3:
+11–24% less time at 1..16-byte writes on the N2, with large writes level.
+XXH3 seed derivation processes three 64-byte windows, removing repeated
+indexing and bounds checks: 6–12.5% less time at 241..1024 bytes for both
+seeded widths. The direct-call benchmark coverage, rejected candidates,
+measurements and validation are in [the pass report](bench/native-optimization-2026-09-09.md).
+
 ### arm64, measured on Apple M2 (Avalanche P-core, 3.49 GHz, macOS)
 
 macOS has no MIDR and no SVE, so this core runs the plain NEON kernel, and
