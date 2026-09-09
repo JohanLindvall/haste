@@ -4,9 +4,9 @@ Measured on an AMD Ryzen 7 8840HS (Zen 4), Linux/amd64, Go 1.27.1,
 pinned to CPU 12. The baseline is commit `4f8419e`. No additional native
 host was available: ARM64 results below are correctness checks, not timings.
 
-## Retained change
+## Measured x86 candidate
 
-XXH64 streaming now stages both small writes and the remainder of a large
+The XXH64 candidate stages both small writes and the remainder of a large
 write through the same fixed-size copies. At most 31 bytes remain, so
 16-, 8-, 4-, and 1-byte moves avoid a call to `runtime.memmove` without
 reading or writing outside the input or staging area. Whole blocks still
@@ -92,3 +92,19 @@ All checks passed:
 The added partial-block test checks every staging offset, all write lengths
 through 65 bytes, two seeds, both Write and WriteString, and continuation
 after reading the digest, on each available XXH64 backend.
+
+## Integration with main
+
+Main independently received the [N2 optimization pass](native-optimization-2026-09-09.md)
+while this x86 pass was in progress. Integration preserves its XXH3 seed
+derivation changes and its complete XXH64 implementation, including `nosplit`.
+Both passes independently found the small-write copy improvement. A final
+comparison with main found mixed results from additionally sharing the
+remainder-copy path: about 3.2% less time with 65-byte writes but 3.3% more
+with 31-byte writes, with large writes level. That extra restructuring was
+therefore dropped during integration. Main's 64 KiB `BenchmarkDigestChunked` remains intact;
+this pass's 1 MiB harness is named `BenchmarkDigestChunkedLarge` and is used
+by `BenchmarkDigestBackends`. The timing table above records the original
+comparison with `4f8419e`, not an additional improvement over the N2 pass.
+Native/purego tests, both race configurations, vet, and the bench-module
+reference comparisons were rerun successfully after integration.

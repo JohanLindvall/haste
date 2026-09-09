@@ -57,19 +57,19 @@ func BenchmarkFixed(b *testing.B) {
 	b.Run("Uint32", func(b *testing.B) {
 		b.SetBytes(4)
 		for i := 0; i < b.N; i++ {
-			sink = Sum64Uint32(0x89abcdef)
+			sink = Sum64Uint32(uint32(i))
 		}
 	})
 	b.Run("Uint64", func(b *testing.B) {
 		b.SetBytes(8)
 		for i := 0; i < b.N; i++ {
-			sink = Sum64Uint64(0x0123456789abcdef)
+			sink = Sum64Uint64(uint64(i))
 		}
 	})
 	b.Run("Uint128", func(b *testing.B) {
 		b.SetBytes(16)
 		for i := 0; i < b.N; i++ {
-			sink = Sum64Uint128(0x0123456789abcdef, 0xfedcba9876543210)
+			sink = Sum64Uint128(uint64(i), 0xfedcba9876543210)
 		}
 	})
 }

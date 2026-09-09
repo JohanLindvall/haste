@@ -697,10 +697,18 @@ func mergeAccs(acc *[accNB]uint64, sec unsafe.Pointer, start uint64) uint64 {
 // secret with a seed mixed in.
 func deriveSecret(dst *[secretDefaultSize]byte, seed uint64) {
 	src := unsafe.Pointer(&kSecret)
-	for i := uintptr(0); i < secretDefaultSize/16; i++ {
-		lo := rd64(src, 16*i) + seed
-		hi := rd64(src, 16*i+8) - seed
-		binary.LittleEndian.PutUint64(dst[16*i:], lo)
-		binary.LittleEndian.PutUint64(dst[16*i+8:], hi)
+	// Work 64 bytes at a time: fixed offsets remove per-word indexing and
+	// bounds checks. All three input and output windows fit their arrays.
+	for i := uintptr(0); i < secretDefaultSize; i += 64 {
+		out := (*[64]byte)(unsafe.Add(unsafe.Pointer(dst), i))
+		in := add(src, i)
+		binary.LittleEndian.PutUint64(out[0:], rd64(in, 0)+seed)
+		binary.LittleEndian.PutUint64(out[8:], rd64(in, 8)-seed)
+		binary.LittleEndian.PutUint64(out[16:], rd64(in, 16)+seed)
+		binary.LittleEndian.PutUint64(out[24:], rd64(in, 24)-seed)
+		binary.LittleEndian.PutUint64(out[32:], rd64(in, 32)+seed)
+		binary.LittleEndian.PutUint64(out[40:], rd64(in, 40)-seed)
+		binary.LittleEndian.PutUint64(out[48:], rd64(in, 48)+seed)
+		binary.LittleEndian.PutUint64(out[56:], rd64(in, 56)-seed)
 	}
 }

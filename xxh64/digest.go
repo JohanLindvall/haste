@@ -60,47 +60,54 @@ func (d *Digest) WriteString(s string) (int, error) {
 	return len(s), nil
 }
 
+// write stages partial blocks with bounded head/tail moves. The private
+// staging buffer does not alias the caller's input.
+//
+//go:nosplit
 func (d *Digest) write(p unsafe.Pointer, n int) {
 	d.total += uint64(n)
-	if n >= blockLen-d.n {
-		// Complete a partial block, then process the caller's whole blocks.
-		i := 0
-		if d.n > 0 {
-			i = blockLen - d.n
-			copy(d.buf[d.n:], unsafe.Slice((*byte)(p), i))
-			blocks(&d.v, unsafe.Pointer(&d.buf), 1)
+	if n < blockLen-d.n {
+		dst := unsafe.Add(unsafe.Pointer(&d.buf), d.n)
+		src := p
+		d.n += n
+		// Overlapping head/tail moves avoid a memmove call for at most 31 bytes.
+		// The input and the private staging buffer do not alias.
+		switch {
+		case n >= 16:
+			*(*[16]byte)(dst) = *(*[16]byte)(src)
+			*(*[16]byte)(unsafe.Add(dst, n-16)) = *(*[16]byte)(unsafe.Add(src, n-16))
+		case n >= 8:
+			*(*[8]byte)(dst) = *(*[8]byte)(src)
+			*(*[8]byte)(unsafe.Add(dst, n-8)) = *(*[8]byte)(unsafe.Add(src, n-8))
+		case n >= 4:
+			*(*[4]byte)(dst) = *(*[4]byte)(src)
+			*(*[4]byte)(unsafe.Add(dst, n-4)) = *(*[4]byte)(unsafe.Add(src, n-4))
+		case n > 0:
+			*(*byte)(dst) = *(*byte)(src)
+			*(*byte)(unsafe.Add(dst, n>>1)) = *(*byte)(unsafe.Add(src, n>>1))
+			*(*byte)(unsafe.Add(dst, n-1)) = *(*byte)(unsafe.Add(src, n-1))
 		}
-		if nb := int(uint(n-i) / blockLen); nb > 0 {
-			blocks(&d.v, add(p, i), nb)
-			i += nb * blockLen
-		}
-		n -= i
+		return
+	}
+	// i walks the input; p is only ever offset by it while bytes remain,
+	// because a pointer past the end of the input is not one checkptr allows
+	// forming.
+	i := 0
+	if d.n > 0 {
+		// Complete the staged block first.
+		i = blockLen - d.n
+		copy(d.buf[d.n:], unsafe.Slice((*byte)(p), i))
+		blocks(&d.v, unsafe.Pointer(&d.buf), 1)
 		d.n = 0
-		if n == 0 {
-			return
-		}
-		// Form the remainder's pointer only when it is inside the input.
-		p = add(p, i)
 	}
-	// This write fits in the partial block. Fixed moves avoid entering
-	// memmove for at most 31 bytes; input never aliases the private buffer.
-	dst := add(unsafe.Pointer(&d.buf), d.n)
-	switch {
-	case n >= 16:
-		*(*[16]byte)(dst) = *(*[16]byte)(p)
-		*(*[16]byte)(add(dst, n-16)) = *(*[16]byte)(add(p, n-16))
-	case n >= 8:
-		*(*[8]byte)(dst) = *(*[8]byte)(p)
-		*(*[8]byte)(add(dst, n-8)) = *(*[8]byte)(add(p, n-8))
-	case n >= 4:
-		*(*[4]byte)(dst) = *(*[4]byte)(p)
-		*(*[4]byte)(add(dst, n-4)) = *(*[4]byte)(add(p, n-4))
-	case n > 0:
-		*(*byte)(dst) = *(*byte)(p)
-		*(*byte)(add(dst, n/2)) = *(*byte)(add(p, n/2))
-		*(*byte)(add(dst, n-1)) = *(*byte)(add(p, n-1))
+	if nb := int(uint(n-i) / blockLen); nb > 0 {
+		blocks(&d.v, add(p, i), nb)
+		i += nb * blockLen
 	}
-	d.n += n
+	if i < n {
+		copy(d.buf[:], unsafe.Slice((*byte)(add(p, i)), n-i))
+	}
+	d.n = n - i
 }
 
 // Sum64 returns the hash of everything written so far. It does not change the

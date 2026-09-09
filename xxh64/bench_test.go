@@ -46,9 +46,9 @@ func BenchmarkDigest(b *testing.B) {
 	}
 }
 
-// BenchmarkDigestChunked includes partial blocks as well as aligned writes,
+// BenchmarkDigestChunkedLarge includes partial blocks as well as aligned writes,
 // so completing a staged block is measured separately from the bulk loop.
-func BenchmarkDigestChunked(b *testing.B) {
+func BenchmarkDigestChunkedLarge(b *testing.B) {
 	const n = 1 << 20
 	buf := testBuffer(n)
 	for _, chunk := range []int{1, 7, 16, 31, 32, 33, 64, 65, 256, 1024, 65536} {
@@ -77,7 +77,7 @@ func BenchmarkDigestBackends(b *testing.B) {
 	defer setBackend(selected)
 	for _, name := range candidateBackends() {
 		if setBackend(name) {
-			b.Run(name, BenchmarkDigestChunked)
+			b.Run(name, BenchmarkDigestChunkedLarge)
 		}
 	}
 }
