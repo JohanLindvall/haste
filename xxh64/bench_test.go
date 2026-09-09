@@ -46,6 +46,42 @@ func BenchmarkDigest(b *testing.B) {
 	}
 }
 
+// BenchmarkDigestChunked includes partial blocks as well as aligned writes,
+// so completing a staged block is measured separately from the bulk loop.
+func BenchmarkDigestChunked(b *testing.B) {
+	const n = 1 << 20
+	buf := testBuffer(n)
+	for _, chunk := range []int{1, 7, 16, 31, 32, 33, 64, 65, 256, 1024, 65536} {
+		b.Run(fmt.Sprint(chunk), func(b *testing.B) {
+			b.SetBytes(n)
+			d := New()
+			for i := 0; i < b.N; i++ {
+				d.Reset()
+				for off := 0; off < n; off += chunk {
+					end := off + chunk
+					if end > n {
+						end = n
+					}
+					d.Write(buf[off:end])
+				}
+				sink = d.Sum64()
+			}
+		})
+	}
+}
+
+// BenchmarkDigestBackends also measures the alternative lane-round form,
+// which is otherwise only benchmarked through the one-shot API.
+func BenchmarkDigestBackends(b *testing.B) {
+	selected := Backend()
+	defer setBackend(selected)
+	for _, name := range candidateBackends() {
+		if setBackend(name) {
+			b.Run(name, BenchmarkDigestChunked)
+		}
+	}
+}
+
 // BenchmarkBackends runs the same sizes on every kernel this machine can
 // execute, which is how the arm64 dispatch was decided and how the amd64
 // prime form is judged: the two forms are the same hash, and on amd64 the

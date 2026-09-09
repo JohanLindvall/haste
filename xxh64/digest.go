@@ -62,30 +62,45 @@ func (d *Digest) WriteString(s string) (int, error) {
 
 func (d *Digest) write(p unsafe.Pointer, n int) {
 	d.total += uint64(n)
-	if d.n+n < blockLen {
-		copy(d.buf[d.n:], unsafe.Slice((*byte)(p), n))
-		d.n += n
-		return
-	}
-	// i walks the input; p is only ever offset by it while bytes remain,
-	// because a pointer past the end of the input is not one checkptr allows
-	// forming.
-	i := 0
-	if d.n > 0 {
-		// Complete the staged block first.
-		i = blockLen - d.n
-		copy(d.buf[d.n:], unsafe.Slice((*byte)(p), i))
-		blocks(&d.v, unsafe.Pointer(&d.buf), 1)
+	if n >= blockLen-d.n {
+		// Complete a partial block, then process the caller's whole blocks.
+		i := 0
+		if d.n > 0 {
+			i = blockLen - d.n
+			copy(d.buf[d.n:], unsafe.Slice((*byte)(p), i))
+			blocks(&d.v, unsafe.Pointer(&d.buf), 1)
+		}
+		if nb := int(uint(n-i) / blockLen); nb > 0 {
+			blocks(&d.v, add(p, i), nb)
+			i += nb * blockLen
+		}
+		n -= i
 		d.n = 0
+		if n == 0 {
+			return
+		}
+		// Form the remainder's pointer only when it is inside the input.
+		p = add(p, i)
 	}
-	if nb := (n - i) / blockLen; nb > 0 {
-		blocks(&d.v, add(p, i), nb)
-		i += nb * blockLen
+	// This write fits in the partial block. Fixed moves avoid entering
+	// memmove for at most 31 bytes; input never aliases the private buffer.
+	dst := add(unsafe.Pointer(&d.buf), d.n)
+	switch {
+	case n >= 16:
+		*(*[16]byte)(dst) = *(*[16]byte)(p)
+		*(*[16]byte)(add(dst, n-16)) = *(*[16]byte)(add(p, n-16))
+	case n >= 8:
+		*(*[8]byte)(dst) = *(*[8]byte)(p)
+		*(*[8]byte)(add(dst, n-8)) = *(*[8]byte)(add(p, n-8))
+	case n >= 4:
+		*(*[4]byte)(dst) = *(*[4]byte)(p)
+		*(*[4]byte)(add(dst, n-4)) = *(*[4]byte)(add(p, n-4))
+	case n > 0:
+		*(*byte)(dst) = *(*byte)(p)
+		*(*byte)(add(dst, n/2)) = *(*byte)(add(p, n/2))
+		*(*byte)(add(dst, n-1)) = *(*byte)(add(p, n-1))
 	}
-	if i < n {
-		copy(d.buf[:], unsafe.Slice((*byte)(add(p, i)), n-i))
-	}
-	d.n = n - i
+	d.n += n
 }
 
 // Sum64 returns the hash of everything written so far. It does not change the

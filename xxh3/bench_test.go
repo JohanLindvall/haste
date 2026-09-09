@@ -77,18 +77,34 @@ func BenchmarkDigest(b *testing.B) {
 func BenchmarkDigestChunked(b *testing.B) {
 	const n = 1 << 20
 	buf := testBuffer(n)
-	for _, chunk := range []int{16, 32, 64, 128, 256, 512, 1024, 4096, 65536} {
+	for _, chunk := range []int{16, 32, 63, 64, 65, 128, 256, 512, 960, 1024, 4096, 65536} {
 		b.Run(fmt.Sprint(chunk), func(b *testing.B) {
 			b.SetBytes(n)
 			d := New()
 			for i := 0; i < b.N; i++ {
 				d.Reset()
 				for off := 0; off < n; off += chunk {
-					d.Write(buf[off : off+chunk])
+					end := off + chunk
+					if end > n {
+						end = n
+					}
+					d.Write(buf[off:end])
 				}
 				sink64 = d.Sum64()
 			}
 		})
+	}
+}
+
+// BenchmarkDigestBackends exercises streaming on every native backend,
+// including the buffer drains that a one-shot backend benchmark never takes.
+func BenchmarkDigestBackends(b *testing.B) {
+	selected := Backend()
+	defer setBackend(selected)
+	for _, name := range candidateBackends() {
+		if setBackend(name) {
+			b.Run(name, BenchmarkDigestChunked)
+		}
 	}
 }
 

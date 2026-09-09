@@ -109,6 +109,35 @@ func TestStreamingMatchesOneShot(t *testing.T) {
 	})
 }
 
+// TestStreamingPartialBlocks covers every staging offset and copy width,
+// including empty writes and writes ending exactly on a block boundary.
+func TestStreamingPartialBlocks(t *testing.T) {
+	buf := testBuffer(4 * blockLen)
+	forEachBackend(t, func(t *testing.T) {
+		for _, seed := range []uint64{0, prime1} {
+			for prefix := 0; prefix < blockLen; prefix++ {
+				for n := 0; n <= 2*blockLen+1; n++ {
+					d := NewSeed(seed)
+					d.Write(buf[:prefix])
+					end := prefix + n
+					if n%2 == 0 {
+						d.Write(buf[prefix:end])
+					} else {
+						d.WriteString(string(buf[prefix:end]))
+					}
+					if got, want := d.Sum64(), Sum64Seed(buf[:end], seed); got != want {
+						t.Fatalf("seed=%#x prefix=%d n=%d: %#x != %#x", seed, prefix, n, got, want)
+					}
+					d.Write(buf[end:])
+					if got, want := d.Sum64(), Sum64Seed(buf, seed); got != want {
+						t.Fatalf("seed=%#x prefix=%d n=%d after continuation: %#x != %#x", seed, prefix, n, got, want)
+					}
+				}
+			}
+		}
+	})
+}
+
 func TestStreamingRandomChunks(t *testing.T) {
 	buf := testBuffer(5000)
 	rng := rand.New(rand.NewSource(1))

@@ -21,10 +21,10 @@ import "unsafe"
 // choice and a short hash never executes the test. See x86_rapid.go.
 //
 // Selection is Intel with BMI2, which is narrower than BMI2 alone on purpose.
-// A Zen 4 measured mulx *slower* than mulq per round, and the paired form has
-// not been measured on one; until it has, a core that is known to dislike
-// half of this change does not get it. Everything else keeps the baseline
-// loop, which is what it had before the form existed.
+// A Zen 4 measured mulx slower than mulq per round. The paired form also
+// loses there: on a Ryzen 7 8840HS it took 6% more time at 64 KiB and 1 MiB,
+// and 11% more at 1 KiB (both forms in one binary, September 2026).
+// Everything else keeps the baseline loop.
 
 const (
 	formMul  uint64 = 0 // baseline mulq
