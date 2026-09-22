@@ -1593,6 +1593,16 @@ indexing and bounds checks: 6–12.5% less time at 241..1024 bytes for both
 seeded widths. The direct-call benchmark coverage, rejected candidates,
 measurements and validation are in [the pass report](bench/native-optimization-2026-09-09.md).
 
+#### The 2026-09-22 digest pass
+
+Local XXH3 seeded/custom-secret digests now avoid a 1536-byte allocation.
+Finalization reuses the one-shot path while the full message is buffered,
+and drops an unused block-position calculation after a drain. On this N2,
+default Sum64 finalization is 29% faster at 256 bytes and 17% at a kibibyte;
+XXH64 finalization is 18% faster at block boundaries. The constructor gains,
+portable results, small regressions, rejected experiments, and validation
+are in [the pass report](bench/native-optimization-2026-09-22.md).
+
 ### arm64, measured on Apple M2 (Avalanche P-core, 3.49 GHz, macOS)
 
 macOS has no MIDR and no SVE, so this core runs the plain NEON kernel, and

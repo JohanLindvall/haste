@@ -1,6 +1,7 @@
 package xxh3
 
 import (
+	"bytes"
 	"encoding/binary"
 	"sync"
 	"testing"
@@ -114,20 +115,57 @@ func TestWriteString(t *testing.T) {
 // block walk and the final stripe over a *copy* of the state, and a bug there
 // shows up only on the write that follows.
 func TestDigestReadThenWrite(t *testing.T) {
-	buf := testBuffer(4000)
-	d := New()
-	prev := 0
-	for _, end := range []int{0, 1, 64, 240, 241, 256, 1024, 1500, 4000} {
-		d.Write(buf[prev:end])
-		prev = end
-		for pass := 0; pass < 3; pass++ {
-			if got, want := d.Sum64(), Sum64(buf[:end]); got != want {
-				t.Fatalf("end=%d pass=%d: Sum64 %#016x != %#016x", end, pass, got, want)
+	buf := testBuffer(4 * internalBufferSize)
+	for _, mode := range []struct {
+		name   string
+		seed   uint64
+		secret []byte
+	}{
+		{"default", 0, nil},
+		{"seed", 42, nil},
+		{"max-seed", ^uint64(0), nil},
+		{"secret-min", 0, testSecret(MinSecretSize)},
+		{"secret-137", 0, testSecret(137)},
+		{"secret-193", 0, testSecret(193)},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			d := NewSeed(mode.seed)
+			if mode.secret != nil {
+				d = NewSecret(mode.secret)
 			}
-			if got, want := d.Sum128(), Sum128(buf[:end]); got != want {
-				t.Fatalf("end=%d pass=%d: Sum128 %v != %v", end, pass, got, want)
+			prev := 0
+			for _, end := range []int{0, 1, 16, 17, 64, 128, 240, 241, 256,
+				internalBufferSize - 1, internalBufferSize, internalBufferSize + 1,
+				internalBufferSize + 4*stripeLen, 2 * internalBufferSize, len(buf)} {
+				d.Write(buf[prev:end])
+				prev = end
+				want64 := Sum64Seed(buf[:end], mode.seed)
+				want128 := Sum128Seed(buf[:end], mode.seed)
+				if mode.secret != nil {
+					want64 = Sum64Secret(buf[:end], mode.secret)
+					want128 = Sum128Secret(buf[:end], mode.secret)
+				}
+				before, err := d.MarshalBinary()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for pass := 0; pass < 3; pass++ {
+					if got := d.Sum64(); got != want64 {
+						t.Fatalf("end=%d pass=%d: Sum64 %#016x != %#016x", end, pass, got, want64)
+					}
+					if got := d.Sum128(); got != want128 {
+						t.Fatalf("end=%d pass=%d: Sum128 %v != %v", end, pass, got, want128)
+					}
+				}
+				after, err := d.MarshalBinary()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(before, after) {
+					t.Fatalf("end=%d: finalization changed the serialized state", end)
+				}
 			}
-		}
+		})
 	}
 }
 
@@ -247,7 +285,7 @@ func TestUnmarshalRejectsBadState(t *testing.T) {
 		corrupt(bufUsedOff, internalBufferSize+1),
 		corrupt(bufUsedOff, 1<<31),
 		corrupt(bufUsedOff, ^uint32(0)),
-		// nbStripesSoFar at and past the block length; consumeStripes keeps it
+		// nbStripesSoFar at and past the block length; absorb keeps it
 		// strictly below.
 		corrupt(soFarOff, uint32((secretDefaultSize-stripeLen)/secretConsumeRate)),
 		corrupt(soFarOff, 1<<31),

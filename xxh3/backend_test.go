@@ -52,6 +52,7 @@ func TestBackendsNative(t *testing.T) {
 			TestStreamingRandomChunks(t)
 			TestStreamingCustomSecretLengths(t)
 			TestStreamingDenseLengths(t)
+			TestDigestReadThenWrite(t)
 		})
 	}
 	if ran == 0 {

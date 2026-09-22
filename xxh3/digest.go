@@ -60,36 +60,48 @@ var (
 // New returns a Digest computing the default, unseeded XXH3.
 func New() *Digest {
 	d := &Digest{}
+	d.initDefault()
+	return d
+}
+
+func (d *Digest) initDefault() {
 	d.customSecret = kSecret
 	d.nbStripesPerBlock = (secretDefaultSize - stripeLen) / secretConsumeRate
 	d.secretLimit = secretDefaultSize - stripeLen
 	d.setBlockMask()
 	d.Reset()
-	return d
 }
 
 // NewSeed returns a Digest keyed by seed. Unlike Sum64Seed, the per-seed secret
 // is derived once here rather than on every hash.
 func NewSeed(seed uint64) *Digest {
-	d := New()
+	// Keep allocation in this inlinable wrapper so a local Digest can stay
+	// on the caller's stack. Secret derivation alone exceeds that budget.
+	d := &Digest{}
+	d.initSeed(seed)
+	return d
+}
+
+func (d *Digest) initSeed(seed uint64) {
+	d.initDefault()
 	if seed != 0 {
 		deriveSecret(&d.customSecret, seed)
 		d.seed = seed
 		d.useSeed = true
 	}
-	return d
 }
 
 // NewSecret returns a Digest keyed by a custom secret. The secret must be at
 // least MinSecretSize bytes; see Sum64Secret. It is retained, not copied.
 func NewSecret(secret []byte) *Digest {
 	checkSecret(secret)
-	d := &Digest{}
-	d.extSecret = secret
-	d.nbStripesPerBlock = (len(secret) - stripeLen) / secretConsumeRate
-	d.secretLimit = len(secret) - stripeLen
+	d := &Digest{
+		acc:               initAcc,
+		extSecret:         secret,
+		nbStripesPerBlock: (len(secret) - stripeLen) / secretConsumeRate,
+		secretLimit:       len(secret) - stripeLen,
+	}
 	d.setBlockMask()
-	d.Reset()
 	return d
 }
 
@@ -336,44 +348,40 @@ func (d *Digest) absorb(p []byte) bool {
 	return true
 }
 
-// consumeStripes runs nbStripes stripes through acc, scrambling at each block
-// boundary the run crosses, and returns the new position within the block.
-// Only Sum64 uses it: absorb calls the backend directly.
-func (d *Digest) consumeStripes(acc *[accNB]uint64, in unsafe.Pointer, nbStripes, soFar int) int {
-	accumBlocks(acc, in, nbStripes, d.secretPtr(), d.secretLimit, soFar)
-	return d.wrap(soFar + nbStripes)
-}
-
 // digestLong finishes a long input on a copy of the accumulators, so that the
 // Digest stays usable afterwards.
 func (d *Digest) digestLong(acc *[accNB]uint64) {
 	*acc = d.acc
+	sec := d.secretPtr()
 
-	// Whole stripes can only still be staged for a message that never reached
-	// the staging capacity; past that, absorb leaves at most a partial one.
-	// Where they leave the block position does not matter: only the final
-	// stripe follows, and it is keyed from the end of the secret.
+	// Small writes can leave whole stripes staged even after an earlier
+	// drain. Their final block position does not matter: only the final
+	// stripe follows, keyed from the end of the secret.
 	// bufUsed is at least one here: totalLen is past midsizeMax, and absorb
 	// never leaves the staging area empty.
 	if nb := int(uint(d.bufUsed-1) / stripeLen); nb > 0 {
-		d.consumeStripes(acc, unsafe.Pointer(&d.buf[stripeLen]), nb, d.nbStripesSoFar)
+		accumBlocks(acc, unsafe.Pointer(&d.buf[stripeLen]), nb, sec, d.secretLimit, d.nbStripesSoFar)
 	}
 
 	// The final stripe is the last 64 bytes of the message. The window sits
 	// directly in front of the staged bytes, so those 64 bytes are contiguous
 	// at buf[bufUsed:] wherever the boundary happens to fall.
 	accumStripes(acc, add(unsafe.Pointer(&d.buf), uintptr(d.bufUsed)), 1,
-		add(d.secretPtr(), uintptr(d.secretLimit-secretLastAccStart)))
+		add(sec, uintptr(d.secretLimit-secretLastAccStart)))
 }
 
 // Sum64 returns the 64-bit hash of everything written so far.
 func (d *Digest) Sum64() uint64 {
-	if d.totalLen > midsizeMax {
+	// Until the first drain, the entire message is contiguous in buf. Reuse
+	// the one-shot path, including its single kernel call for long messages.
+	if d.totalLen > internalBufferSize {
 		var acc [accNB]uint64
 		d.digestLong(&acc)
 		return mergeAccs(&acc, add(d.secretPtr(), secretMergeAccsStart), d.totalLen*prime64_1)
 	}
-	if d.useSeed {
+	// Short seeded inputs use the seed directly; longer ones use the secret
+	// derived at construction, which sum64NS consumes without deriving again.
+	if d.useSeed && d.totalLen <= midsizeMax {
 		return sum64(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
 			unsafe.Pointer(&kSecret), secretDefaultSize, d.seed)
 	}
@@ -383,7 +391,8 @@ func (d *Digest) Sum64() uint64 {
 
 // Sum128 returns the 128-bit hash of everything written so far.
 func (d *Digest) Sum128() Uint128 {
-	if d.totalLen > midsizeMax {
+	// Use the same buffered/absorbed split and seed handling as Sum64.
+	if d.totalLen > internalBufferSize {
 		var acc [accNB]uint64
 		d.digestLong(&acc)
 		sec := d.secretPtr()
@@ -393,7 +402,7 @@ func (d *Digest) Sum128() Uint128 {
 				^(d.totalLen * prime64_2)),
 		}
 	}
-	if d.useSeed {
+	if d.useSeed && d.totalLen <= midsizeMax {
 		return sum128(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
 			unsafe.Pointer(&kSecret), secretDefaultSize, d.seed)
 	}

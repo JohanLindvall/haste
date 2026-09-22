@@ -115,12 +115,14 @@ func (d *Digest) write(p unsafe.Pointer, n int) {
 func (d *Digest) Sum64() uint64 {
 	var h uint64
 	if d.total >= blockLen {
-		v := d.v
-		h = mergeLanes(&v)
+		h = mergeLanes(&d.v) + d.total
+		if d.n == 0 {
+			return avalanche(h)
+		}
 	} else {
-		h = d.seed + prime5
+		h = d.seed + prime5 + d.total
 	}
-	return finalize(h+d.total, unsafe.Pointer(&d.buf), d.n)
+	return finalize(h, unsafe.Pointer(&d.buf), d.n)
 }
 
 // Sum appends the big-endian hash to b, as [hash.Hash] specifies.

@@ -131,39 +131,14 @@ func (a *arm64Rapid) ldrReg(dst, base, off GPR) {
 		"ldr %s, [%s, %s]", a.GPRName(dst), a.GPRName(base), a.GPRName(off))
 }
 
-func (a *arm64Rapid) add(dst, x, y GPR) {
-	a.b.emit(func(m *Machine) { m.R[dst] = m.R[x] + m.R[y] },
-		"add %s, %s, %s", a.GPRName(dst), a.GPRName(x), a.GPRName(y))
-}
-
-func (a *arm64Rapid) subImm(dst GPR, imm int64) {
-	a.b.emit(func(m *Machine) { m.R[dst] -= uint64(imm) },
-		"sub %s, %s, #%d", a.GPRName(dst), a.GPRName(dst), imm)
-}
-
-func (a *arm64Rapid) addImm(dst GPR, imm int64) {
-	a.b.emit(func(m *Machine) { m.R[dst] += uint64(imm) },
-		"add %s, %s, #%d", a.GPRName(dst), a.GPRName(dst), imm)
-}
-
 func (a *arm64Rapid) lsl(dst, src GPR, sh uint) {
 	a.b.emit(func(m *Machine) { m.R[dst] = m.R[src] << sh },
 		"lsl %s, %s, #%d", a.GPRName(dst), a.GPRName(src), sh)
 }
 
-func (a *arm64Rapid) lsr(dst, src GPR, sh uint) {
-	a.b.emit(func(m *Machine) { m.R[dst] = m.R[src] >> sh },
-		"lsr %s, %s, #%d", a.GPRName(dst), a.GPRName(src), sh)
-}
-
 func (a *arm64Rapid) orr(dst, x, y GPR) {
 	a.b.emit(func(m *Machine) { m.R[dst] = m.R[x] | m.R[y] },
 		"orr %s, %s, %s", a.GPRName(dst), a.GPRName(x), a.GPRName(y))
-}
-
-func (a *arm64Rapid) mov(dst, src GPR) {
-	a.b.emit(func(m *Machine) { m.R[dst] = m.R[src] },
-		"mov %s, %s", a.GPRName(dst), a.GPRName(src))
 }
 
 func (a *arm64Rapid) Zero(dst GPR) {
@@ -288,9 +263,8 @@ func (a *arm64Rapid) LoopBound() bool { return true }
 // LoopEnter computes the address at which an iteration of bytes would no
 // longer fit: end = in + i - bytes.
 func (a *arm64Rapid) LoopEnter(bytes int) {
-	a.b.emit(func(m *Machine) { m.R[a.loopEnd()] = m.R[a.In()] + m.R[a.I()] },
-		"add %s, %s, %s", a.GPRName(a.loopEnd()), a.GPRName(a.In()), a.GPRName(a.I()))
-	a.subImm(a.loopEnd(), int64(bytes))
+	a.AddRRR(a.loopEnd(), a.In(), a.I())
+	a.SubRI(a.loopEnd(), int64(bytes))
 }
 
 // LoopStep advances past the iteration just emitted and goes round again
@@ -298,7 +272,7 @@ func (a *arm64Rapid) LoopEnter(bytes int) {
 // which these addresses are safe for: a Go heap pointer is nowhere near the
 // top of the range, and the simulator's address space is smaller still.
 func (a *arm64Rapid) LoopStep(bytes int, label string) {
-	a.addImm(a.In(), int64(bytes))
+	a.AddRI(a.In(), int64(bytes))
 	a.b.emit(func(m *Machine) { m.setCmp(m.R[a.In()], m.R[a.loopEnd()]) },
 		"cmp %s, %s", a.GPRName(a.In()), a.GPRName(a.loopEnd()))
 	a.branch(LT, label)
@@ -307,14 +281,13 @@ func (a *arm64Rapid) LoopStep(bytes int, label string) {
 // LoopExit puts the remaining length back where the ladder reads it:
 // i = end + bytes - in, which inverts LoopEnter.
 func (a *arm64Rapid) LoopExit(bytes int) {
-	a.b.emit(func(m *Machine) { m.R[a.I()] = m.R[a.loopEnd()] - m.R[a.In()] },
-		"sub %s, %s, %s", a.GPRName(a.I()), a.GPRName(a.loopEnd()), a.GPRName(a.In()))
-	a.addImm(a.I(), int64(bytes))
+	a.SubRRR(a.I(), a.loopEnd(), a.In())
+	a.AddRI(a.I(), int64(bytes))
 }
 
 func (a *arm64Rapid) SpreadLanes() {
 	for i := 1; i <= 6; i++ {
-		a.mov(a.See(i), a.Seed())
+		a.MovRR(a.See(i), a.Seed())
 	}
 }
 
@@ -337,16 +310,16 @@ func (a *arm64Rapid) Short4to16() {
 	// 4..7: two 32-bit reads, at 0 and at n-4.
 	a.ldrw(a.A(), a.In(), 0)
 	t := a.tmp()
-	a.mov(t, a.I())
-	a.subImm(t, 4)
+	a.MovRR(t, a.I())
+	a.SubRI(t, 4)
 	a.ldrwReg(a.B(), a.In(), t)
 	a.Jmp(doneS)
 	a.b.Label(eight)
 	// 8..16: two 64-bit reads, at 0 and at n-8, overlapping below 16.
 	a.ldr(a.A(), a.In(), 0)
 	t2 := a.tmp()
-	a.mov(t2, a.I())
-	a.subImm(t2, 8)
+	a.MovRR(t2, a.I())
+	a.SubRI(t2, 8)
 	a.ldrReg(a.B(), a.In(), t2)
 	a.b.Label(doneS)
 }
@@ -361,18 +334,18 @@ func (a *arm64Rapid) Short1to3() {
 	t := a.tmp()
 	a.ldrb(a.A(), a.In(), 0)
 	a.lsl(a.A(), a.A(), 45)
-	a.mov(t, a.I())
-	a.subImm(t, 1)
+	a.MovRR(t, a.I())
+	a.SubRI(t, 1)
 	a.ldrbReg(a.B(), a.In(), t)
 	a.orr(a.A(), a.A(), a.B())
-	a.lsr(t, a.I(), 1)
+	a.ShrRRI(t, a.I(), 1)
 	a.ldrbReg(a.B(), a.In(), t)
 }
 
 func (a *arm64Rapid) Tail16() {
 	// a = load(in + i - 16) ^ i; b = load(in + i - 8)
 	t := a.tmp()
-	a.add(t, a.In(), a.I())
+	a.AddRRR(t, a.In(), a.I())
 	a.ldr(a.A(), t, -16)
 	a.ldr(a.B(), t, -8)
 	a.eor(a.A(), a.A(), a.I())
@@ -399,5 +372,5 @@ func (a *arm64Rapid) Finalize() {
 	a.mix(a.RetGPR(), lo, hi)
 }
 
-func (a *arm64Rapid) AdvanceIn(bytes int) { a.addImm(a.In(), int64(bytes)) }
-func (a *arm64Rapid) SubI(bytes int)      { a.subImm(a.I(), int64(bytes)) }
+func (a *arm64Rapid) AdvanceIn(bytes int) { a.AddRI(a.In(), int64(bytes)) }
+func (a *arm64Rapid) SubI(bytes int)      { a.SubRI(a.I(), int64(bytes)) }

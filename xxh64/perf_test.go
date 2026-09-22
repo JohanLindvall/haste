@@ -102,3 +102,16 @@ func BenchmarkFixed(b *testing.B) {
 		}
 	})
 }
+
+func BenchmarkDigestSum(b *testing.B) {
+	for _, n := range []int{0, 4, 8, 16, 31, 32, 33, 64, 256, 1024, 4096} {
+		d := NewSeed(42)
+		d.Write(testBuffer(n))
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				sink = d.Sum64()
+			}
+		})
+	}
+}

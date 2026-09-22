@@ -390,6 +390,16 @@ func TestNoAlloc(t *testing.T) {
 		{"Sum128Seed/4096", func() { sink64 += Sum128Seed(buf, 7).Lo }},
 		{"Sum64Secret/4096", func() { sink64 += Sum64Secret(buf, sec) }},
 		{"Sum64String/64", func() { sink64 += Sum64String("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef") }},
+		{"local Digest/NewSeed", func() {
+			d := NewSeed(42)
+			d.Write(buf)
+			sink64 += d.Sum64()
+		}},
+		{"local Digest/NewSecret", func() {
+			d := NewSecret(sec)
+			d.Write(buf)
+			sink64 += d.Sum64()
+		}},
 	}
 	for _, c := range cases {
 		if n := testing.AllocsPerRun(100, c.fn); n != 0 {
