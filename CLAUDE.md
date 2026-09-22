@@ -9,7 +9,7 @@ under `internal/asmgen` or any `.s` file.
 
 | path | what it is |
 |---|---|
-| `xxh3/xxh3.go` | public API; `sum64`/`sum128` hold the 0..16-byte cases inline |
+| `xxh3/xxh3.go` | public API; seeded and unseeded cores hold the 0..128-byte cases inline |
 | `xxh3/fixed.go` | call-free entry points for compile-time-known sizes |
 | `xxh3/generic.go` | portable implementation: mid-size ladders, accumulator loop, convergence |
 | `xxh3/digest.go` | streaming `Digest`; same output as `XXH3_update`, different staging |
@@ -20,7 +20,7 @@ under `internal/asmgen` or any `.s` file.
 | `xxh3/stub_{amd64,arm64}.go` | **generated** Go declarations for the kernels |
 | `xxh3/xxh_*_{amd64,arm64}.s` | **generated** kernels |
 | `internal/asmgen` | the generator, for both hashes |
-| `internal/cpu` | MIDR_EL1 on Linux/arm64, and "is this an Apple core"; used by both dispatchers |
+| `internal/cpu` | shared amd64 CPUID/XGETBV probes and arm64 core identification |
 | `xxh3/cpu_linux_arm64.go` | SVE2 detection, and the MIDR list gating the hybrid |
 | `xxh64/` | XXH64: API and portable implementation (`xxh64.go`), `Digest`, per-arch dispatch, **generated** stubs and kernels, its own vectors and tests |
 | `ref/gen.c` | emits xxh3's and xxh64's reference vectors from the C source |
@@ -606,8 +606,8 @@ simply disappear.
 - Kernels are `NOSPLIT` with a zero frame and make no calls, so they need no
   stack maps. Keep it that way; adding a CALL inside one would corrupt the
   stack.
-- `sum64` and `sum128` are `//go:nosplit`. The linker verifies the budget at
-  build time, so a violation is a build failure, not a runtime bug.
+- XXH3's seeded and unseeded cores are `//go:nosplit`. The linker verifies
+  the budget at build time, so a violation is a build failure, not a runtime bug.
 - **Accumulator load width, amd64**: `LoadAcc` and `StoreAcc` read and write a
   caller's eight accumulators in 128-bit pieces, never in one 256- or 512-bit
   access. That array comes from Go -- a `Digest` field, on the streaming
@@ -1499,8 +1499,8 @@ worth nothing.
   wrapper around `write` rather than handling the common case itself.
 - Go's inliner budget (80) drives several structural choices: the public
   entry points are thin so they inline; the 0..16-byte cases live inside
-  `sum64`/`sum128` rather than in their own functions; `mixHalf` takes its
-  crossover term as a parameter purely to stay under the budget. Check with
+  the seeded and unseeded cores rather than in their own functions; `mixHalf`
+  takes its crossover term as a parameter purely to stay under the budget. Check with
   `go build -gcflags='-m=2'` before restructuring these — an accidental
   non-inlined call in the short path costs 5-15%.
 
@@ -2172,7 +2172,7 @@ confirmed by deleting it:
   128; 128-bit 5.13 -> 4.53 and 8.50 -> 6.66, from -7% and -17% behind zeebo
   to +5% ahead. The 129..240 rungs keep the call on purpose: they were
   already ahead, and their bodies would bloat a nosplit function. The ladder
-  functions themselves remain for the seeded digest path.
+  functions were removed once the seeded digest path reused the seeded cores.
 - **The 128-bit rounds run hi-half first, j-side loads first** (zeebo's
   statement order), worth 3-4% on its own before the inlining: the function
   is dense in multiplies contending for the one integer-multiply port, and
@@ -2183,8 +2183,8 @@ confirmed by deleting it:
   3.29 -> 2.33 ns (level with zeebo, was -36%), 64 B 4.88 -> 3.50 (+7%
   ahead). The >240 derive branch lives in sum64SeededLong because the
   192-byte secret frame does not fit the nosplit budget once the race
-  detector inflates it. sum64/sum128 (secret-parameterized) remain for the
-  digest.
+  detector inflates it. The digest now reuses these seeded cores below 241
+  bytes too; the older secret-parameterized seeded cores have been removed.
 
 After those, a fresh per-length sweep on this core has both widths level or
 ahead of zeebo at every class: 0..3 bytes included (the old 3-8% deficit
@@ -2374,6 +2374,20 @@ hand-written vector paths, and it agrees with `xxh3/` bit for bit --
 the reverse of what the field names here would suggest; getting that backwards
 yields two plausible uint64s and no error, so the test asserts the order
 rather than a comment claiming it.
+
+### Go streaming pass, 2026-09-22
+
+The finalization and short-write paths were measured against `4f8419e` on a
+Redwood Cove, with both implementations in one binary, alternating samples
+and three relinked layouts. [PERFORMANCE.md](PERFORMANCE.md) records the
+measurements, discarded experiments and checks. The changes reuse the
+one-shot kernel for fully staged XXH3 messages, reuse the seeded cores for
+short digest reads, and inline XXH64's small staging copies. The unused XXH3
+general seeded cores and 17..128 ladders are gone, and all amd64 dispatchers
+share the CPUID/XGETBV probes in `internal/cpu`.
+The small-write and buffered-finalization changes had independently landed
+on `main` before integration; the report distinguishes those baseline gains
+from the additional seeded-core, validation and CPU-probe changes.
 
 ## Reference vectors
 

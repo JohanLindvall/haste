@@ -144,6 +144,10 @@ func FuzzUnmarshalBinary(f *testing.F) {
 		}
 		// Accepted: everything below has to complete without panicking, and
 		// Reset has to return the Digest to a usable state whatever it held.
+		// Read before writing too: a write can repair an invalid empty tail
+		// and hide an underflow in the finalization path.
+		e.Sum64()
+		e.Sum128()
 		e.Write([]byte("more"))
 		e.Sum64()
 		e.Sum128()

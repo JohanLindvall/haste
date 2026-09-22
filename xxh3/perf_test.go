@@ -143,7 +143,7 @@ func BenchmarkDigestSum(b *testing.B) {
 		{"Secret", func() *Digest { return NewSecret(testSecret(137)) }},
 	} {
 		b.Run(mode.name, func(b *testing.B) {
-			for _, n := range []int{0, 16, 64, 128, 240, 241, 256, 576, 1024, 1025, 1536, 4096} {
+			for _, n := range []int{0, 16, 64, 128, 240, 241, 256, 512, 576, 1024, 1025, 1536, 4096} {
 				d := mode.new()
 				writeInChunks(d, testBuffer(n), stripeLen)
 				b.Run(fmt.Sprint(n), func(b *testing.B) {

@@ -1,8 +1,6 @@
-// Package cpu identifies the core the process runs on, for the two places
-// where a kernel is chosen by core rather than by feature: the parent
-// package's split NEON kernel and xxh64's lane-round shape. Both are gated on
-// positive identification, so a core this package cannot read stays on the
-// portable choice.
+// Package cpu provides CPU probes for the hash dispatchers: CPUID and XCR0
+// on amd64, and core identification on arm64. Dispatchers keep their own
+// selection policies so that a feature is used only where it is profitable.
 package cpu
 
 // Implementer and Part decode a MIDR_EL1 value: implementer is bits 31:24,

@@ -2,7 +2,11 @@
 
 package xxh3
 
-import "unsafe"
+import (
+	"unsafe"
+
+	"github.com/JohanLindvall/haste/internal/cpu"
+)
 
 // amd64 dispatch.
 //
@@ -37,16 +41,16 @@ var (
 var backend = pickBackend()
 
 func pickBackend() backendID {
-	maxID, _, _, _ := cpuid(0, 0)
+	maxID, _, _, _ := cpu.CPUID(0, 0)
 	if maxID < 7 {
 		return backendSSE2
 	}
 	// OSXSAVE says XGETBV is usable at all; without it nothing below applies.
-	_, _, ecx1, _ := cpuid(1, 0)
+	_, _, ecx1, _ := cpu.CPUID(1, 0)
 	if ecx1&(1<<27) == 0 {
 		return backendSSE2
 	}
-	xcr0, _ := xgetbv()
+	xcr0, _ := cpu.XGETBV()
 	const (
 		xmmState = 1 << 1
 		ymmState = 1 << 2
@@ -57,7 +61,7 @@ func pickBackend() backendID {
 	if xcr0&(xmmState|ymmState) != xmmState|ymmState {
 		return backendSSE2
 	}
-	_, ebx7, _, _ := cpuid(7, 0)
+	_, ebx7, _, _ := cpu.CPUID(7, 0)
 	const (
 		featAVX2     = 1 << 5
 		featAVX512F  = 1 << 16
@@ -116,9 +120,3 @@ func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsaf
 
 //go:noescape
 func accumBlocks2(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int, in2 unsafe.Pointer, nbStripes2 int)
-
-//go:noescape
-func cpuid(eaxArg, ecxArg uint32) (eax, ebx, ecx, edx uint32)
-
-//go:noescape
-func xgetbv() (eax, edx uint32)

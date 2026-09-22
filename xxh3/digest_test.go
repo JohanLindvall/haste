@@ -285,6 +285,9 @@ func TestUnmarshalRejectsBadState(t *testing.T) {
 		corrupt(bufUsedOff, internalBufferSize+1),
 		corrupt(bufUsedOff, 1<<31),
 		corrupt(bufUsedOff, ^uint32(0)),
+		// A nonempty message always retains at least one byte. Otherwise
+		// digestLong's (bufUsed-1) stripe count would underflow.
+		corrupt(bufUsedOff, 0),
 		// nbStripesSoFar at and past the block length; absorb keeps it
 		// strictly below.
 		corrupt(soFarOff, uint32((secretDefaultSize-stripeLen)/secretConsumeRate)),

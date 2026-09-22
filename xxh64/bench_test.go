@@ -51,7 +51,7 @@ func BenchmarkDigest(b *testing.B) {
 func BenchmarkDigestChunkedLarge(b *testing.B) {
 	const n = 1 << 20
 	buf := testBuffer(n)
-	for _, chunk := range []int{1, 7, 16, 31, 32, 33, 64, 65, 256, 1024, 65536} {
+	for _, chunk := range []int{1, 3, 7, 8, 16, 31, 32, 33, 64, 65, 256, 1024, 4096, 65536} {
 		b.Run(fmt.Sprint(chunk), func(b *testing.B) {
 			b.SetBytes(n)
 			d := New()

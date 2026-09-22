@@ -2,7 +2,11 @@
 
 package rapidhash
 
-import "unsafe"
+import (
+	"unsafe"
+
+	"github.com/JohanLindvall/haste/internal/cpu"
+)
 
 // amd64 has two kernels -- seeded and unseeded, chosen by the entry point at
 // compile time -- and each carries two forms of the block loop's multiply,
@@ -36,7 +40,7 @@ func init() { secret[9] = pickMulForm() }
 // pickMulForm reports whether to take the mulx block loop: BMI2 present
 // (CPUID leaf 7, EBX bit 8) and a vendor it has been measured on.
 func pickMulForm() uint64 {
-	maxID, b, c, d := cpuid(0, 0)
+	maxID, b, c, d := cpu.CPUID(0, 0)
 	if maxID < 7 {
 		return formMul
 	}
@@ -44,14 +48,11 @@ func pickMulForm() uint64 {
 	if b != 0x756e6547 || d != 0x49656e69 || c != 0x6c65746e {
 		return formMul
 	}
-	if _, ebx, _, _ := cpuid(7, 0); ebx&(1<<8) != 0 {
+	if _, ebx, _, _ := cpu.CPUID(7, 0); ebx&(1<<8) != 0 {
 		return formMulx
 	}
 	return formMul
 }
-
-//go:noescape
-func cpuid(eaxArg, ecxArg uint32) (eax, ebx, ecx, edx uint32)
 
 // sum64 hashes n bytes at p under seed in one call into the kernel, whatever
 // n is. It inlines into the public entry points, so a hash costs one call.
@@ -81,7 +82,10 @@ func setBackend(name string) bool {
 		secret[9] = formMul
 		return true
 	case "mulx":
-		if _, ebx, _, _ := cpuid(7, 0); ebx&(1<<8) == 0 {
+		if maxID, _, _, _ := cpu.CPUID(0, 0); maxID < 7 {
+			return false
+		}
+		if _, ebx, _, _ := cpu.CPUID(7, 0); ebx&(1<<8) == 0 {
 			return false
 		}
 		secret[9] = formMulx

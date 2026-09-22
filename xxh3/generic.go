@@ -9,7 +9,7 @@
 // Inputs are addressed through unsafe.Pointer rather than slices. The paths
 // below are short enough that a bounds check per load is a measurable part of
 // the cost, and every offset used here is already implied by the length switch
-// in sum64 and sum128.
+// in the seeded and unseeded cores in xxh3.go.
 
 package xxh3
 
@@ -194,62 +194,9 @@ func mixHalf(acc uint64, in, sec unsafe.Pointer, seed, cross uint64) uint64 {
 // ---------------------------------------------------------------------------
 // 64-bit, mid-size inputs
 //
-// The 0..16 cases live in sum64: they are short enough that a call would show
+// The 0..128 cases live in xxh3.go: they are short enough that a call would show
 // up in the measurement. Everything from here on is called.
 // ---------------------------------------------------------------------------
-
-// len17to128_64 walks pairs of 16-byte chunks inward from both ends. The
-// unrolled ladder means an input of any length in range touches a fixed,
-// branch-predictable set of secret offsets.
-//
-// The single accumulator chain here is deliberate, and unlike the one in
-// mergeAccs it does not want splitting. Its terms do not become ready at the
-// same time -- each waits on its own pair of loads -- so a chain of adds
-// absorbs them as they arrive, and a second partial sum only adds a final
-// dependent add at the end. Measured on a Zen 4, splitting it cost 5% at 64
-// bytes and 8% at 128. Seeding the chain with the length term rather than
-// adding it at the end is worth another 4-7%, for the same reason: it gives
-// the chain something to start on while the first loads are still in flight.
-func len17to128_64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint64) uint64 {
-	acc := uint64(n) * prime64_1
-	if n > 32 {
-		if n > 64 {
-			if n > 96 {
-				acc += mix16B(add(in, 48), add(sec, 96), seed)
-				acc += mix16B(add(in, n-64), add(sec, 112), seed)
-			}
-			acc += mix16B(add(in, 32), add(sec, 64), seed)
-			acc += mix16B(add(in, n-48), add(sec, 80), seed)
-		}
-		acc += mix16B(add(in, 16), add(sec, 32), seed)
-		acc += mix16B(add(in, n-32), add(sec, 48), seed)
-	}
-	acc += mix16B(in, sec, seed)
-	acc += mix16B(add(in, n-16), add(sec, 16), seed)
-	return avalanche(acc)
-}
-
-// len17to128_64NS is len17to128_64 with the seed arithmetic removed; see
-// mix16BNS. The routing in sum64 keeps the two in lockstep: every unseeded
-// reference vector runs through this one.
-func len17to128_64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) uint64 {
-	acc := uint64(n) * prime64_1
-	if n > 32 {
-		if n > 64 {
-			if n > 96 {
-				acc += mix16BNS(add(in, 48), add(sec, 96))
-				acc += mix16BNS(add(in, n-64), add(sec, 112))
-			}
-			acc += mix16BNS(add(in, 32), add(sec, 64))
-			acc += mix16BNS(add(in, n-48), add(sec, 80))
-		}
-		acc += mix16BNS(add(in, 16), add(sec, 32))
-		acc += mix16BNS(add(in, n-32), add(sec, 48))
-	}
-	acc += mix16BNS(in, sec)
-	acc += mix16BNS(add(in, n-16), add(sec, 16))
-	return avalanche(acc)
-}
 
 // len129to240_64 runs a fixed 8-chunk prologue, avalanches, then a
 // length-dependent tail. The mid-stream avalanche is what keeps this path from
@@ -346,10 +293,6 @@ func len129to240_64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) uint64 {
 // 128-bit, short and mid-size inputs
 // ---------------------------------------------------------------------------
 
-// The seed-free twins of the three short 128-bit cases; see sum64NS for why
-// they exist. Each is its seeded original with the seed terms deleted and
-// nothing else changed.
-
 // finalize128 converges the two accumulator halves into a 128-bit result. The
 // high half is negated so that it cannot equal the low half for any input.
 func finalize128(lo, hi uint64, length uintptr, seed uint64) Uint128 {
@@ -357,34 +300,6 @@ func finalize128(lo, hi uint64, length uintptr, seed uint64) Uint128 {
 		Lo: avalanche(lo + hi),
 		Hi: -avalanche(lo*prime64_1 + hi*prime64_4 + (uint64(length)-seed)*prime64_2),
 	}
-}
-
-func len17to128_128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint64) Uint128 {
-	lo := uint64(n) * prime64_1
-	hi := uint64(0)
-	if n > 32 {
-		if n > 64 {
-			if n > 96 {
-				a, b := add(in, 48), add(in, n-64)
-				ca, cb := cross16(a), cross16(b)
-				lo = mixHalf(lo, a, add(sec, 96), seed, cb)
-				hi = mixHalf(hi, b, add(sec, 112), seed, ca)
-			}
-			a, b := add(in, 32), add(in, n-48)
-			ca, cb := cross16(a), cross16(b)
-			lo = mixHalf(lo, a, add(sec, 64), seed, cb)
-			hi = mixHalf(hi, b, add(sec, 80), seed, ca)
-		}
-		a, b := add(in, 16), add(in, n-32)
-		ca, cb := cross16(a), cross16(b)
-		lo = mixHalf(lo, a, add(sec, 32), seed, cb)
-		hi = mixHalf(hi, b, add(sec, 48), seed, ca)
-	}
-	a, b := in, add(in, n-16)
-	ca, cb := cross16(a), cross16(b)
-	lo = mixHalf(lo, a, sec, seed, cb)
-	hi = mixHalf(hi, b, add(sec, 16), seed, ca)
-	return finalize128(lo, hi, n, seed)
 }
 
 func len129to240_128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint64) Uint128 {
@@ -443,48 +358,6 @@ func len129to240_128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint
 	return finalize128(lo, hi, n, seed)
 }
 
-// len17to128_128NS is len17to128_128 without the seed.
-func len17to128_128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) Uint128 {
-	lo := uint64(n) * prime64_1
-	hi := uint64(0)
-	// Each round loads its four input words once and uses them twice -- keyed
-	// in its own half's fold, raw as the other half's crossover. The mixHalf
-	// form reloads them through cross16 and mix16B, a shape the inliner budget
-	// forces on the seeded path; written out, the arithmetic is unchanged and
-	// four loads per round disappear.
-	if n > 32 {
-		if n > 64 {
-			if n > 96 {
-				{
-					j0, j1 := rd64(add(in, n-64), 0), rd64(add(in, n-64), 8)
-					i0, i1 := rd64(add(in, 48), 0), rd64(add(in, 48), 8)
-					hi = (hi + mul128Fold64(j0^rd64(add(sec, 96+16), 0), j1^rd64(add(sec, 96+16), 8))) ^ (i0 + i1)
-					lo = (lo + mul128Fold64(i0^rd64(add(sec, 96), 0), i1^rd64(add(sec, 96), 8))) ^ (j0 + j1)
-				}
-			}
-			{
-				j0, j1 := rd64(add(in, n-48), 0), rd64(add(in, n-48), 8)
-				i0, i1 := rd64(add(in, 32), 0), rd64(add(in, 32), 8)
-				hi = (hi + mul128Fold64(j0^rd64(add(sec, 64+16), 0), j1^rd64(add(sec, 64+16), 8))) ^ (i0 + i1)
-				lo = (lo + mul128Fold64(i0^rd64(add(sec, 64), 0), i1^rd64(add(sec, 64), 8))) ^ (j0 + j1)
-			}
-		}
-		{
-			j0, j1 := rd64(add(in, n-32), 0), rd64(add(in, n-32), 8)
-			i0, i1 := rd64(add(in, 16), 0), rd64(add(in, 16), 8)
-			hi = (hi + mul128Fold64(j0^rd64(add(sec, 32+16), 0), j1^rd64(add(sec, 32+16), 8))) ^ (i0 + i1)
-			lo = (lo + mul128Fold64(i0^rd64(add(sec, 32), 0), i1^rd64(add(sec, 32), 8))) ^ (j0 + j1)
-		}
-	}
-	{
-		j0, j1 := rd64(add(in, n-16), 0), rd64(add(in, n-16), 8)
-		i0, i1 := rd64(in, 0), rd64(in, 8)
-		hi = (hi + mul128Fold64(j0^rd64(add(sec, 16), 0), j1^rd64(add(sec, 16), 8))) ^ (i0 + i1)
-		lo = (lo + mul128Fold64(i0^rd64(sec, 0), i1^rd64(sec, 8))) ^ (j0 + j1)
-	}
-	return finalize128(lo, hi, n, 0)
-}
-
 // len129to240_128NS is len129to240_128 without the seed.
 func len129to240_128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) Uint128 {
 	lo := uint64(n) * prime64_1
@@ -495,7 +368,7 @@ func len129to240_128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) Uint128
 	// immediates issues measurably denser than one that computes them. The
 	// tail's length tests replicate the reference loop's bound in its order,
 	// so the hash cannot move; see len129to240_64NS. Each round loads its
-	// input words once, as in len17to128_128NS.
+	// input words once, as in sum128NS.
 	{
 		i0, i1 := rd64(in, 0), rd64(in, 8)
 		j0, j1 := rd64(add(in, 16), 0), rd64(add(in, 16), 8)

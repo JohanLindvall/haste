@@ -62,6 +62,7 @@ func (d *Digest) WriteString(s string) (int, error) {
 
 // write stages partial blocks with bounded head/tail moves. The private
 // staging buffer does not alias the caller's input.
+// The small staging frame needs no stack check; callees check their own stacks.
 //
 //go:nosplit
 func (d *Digest) write(p unsafe.Pointer, n int) {
@@ -71,7 +72,8 @@ func (d *Digest) write(p unsafe.Pointer, n int) {
 		src := p
 		d.n += n
 		// Overlapping head/tail moves avoid a memmove call for at most 31 bytes.
-		// The input and the private staging buffer do not alias.
+		// Byte arrays preserve unaligned-copy support on every architecture;
+		// moves above 16 bytes would themselves become memmove calls on amd64.
 		switch {
 		case n >= 16:
 			*(*[16]byte)(dst) = *(*[16]byte)(src)
@@ -100,6 +102,8 @@ func (d *Digest) write(p unsafe.Pointer, n int) {
 		blocks(&d.v, unsafe.Pointer(&d.buf), 1)
 		d.n = 0
 	}
+	// The remaining length is non-negative. An unsigned division avoids
+	// the signed quotient's rounding instructions on the block path.
 	if nb := int(uint(n-i) / blockLen); nb > 0 {
 		blocks(&d.v, add(p, i), nb)
 		i += nb * blockLen
@@ -132,16 +136,14 @@ func (d *Digest) Sum(b []byte) []byte {
 
 const (
 	magic         = "xxh64v1"
-	marshaledSize = len(magic) + 8*4 + 8 + blockLen + 1
+	marshaledSize = len(magic) + 8*4 + 8 + blockLen + 1 + 8
 )
 
-// MarshalBinary implements [encoding.BinaryMarshaler]: the lanes, the byte
-// count, the staged bytes and their number, and the seed is not among them --
-// it is recoverable from nothing else, so it travels in the lanes' initial
-// values, which is enough because Reset is the only thing that needs it and
-// a restored Digest is reset by restoring it again.
+// MarshalBinary implements [encoding.BinaryMarshaler]. It encodes the lanes,
+// byte count, staging buffer and its used length, and seed. A restored Digest
+// keeps its seed across Reset.
 func (d *Digest) MarshalBinary() ([]byte, error) {
-	b := make([]byte, 0, marshaledSize+8)
+	b := make([]byte, 0, marshaledSize)
 	b = append(b, magic...)
 	for _, v := range d.v {
 		b = binary.LittleEndian.AppendUint64(b, v)
@@ -158,7 +160,7 @@ var errBadState = errors.New("xxh64: invalid hash state")
 // UnmarshalBinary implements [encoding.BinaryUnmarshaler]. It accepts only
 // what MarshalBinary produced.
 func (d *Digest) UnmarshalBinary(b []byte) error {
-	if len(b) != marshaledSize+8 || string(b[:len(magic)]) != magic {
+	if len(b) != marshaledSize || string(b[:len(magic)]) != magic {
 		return errBadState
 	}
 	body := b[len(magic):]
@@ -169,7 +171,7 @@ func (d *Digest) UnmarshalBinary(b []byte) error {
 	total := binary.LittleEndian.Uint64(body[32:])
 	n := int(body[40+blockLen])
 	seed := binary.LittleEndian.Uint64(body[41+blockLen:])
-	if n >= blockLen || (total < blockLen && uint64(n) != total) || (total >= blockLen && (total-uint64(n))%blockLen != 0) {
+	if uint64(n) != total%blockLen {
 		return errBadState
 	}
 	d.v = v

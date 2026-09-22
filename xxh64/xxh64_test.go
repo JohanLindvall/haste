@@ -160,6 +160,38 @@ func TestStreamingRandomChunks(t *testing.T) {
 	})
 }
 
+// TestStreamingSplits covers every short-copy size at every buffer position,
+// with unaligned inputs and empty writes between pieces.
+func TestStreamingSplits(t *testing.T) {
+	const seed = 42
+	forEachBackend(t, func(t *testing.T) {
+		d := NewSeed(seed)
+		for offset := 0; offset < 16; offset++ {
+			for n := 0; n <= 3*blockLen; n++ {
+				p := testBuffer(offset + n)[offset:]
+				want := Sum64Seed(p, seed)
+				for split := 0; split <= n; split++ {
+					d.Reset()
+					if written, err := d.Write(p[:split]); written != split || err != nil {
+						t.Fatalf("Write: %d, %v; want %d, nil", written, err, split)
+					}
+					d.Write(nil)
+					d.WriteString("")
+					if got := d.Sum64(); got != Sum64Seed(p[:split], seed) {
+						t.Fatalf("offset=%d len=%d split=%d: prefix hash differs", offset, n, split)
+					}
+					if written, err := d.WriteString(string(p[split:])); written != n-split || err != nil {
+						t.Fatalf("WriteString: %d, %v; want %d, nil", written, err, n-split)
+					}
+					if got := d.Sum64(); got != want {
+						t.Fatalf("offset=%d len=%d split=%d: %#016x != %#016x", offset, n, split, got, want)
+					}
+				}
+			}
+		}
+	})
+}
+
 func TestDigestInterface(t *testing.T) {
 	d := New()
 	if d.Size() != 8 || d.BlockSize() != blockLen {

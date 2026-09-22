@@ -53,9 +53,7 @@ type Digest struct {
 	customSecret [secretDefaultSize]byte
 }
 
-var (
-	_ hash.Hash64 = (*Digest)(nil)
-)
+var _ hash.Hash64 = (*Digest)(nil)
 
 // New returns a Digest computing the default, unseeded XXH3.
 func New() *Digest {
@@ -382,8 +380,7 @@ func (d *Digest) Sum64() uint64 {
 	// Short seeded inputs use the seed directly; longer ones use the secret
 	// derived at construction, which sum64NS consumes without deriving again.
 	if d.useSeed && d.totalLen <= midsizeMax {
-		return sum64(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
-			unsafe.Pointer(&kSecret), secretDefaultSize, d.seed)
+		return sum64Seeded(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen), d.seed)
 	}
 	return sum64NS(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
 		d.secretPtr(), d.secretLimit+stripeLen)
@@ -403,8 +400,7 @@ func (d *Digest) Sum128() Uint128 {
 		}
 	}
 	if d.useSeed && d.totalLen <= midsizeMax {
-		return sum128(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
-			unsafe.Pointer(&kSecret), secretDefaultSize, d.seed)
+		return sum128Seeded(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen), d.seed)
 	}
 	return sum128NS(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
 		d.secretPtr(), d.secretLimit+stripeLen)
@@ -412,9 +408,7 @@ func (d *Digest) Sum128() Uint128 {
 
 // Sum appends the 64-bit hash to b in big-endian order, as hash.Hash requires.
 func (d *Digest) Sum(b []byte) []byte {
-	h := d.Sum64()
-	return append(b, byte(h>>56), byte(h>>48), byte(h>>40), byte(h>>32),
-		byte(h>>24), byte(h>>16), byte(h>>8), byte(h))
+	return binary.BigEndian.AppendUint64(b, d.Sum64())
 }
 
 // ---------------------------------------------------------------------------
@@ -482,6 +476,7 @@ func (d *Digest) UnmarshalBinary(b []byte) error {
 	// than it has been given. A zero-value Digest has no block length at all,
 	// so a state is rejected rather than wrapped against it.
 	if bufUsed > internalBufferSize || uint64(bufUsed) > totalLen ||
+		(bufUsed == 0 && totalLen != 0) ||
 		d.nbStripesPerBlock <= 0 || soFar >= uint32(d.nbStripesPerBlock) {
 		return errBadState
 	}

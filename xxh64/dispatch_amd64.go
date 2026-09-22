@@ -2,7 +2,11 @@
 
 package xxh64
 
-import "unsafe"
+import (
+	"unsafe"
+
+	"github.com/JohanLindvall/haste/internal/cpu"
+)
 
 // amd64 has one lane loop -- it is bound by the integer multiplier whatever
 // the surrounding code does -- but two ways of getting the primes to it, and
@@ -60,7 +64,7 @@ func init() { primes[6] = pickPrimeForm() }
 // by about as much as Intel gains. Anything else gets the pointer form,
 // which is the older and more widely measured of the two.
 func pickPrimeForm() uint64 {
-	max, b, c, d := cpuid(0)
+	max, b, c, d := cpu.CPUID(0, 0)
 	if max < 1 {
 		return formPointer
 	}
@@ -71,7 +75,7 @@ func pickPrimeForm() uint64 {
 		return formRegister
 	}
 	if b == 0x68747541 && d == 0x69746e65 && c == 0x444d4163 {
-		eax, _, _, _ := cpuid(1)
+		eax, _, _, _ := cpu.CPUID(1, 0)
 		if zen4Model(eax) {
 			return formRegister
 		}
@@ -104,9 +108,6 @@ func zen4Model(eax uint32) bool {
 	}
 	return false
 }
-
-//go:noescape
-func cpuid(eaxArg uint32) (eax, ebx, ecx, edx uint32)
 
 // These wrappers inline into the public entry points.
 

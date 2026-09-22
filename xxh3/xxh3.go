@@ -7,7 +7,7 @@ import (
 
 // The public entry points are deliberately thin: each is small enough for the
 // compiler to inline into its caller, so hashing a short key costs one call,
-// to sum64 or sum128. That matters because the shortest inputs take about ten
+// into the matching seeded or unseeded core. The shortest inputs take about ten
 // cycles of arithmetic, and a call level is a measurable share of that.
 
 // Sum64 returns the 64-bit XXH3 hash of b.
@@ -95,88 +95,16 @@ func checkSecret(secret []byte) {
 // 64-bit
 // ---------------------------------------------------------------------------
 
-// sum64 hashes n bytes at in under the secret at sec.
-//
-// The four cases up to 16 bytes are written out here instead of being called,
-// which is what keeps a short hash to a single call. They are transcriptions
-// of XXH3_len_1to3_64b, len_4to8, len_9to16 and the empty-input case; each
-// keys the input with a different pair of secret words so that no two length
-// classes can collide through the same bits.
-//
-// It is nosplit because the stack-growth check in the prologue is a
-// measurable share of a ten-cycle hash. The frame is 112 bytes, well inside
-// the nosplit budget, and the linker verifies that at build time.
-//
-//go:nosplit
-func sum64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed uint64) uint64 {
-	if n > 16 {
-		if n > midsizeMax {
-			// The accumulator path is spelled out here rather than behind two
-			// more calls: at this length the calls are a measurable share of
-			// the cost, and 256 bytes is only four stripes of work. acc is
-			// output only: hashLong starts from initAcc itself, which spares
-			// this path a 64-byte copy that the kernel's first loads then
-			// waited on.
-			var acc [accNB]uint64
-			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
-			return mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1)
-		}
-		// The ladders are reached from here for the same reason. Neither is
-		// small enough to inline, so anything between them and sum64 is a real
-		// call -- worth 10% at 128 bytes and 19% at 32. The unseeded twins
-		// exist because a seed costs two adds in every mix, and most hashing
-		// has none; the branch predicts perfectly either way.
-		if n <= 128 {
-			if seed == 0 {
-				return len17to128_64NS(in, n, sec)
-			}
-			return len17to128_64(in, n, sec, seed)
-		}
-		if seed == 0 {
-			return len129to240_64NS(in, n, sec)
-		}
-		return len129to240_64(in, n, sec, seed)
-	}
-	if n > 8 {
-		// 9..16 bytes: the two overlapping halves are folded through the
-		// 128-bit multiply, with the length mixed in so that repeats of a
-		// shorter input cannot reproduce a longer one.
-		bitflip1 := (rd64(sec, 24) ^ rd64(sec, 32)) + seed
-		bitflip2 := (rd64(sec, 40) ^ rd64(sec, 48)) - seed
-		inputLo := rd64(in, 0) ^ bitflip1
-		inputHi := rd64(in, n-8) ^ bitflip2
-		acc := uint64(n) + bits.ReverseBytes64(inputLo) + inputHi + mul128Fold64(inputLo, inputHi)
-		return avalanche(acc)
-	}
-	if n >= 4 {
-		// 4..8 bytes: the halves are swapped into one 64-bit word before
-		// keying, and rrmxmx folds the length in.
-		seed ^= uint64(bits.ReverseBytes32(uint32(seed))) << 32
-		in1 := rd32(in, 0)
-		in2 := rd32(in, n-4)
-		bitflip := (rd64(sec, 8) ^ rd64(sec, 16)) - seed
-		return rrmxmx(uint64(in2)+uint64(in1)<<32^bitflip, uint64(n))
-	}
-	if n > 0 {
-		// 1..3 bytes: first, middle and last byte plus the length, which is
-		// what keeps 1-byte and 2-byte inputs of the same byte apart.
-		c1 := uint32(rdb(in, 0))
-		c2 := uint32(rdb(in, n>>1))
-		c3 := uint32(rdb(in, n-1))
-		combined := c1<<16 | c2<<24 | c3 | uint32(n)<<8
-		bitflip := uint64(rd32(sec, 0)^rd32(sec, 4)) + seed
-		return avalanche64(uint64(combined) ^ bitflip)
-	}
-	return avalanche64(seed ^ rd64(sec, 56) ^ rd64(sec, 64))
-}
-
-// sum64NS is sum64 with the seed arithmetic gone, for the unseeded entry
-// points. A seed enters each short case as one to four instructions -- the
-// 4..8 case spends a byte-reverse, a shift, a xor and a subtract deriving its
+// sum64NS hashes under a supplied secret without seed arithmetic. A seed
+// enters each short case as one to four instructions -- the 4..8 case spends
+// a byte-reverse, a shift, a xor and a subtract deriving its
 // mix -- and on a core that is dispatch-saturated here, dead instructions are
-// the whole cost. The twins route straight to the seed-free ladders, so the
-// unseeded path never tests the seed at all. Held to the same vectors as
-// sum64: seed-zero cases go through here and must be bit-identical.
+// the whole cost. The short cases and 17..128-byte ladder live here to keep
+// hashing within one call, without testing a seed. The seeded core below
+// has the same shape and is held to the same reference vectors.
+//
+// The stack check is a measurable part of a short hash, so the cores are
+// nosplit; the linker verifies their stack budgets at build time.
 //
 //go:nosplit
 func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) uint64 {
@@ -215,7 +143,9 @@ func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) ui
 				acc += mix16BNS(add(in, n-16), add(sec, 16))
 				return avalanche(acc)
 			}
-			// The 33..128 rungs, hand-inlined; see len17to128_64NS.
+			// Walk pairs of chunks inward from both ends. Keep one accumulator
+			// chain: its loads arrive independently, and splitting the sum adds
+			// a final dependency. That cost 5-8% on a Zen 4 at 64..128 bytes.
 			acc := uint64(n) * prime64_1
 			if n > 64 {
 				if n > 96 {
@@ -255,9 +185,9 @@ func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) ui
 	return avalanche64(rd64(sec, 56) ^ rd64(sec, 64))
 }
 
-// sum64Seeded is the seeded core behind Sum64Seed: sum64 under the default
-// secret, with the routing and the short cases in one call's worth of code. It
-// used to route through sum64, and the second call plus its re-tested length
+// sum64Seeded is the seeded core shared by Sum64Seed and short Digest reads,
+// with routing and short cases in one call's worth of code. It used to call
+// a separate secret-parameterized core, whose call and re-tested length
 // tree was a third of an 8-byte seeded hash on a Zen 4. Up to 240 bytes the
 // seed enters the arithmetic directly; above that XXH3 defines the seeded hash
 // as the unseeded hash under a secret derived from the seed, which has to be
@@ -296,8 +226,8 @@ func sum64Seeded(in unsafe.Pointer, n uintptr, seed uint64) uint64 {
 		}
 		return len129to240_64(in, n, sec, seed)
 	}
-	// The short cases, transcribed from sum64 with the default secret's
-	// pointer; kept in lockstep with it by the seeded reference vectors.
+	// The short cases use the default secret and are checked against the
+	// seeded reference vectors.
 	if n > 8 {
 		bitflip1 := (rd64(sec, 24) ^ rd64(sec, 32)) + seed
 		bitflip2 := (rd64(sec, 40) ^ rd64(sec, 48)) - seed
@@ -328,88 +258,9 @@ func sum64Seeded(in unsafe.Pointer, n uintptr, seed uint64) uint64 {
 // 128-bit
 // ---------------------------------------------------------------------------
 
-// sum128 is sum64's counterpart. The short cases are not the 64-bit ones with
-// a second half bolted on: each produces both halves from the start, so that
-// neither can be derived from the other. It is nosplit for the reason given on
-// sum64.
-//
-//go:nosplit
-func sum128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int, seed uint64) Uint128 {
-	if n > 16 {
-		if n > midsizeMax {
-			// As in sum64, and worth more here: this path converges the
-			// accumulators twice.
-			var acc [accNB]uint64
-			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
-			return Uint128{
-				Lo: mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1),
-				Hi: mergeAccs(&acc, add(sec, uintptr(secretLen-8*accNB-secretMergeAccsStart)),
-					^(uint64(n) * prime64_2)),
-			}
-		}
-		// And the ladders directly, as in sum64.
-		if n <= 128 {
-			if seed == 0 {
-				return len17to128_128NS(in, n, sec)
-			}
-			return len17to128_128(in, n, sec, seed)
-		}
-		if seed == 0 {
-			return len129to240_128NS(in, n, sec)
-		}
-		return len129to240_128(in, n, sec, seed)
-	}
-	// Written out as in sum128NS; the seeded forms differ only in keying.
-	if n > 8 {
-		bitflipl := (rd64(sec, 32) ^ rd64(sec, 40)) - seed
-		bitfliph := (rd64(sec, 48) ^ rd64(sec, 56)) + seed
-		inputLo := rd64(in, 0)
-		inputHi := rd64(in, n-8)
-		hi, lo := bits.Mul64(inputLo^inputHi^bitflipl, prime64_1)
-
-		lo += uint64(n-1) << 54
-		inputHi ^= bitfliph
-		hi += inputHi + uint64(uint32(inputHi))*(prime32_2-1)
-		lo ^= bits.ReverseBytes64(hi)
-
-		rhi, rlo := bits.Mul64(lo, prime64_2)
-		rhi += hi * prime64_2
-		return Uint128{Lo: avalanche(rlo), Hi: avalanche(rhi)}
-	}
-	if n >= 4 {
-		seed ^= uint64(bits.ReverseBytes32(uint32(seed))) << 32
-		inputLo := rd32(in, 0)
-		inputHi := rd32(in, n-4)
-		keyed := (uint64(inputLo) + uint64(inputHi)<<32) ^ ((rd64(sec, 16) ^ rd64(sec, 24)) + seed)
-
-		hi, lo := bits.Mul64(keyed, prime64_1+uint64(n)<<2)
-		hi += lo << 1
-		lo ^= hi >> 3
-		lo = xorshift64(lo, 35)
-		lo *= 0x9FB21C651E98DF25
-		lo = xorshift64(lo, 28)
-		return Uint128{Lo: lo, Hi: avalanche(hi)}
-	}
-	if n > 0 {
-		c1 := uint32(rdb(in, 0))
-		c2 := uint32(rdb(in, n>>1))
-		c3 := uint32(rdb(in, n-1))
-		combinedl := c1<<16 | c2<<24 | c3 | uint32(n)<<8
-		combinedh := bits.RotateLeft32(bits.ReverseBytes32(combinedl), 13)
-		return Uint128{
-			Lo: avalanche64(uint64(combinedl) ^ (uint64(rd32(sec, 0)^rd32(sec, 4)) + seed)),
-			Hi: avalanche64(uint64(combinedh) ^ (uint64(rd32(sec, 8)^rd32(sec, 12)) - seed)),
-		}
-	}
-	return Uint128{
-		Lo: avalanche64(seed ^ rd64(sec, 64) ^ rd64(sec, 72)),
-		Hi: avalanche64(seed ^ rd64(sec, 80) ^ rd64(sec, 88)),
-	}
-}
-
-// sum128NS is sum128 with the seed arithmetic gone; see sum64NS. The short
-// cases are spelled out here rather than calling the seeded functions with a
-// zero, because the zero still costs its instructions.
+// sum128NS is the 128-bit counterpart of sum64NS. Its short cases produce
+// both halves from the start; the high half cannot be derived from the low.
+// Keeping the seed arithmetic out has the same benefit as in sum64NS.
 //
 //go:nosplit
 func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) Uint128 {
@@ -439,7 +290,7 @@ func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) U
 		}
 		if n <= 128 {
 			// The 17..32 rung inline, as in sum64NS, with each input word
-			// loaded once; see len17to128_128NS.
+			// loaded once and used both keyed and as the other half's crossover.
 			if n <= 32 {
 				i0, i1 := rd64(in, 0), rd64(in, 8)
 				j0, j1 := rd64(add(in, n-16), 0), rd64(add(in, n-16), 8)
@@ -447,7 +298,7 @@ func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) U
 				hi := mul128Fold64(j0^rd64(sec, 16), j1^rd64(sec, 24)) ^ (i0 + i1)
 				return finalize128(lo, hi, n, 0)
 			}
-			// The 33..128 rungs, hand-inlined; see len17to128_128NS.
+			// The 33..128 rungs, with the same shared input loads.
 			lo := uint64(n) * prime64_1
 			hi := uint64(0)
 			if n > 64 {
@@ -613,7 +464,7 @@ func sum128Seeded(in unsafe.Pointer, n uintptr, seed uint64) Uint128 {
 		}
 		return len129to240_128(in, n, sec, seed)
 	}
-	// The short cases, transcribed from sum128; see sum64Seeded.
+	// The short cases use the default secret, as in sum64Seeded.
 	if n > 8 {
 		bitflipl := (rd64(sec, 32) ^ rd64(sec, 40)) - seed
 		bitfliph := (rd64(sec, 48) ^ rd64(sec, 56)) + seed
