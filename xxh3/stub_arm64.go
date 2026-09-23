@@ -29,6 +29,26 @@ func accumNEON(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Poin
 //go:noescape
 func accumBlocks2NEON(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int, in2 unsafe.Pointer, nbStripes2 int)
 
+// hashLong64NEON is the 64-bit XXH3 of a long input: hashLong, and then the merge and avalanche in the kernel.
+//
+//go:noescape
+func hashLong64NEON(in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) uint64
+
+// hashLong128NEON is the 128-bit XXH3 of a long input, low half then high into out: hashLong, and then both merges and avalanches in the kernel.
+//
+//go:noescape
+func hashLong128NEON(out *[2]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
+
+// hashLongSeed64NEON is the 64-bit XXH3 of a long input under seed: the secret derived into the kernel's frame, hashLong over it, and the merge in the kernel.
+//
+//go:noescape
+func hashLongSeed64NEON(in unsafe.Pointer, n int, seed uint64) uint64
+
+// hashLongSeed128NEON is the 128-bit XXH3 of a long input under seed, low half then high into out.
+//
+//go:noescape
+func hashLongSeed128NEON(out *[2]uint64, in unsafe.Pointer, n int, seed uint64)
+
 // hashLongNEONHybrid consumes a whole long input -- blocks, scrambles, trailing stripes and the overlapping final stripe -- into acc, starting from initAcc.
 //
 //go:noescape
@@ -48,6 +68,26 @@ func accumNEONHybrid(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsaf
 //
 //go:noescape
 func accumBlocks2NEONHybrid(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int, in2 unsafe.Pointer, nbStripes2 int)
+
+// hashLong64NEONHybrid is the 64-bit XXH3 of a long input: hashLong, and then the merge and avalanche in the kernel.
+//
+//go:noescape
+func hashLong64NEONHybrid(in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) uint64
+
+// hashLong128NEONHybrid is the 128-bit XXH3 of a long input, low half then high into out: hashLong, and then both merges and avalanches in the kernel.
+//
+//go:noescape
+func hashLong128NEONHybrid(out *[2]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
+
+// hashLongSeed64NEONHybrid is the 64-bit XXH3 of a long input under seed: the secret derived into the kernel's frame, hashLong over it, and the merge in the kernel.
+//
+//go:noescape
+func hashLongSeed64NEONHybrid(in unsafe.Pointer, n int, seed uint64) uint64
+
+// hashLongSeed128NEONHybrid is the 128-bit XXH3 of a long input under seed, low half then high into out.
+//
+//go:noescape
+func hashLongSeed128NEONHybrid(out *[2]uint64, in unsafe.Pointer, n int, seed uint64)
 
 // hashLongNEONHybrid2 consumes a whole long input -- blocks, scrambles, trailing stripes and the overlapping final stripe -- into acc, starting from initAcc.
 //
@@ -69,6 +109,26 @@ func accumNEONHybrid2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsa
 //go:noescape
 func accumBlocks2NEONHybrid2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int, in2 unsafe.Pointer, nbStripes2 int)
 
+// hashLong64NEONHybrid2 is the 64-bit XXH3 of a long input: hashLong, and then the merge and avalanche in the kernel.
+//
+//go:noescape
+func hashLong64NEONHybrid2(in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) uint64
+
+// hashLong128NEONHybrid2 is the 128-bit XXH3 of a long input, low half then high into out: hashLong, and then both merges and avalanches in the kernel.
+//
+//go:noescape
+func hashLong128NEONHybrid2(out *[2]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
+
+// hashLongSeed64NEONHybrid2 is the 64-bit XXH3 of a long input under seed: the secret derived into the kernel's frame, hashLong over it, and the merge in the kernel.
+//
+//go:noescape
+func hashLongSeed64NEONHybrid2(in unsafe.Pointer, n int, seed uint64) uint64
+
+// hashLongSeed128NEONHybrid2 is the 128-bit XXH3 of a long input under seed, low half then high into out.
+//
+//go:noescape
+func hashLongSeed128NEONHybrid2(out *[2]uint64, in unsafe.Pointer, n int, seed uint64)
+
 // hashLongSVE2VL128 consumes a whole long input -- blocks, scrambles, trailing stripes and the overlapping final stripe -- into acc, starting from initAcc.
 //
 //go:noescape
@@ -88,6 +148,26 @@ func accumSVE2VL128(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe
 //
 //go:noescape
 func accumBlocks2SVE2VL128(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int, in2 unsafe.Pointer, nbStripes2 int)
+
+// hashLong64SVE2VL128 is the 64-bit XXH3 of a long input: hashLong, and then the merge and avalanche in the kernel.
+//
+//go:noescape
+func hashLong64SVE2VL128(in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) uint64
+
+// hashLong128SVE2VL128 is the 128-bit XXH3 of a long input, low half then high into out: hashLong, and then both merges and avalanches in the kernel.
+//
+//go:noescape
+func hashLong128SVE2VL128(out *[2]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
+
+// hashLongSeed64SVE2VL128 is the 64-bit XXH3 of a long input under seed: the secret derived into the kernel's frame, hashLong over it, and the merge in the kernel.
+//
+//go:noescape
+func hashLongSeed64SVE2VL128(in unsafe.Pointer, n int, seed uint64) uint64
+
+// hashLongSeed128SVE2VL128 is the 128-bit XXH3 of a long input under seed, low half then high into out.
+//
+//go:noescape
+func hashLongSeed128SVE2VL128(out *[2]uint64, in unsafe.Pointer, n int, seed uint64)
 
 // hashLongSVE2VL256 consumes a whole long input -- blocks, scrambles, trailing stripes and the overlapping final stripe -- into acc, starting from initAcc.
 //
@@ -109,6 +189,26 @@ func accumSVE2VL256(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe
 //go:noescape
 func accumBlocks2SVE2VL256(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int, in2 unsafe.Pointer, nbStripes2 int)
 
+// hashLong64SVE2VL256 is the 64-bit XXH3 of a long input: hashLong, and then the merge and avalanche in the kernel.
+//
+//go:noescape
+func hashLong64SVE2VL256(in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) uint64
+
+// hashLong128SVE2VL256 is the 128-bit XXH3 of a long input, low half then high into out: hashLong, and then both merges and avalanches in the kernel.
+//
+//go:noescape
+func hashLong128SVE2VL256(out *[2]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
+
+// hashLongSeed64SVE2VL256 is the 64-bit XXH3 of a long input under seed: the secret derived into the kernel's frame, hashLong over it, and the merge in the kernel.
+//
+//go:noescape
+func hashLongSeed64SVE2VL256(in unsafe.Pointer, n int, seed uint64) uint64
+
+// hashLongSeed128SVE2VL256 is the 128-bit XXH3 of a long input under seed, low half then high into out.
+//
+//go:noescape
+func hashLongSeed128SVE2VL256(out *[2]uint64, in unsafe.Pointer, n int, seed uint64)
+
 // hashLongSVE2VL512 consumes a whole long input -- blocks, scrambles, trailing stripes and the overlapping final stripe -- into acc, starting from initAcc.
 //
 //go:noescape
@@ -128,3 +228,23 @@ func accumSVE2VL512(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe
 //
 //go:noescape
 func accumBlocks2SVE2VL512(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int, in2 unsafe.Pointer, nbStripes2 int)
+
+// hashLong64SVE2VL512 is the 64-bit XXH3 of a long input: hashLong, and then the merge and avalanche in the kernel.
+//
+//go:noescape
+func hashLong64SVE2VL512(in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) uint64
+
+// hashLong128SVE2VL512 is the 128-bit XXH3 of a long input, low half then high into out: hashLong, and then both merges and avalanches in the kernel.
+//
+//go:noescape
+func hashLong128SVE2VL512(out *[2]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
+
+// hashLongSeed64SVE2VL512 is the 64-bit XXH3 of a long input under seed: the secret derived into the kernel's frame, hashLong over it, and the merge in the kernel.
+//
+//go:noescape
+func hashLongSeed64SVE2VL512(in unsafe.Pointer, n int, seed uint64) uint64
+
+// hashLongSeed128SVE2VL512 is the 128-bit XXH3 of a long input under seed, low half then high into out.
+//
+//go:noescape
+func hashLongSeed128SVE2VL512(out *[2]uint64, in unsafe.Pointer, n int, seed uint64)

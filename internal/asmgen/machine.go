@@ -10,6 +10,9 @@ import "fmt"
 // It is not a general CPU model. It implements exactly the instructions the
 // backends emit, over a flat address space that starts at Base.
 type Machine struct {
+	// R holds the general-purpose registers. On arm64 R[31] is the stack
+	// pointer, which only a kernel with a frame reads; a harness running
+	// one sets it to a region with room for the frame.
 	R [32]uint64
 	// V holds vector registers as eight 64-bit lanes, enough for a 512-bit
 	// register. Narrower backends use the low lanes.

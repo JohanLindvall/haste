@@ -121,7 +121,13 @@ type FuncDef struct {
 	// prologue loads, into the register the kernel's SecretGPR names; only
 	// the seeded one-shot kernel has one.
 	Secret string
-	Doc    string
+	// Frame is the kernel's stack frame in bytes, which the Go assembler
+	// allocates around the body. Zero for every kernel but arm64's seeded
+	// one, which derives its secret into it; see DerivedSeedArch. The frame
+	// holds no pointers and the kernel makes no calls, so it needs no stack
+	// map: nothing can stop a goroutine inside an assembly function.
+	Frame int
+	Doc   string
 
 	// FormJump names a kernel this one hands the whole call off to when
 	// FormFlag is nonzero: the prologue tests the flag and, if set, jumps to

@@ -59,9 +59,12 @@ bytes in little-endian order, and cost about half as much:
 Seeded forms cost two instructions more, which is cheap enough to key a hash
 table per instance rather than per program.
 
-`Sum64Seed` derives a 192-byte secret per call for inputs over 240 bytes, which
-is what XXH3 defines a seeded long hash to be. Hashing many long inputs under
-one seed? Use `NewSeed`, which derives it once.
+Over 240 bytes a seeded XXH3 is defined as the unseeded one under a 192-byte
+secret derived from the seed. On amd64 and arm64 the kernels apply the seed
+themselves, for about a fifth more than an unseeded hash at 256 bytes and
+nothing to speak of from a few kibibytes up; elsewhere `Sum64Seed` derives the
+secret per call, and a caller hashing many long inputs under one seed is
+better served by `NewSeed`, which derives it once.
 
 ## Speed
 

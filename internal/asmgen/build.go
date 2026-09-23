@@ -182,7 +182,7 @@ type Function struct {
 // Decl renders the Go declaration of a kernel.
 func (f Function) Decl() string {
 	types := map[string]string{
-		"acc": "*[8]uint64", "keys": "*[16]uint64", "in": "unsafe.Pointer", "sec": "unsafe.Pointer",
+		"acc": "*[8]uint64", "keys": "*[16]uint64", "out": "*[2]uint64", "in": "unsafe.Pointer", "sec": "unsafe.Pointer",
 		"n": "int", "nbStripes": "int", "secretLimit": "int", "soFar": "int",
 		"in2": "unsafe.Pointer", "nbStripes2": "int",
 		"lanes": "*[4]uint64", "seed": "uint64", "nbBlocks": "int", "split": "int",
@@ -247,7 +247,7 @@ func prologue(k Kernel, def FuncDef) []string {
 	}
 	if def.Secret != "" {
 		sk, ok := k.(interface{ SecretGPR() GPR })
-		if !ok || k.GOARCH() != "amd64" {
+		if !ok {
 			panic(fmt.Sprintf("asmgen: %s has a secret table and no register for it", def.Name))
 		}
 		for i := range def.Args {
@@ -256,7 +256,11 @@ func prologue(k Kernel, def FuncDef) []string {
 					def.Name, goRegName(k, sk.SecretGPR()), def.Args[i]))
 			}
 		}
-		out = append(out, fmt.Sprintf("LEAQ ·%s(SB), %s", def.Secret, goRegName(k, sk.SecretGPR())))
+		if k.GOARCH() == "arm64" {
+			out = append(out, fmt.Sprintf("MOVD $·%s(SB), %s", def.Secret, goRegName(k, sk.SecretGPR())))
+		} else {
+			out = append(out, fmt.Sprintf("LEAQ ·%s(SB), %s", def.Secret, goRegName(k, sk.SecretGPR())))
+		}
 	}
 	if def.Table != "" && k.TableGPR() >= 0 {
 		for i := range def.Args {
@@ -373,7 +377,7 @@ var asmTemplate = template.Must(template.New("asm").Parse(
 // func {{.Decl}}
 //
 // {{.Def.Doc}}.
-TEXT ·{{.Def.Name}}(SB), NOSPLIT, $0-{{.ArgSize}}
+TEXT ·{{.Def.Name}}(SB), NOSPLIT, ${{.Def.Frame}}-{{.ArgSize}}
 {{- range .Prologue}}
 	{{.}}
 {{- end}}

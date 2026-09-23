@@ -84,14 +84,14 @@ const blockLen = 32
 
 // round is one lane's step: it absorbs a word, then stirs.
 func round(acc, input uint64) uint64 {
-	acc += input * prime2
+	acc += input * kPrime2
 	acc = bits.RotateLeft64(acc, 31)
-	return acc * prime1
+	return acc * kPrime1
 }
 
 // initLanes is the lane state before the first block.
 func initLanes(seed uint64) [4]uint64 {
-	return [4]uint64{seed + prime1 + prime2, seed + prime2, seed, seed - prime1}
+	return [4]uint64{seed + kPrime1 + kPrime2, seed + kPrime2, seed, seed - kPrime1}
 }
 
 // mergeLanes converts the lane state, once every whole block is absorbed, into
@@ -101,10 +101,10 @@ func mergeLanes(v *[4]uint64) uint64 {
 		bits.RotateLeft64(v[2], 12) + bits.RotateLeft64(v[3], 18)
 	// Each lane folds in as round(0, v), then a multiply and an add: written
 	// out on each line, for the reason given in blocksGeneric.
-	h = (h^round(0, v[0]))*prime1 + prime4
-	h = (h^round(0, v[1]))*prime1 + prime4
-	h = (h^round(0, v[2]))*prime1 + prime4
-	h = (h^round(0, v[3]))*prime1 + prime4
+	h = (h^round(0, v[0]))*kPrime1 + kPrime4
+	h = (h^round(0, v[1]))*kPrime1 + kPrime4
+	h = (h^round(0, v[2]))*kPrime1 + kPrime4
+	h = (h^round(0, v[3]))*kPrime1 + kPrime4
 	return h
 }
 
@@ -121,11 +121,16 @@ func blocksGeneric(v *[4]uint64, p unsafe.Pointer, nb int) {
 	// caller's to sit on, which the compiler emits as a NOP, and with the
 	// load's it was two a lane -- eight in a block loop of 33 instructions
 	// on amd64, and the same on every architecture this loop is what runs.
+	//
+	// The two primes are read once, into locals: on arm64 they are loads
+	// (see konst_other.go), which the compiler would otherwise repeat on
+	// every block.
+	p1, p2 := kPrime1, kPrime2
 	for off := 0; off < nb*blockLen; off += blockLen {
-		v1 = bits.RotateLeft64(v1+rd64(p, off)*prime2, 31) * prime1
-		v2 = bits.RotateLeft64(v2+rd64(p, off+8)*prime2, 31) * prime1
-		v3 = bits.RotateLeft64(v3+rd64(p, off+16)*prime2, 31) * prime1
-		v4 = bits.RotateLeft64(v4+rd64(p, off+24)*prime2, 31) * prime1
+		v1 = bits.RotateLeft64(v1+rd64(p, off)*p2, 31) * p1
+		v2 = bits.RotateLeft64(v2+rd64(p, off+8)*p2, 31) * p1
+		v3 = bits.RotateLeft64(v3+rd64(p, off+16)*p2, 31) * p1
+		v4 = bits.RotateLeft64(v4+rd64(p, off+24)*p2, 31) * p1
 	}
 	v[0], v[1], v[2], v[3] = v1, v2, v3, v4
 }
@@ -134,7 +139,7 @@ func blocksGeneric(v *[4]uint64, p unsafe.Pointer, nb int) {
 // no kernel, and what the kernels are checked against.
 func sum64Generic(p unsafe.Pointer, n int, seed uint64) uint64 {
 	if n < blockLen {
-		return finalize(seed+prime5+uint64(n), p, n)
+		return finalize(seed+kPrime5+uint64(n), p, n)
 	}
 	v := initLanes(seed)
 	nb := n / blockLen
@@ -157,31 +162,31 @@ func finalize(h uint64, p unsafe.Pointer, n int) uint64 {
 	off := 0
 	if n&16 != 0 {
 		h ^= round(0, rd64(p, 0))
-		h = bits.RotateLeft64(h, 27)*prime1 + prime4
+		h = bits.RotateLeft64(h, 27)*kPrime1 + kPrime4
 		h ^= round(0, rd64(p, 8))
-		h = bits.RotateLeft64(h, 27)*prime1 + prime4
+		h = bits.RotateLeft64(h, 27)*kPrime1 + kPrime4
 		off = 16
 	}
 	if n&8 != 0 {
 		h ^= round(0, rd64(p, off))
-		h = bits.RotateLeft64(h, 27)*prime1 + prime4
+		h = bits.RotateLeft64(h, 27)*kPrime1 + kPrime4
 		off += 8
 	}
 	if n&4 != 0 {
-		h ^= uint64(rd32(p, off)) * prime1
-		h = bits.RotateLeft64(h, 23)*prime2 + prime3
+		h ^= uint64(rd32(p, off)) * kPrime1
+		h = bits.RotateLeft64(h, 23)*kPrime2 + kPrime3
 		off += 4
 	}
 	if n&2 != 0 {
-		h ^= uint64(rdb(p, off)) * prime5
-		h = bits.RotateLeft64(h, 11) * prime1
-		h ^= uint64(rdb(p, off+1)) * prime5
-		h = bits.RotateLeft64(h, 11) * prime1
+		h ^= uint64(rdb(p, off)) * kPrime5
+		h = bits.RotateLeft64(h, 11) * kPrime1
+		h ^= uint64(rdb(p, off+1)) * kPrime5
+		h = bits.RotateLeft64(h, 11) * kPrime1
 		off += 2
 	}
 	if n&1 != 0 {
-		h ^= uint64(rdb(p, off)) * prime5
-		h = bits.RotateLeft64(h, 11) * prime1
+		h ^= uint64(rdb(p, off)) * kPrime5
+		h = bits.RotateLeft64(h, 11) * kPrime1
 	}
 	return avalanche(h)
 }
@@ -189,9 +194,9 @@ func finalize(h uint64, p unsafe.Pointer, n int) uint64 {
 // avalanche is the final mix.
 func avalanche(h uint64) uint64 {
 	h ^= h >> 33
-	h *= prime2
+	h *= kPrime2
 	h ^= h >> 29
-	h *= prime3
+	h *= kPrime3
 	h ^= h >> 32
 	return h
 }

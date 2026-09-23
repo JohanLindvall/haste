@@ -42,10 +42,10 @@ func (b Backend) Defs() []FuncDef {
 		return XXH64FuncsFor(b.Suffix, k.Dual(), k.UnseededTwin(), k.VendorSplit())
 	}
 	defs := Funcs(b.Suffix)
-	if _, ok := b.New().(SeededArch); ok {
-		defs = append(defs, SeededFunc(b.Suffix))
+	if d, ok := SeededFuncFor(b.New(), b.Suffix); ok {
+		defs = append(defs, d)
 	}
-	return defs
+	return append(defs, LongFuncs(b.New(), b.Suffix)...)
 }
 
 // EmitAll emits every function of this backend.
@@ -61,6 +61,9 @@ func (b Backend) EmitAll() []Kernel {
 		ks = append(ks, a)
 	}
 	if a, ok := EmitSeeded(b.New); ok {
+		ks = append(ks, a)
+	}
+	for _, a := range EmitLong(b.New) {
 		ks = append(ks, a)
 	}
 	return ks
@@ -114,7 +117,7 @@ func Backends() []Backend {
 		{Name: "neon", Suffix: "NEON", GOARCH: "arm64",
 			Dir: "xxh3", New: func() Arch { return newNEON(4) }},
 		{Name: "neonhybrid", Suffix: "NEONHybrid", GOARCH: "arm64",
-			Dir: "xxh3", New: func() Arch { return newNEONHybrid("neonhybrid", 4, 4) }},
+			Dir: "xxh3", New: func() Arch { return newNEONHybrid("neonhybrid", 8, 4) }},
 		{Name: "neonhybrid2", Suffix: "NEONHybrid2", GOARCH: "arm64",
 			Dir: "xxh3", New: func() Arch { return newNEONHybrid("neonhybrid2", 8, 2) }},
 		{Name: "sve2vl128", Suffix: "SVE2VL128", GOARCH: "arm64", VL: 16, Dir: "xxh3",

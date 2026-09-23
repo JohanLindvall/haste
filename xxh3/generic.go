@@ -148,7 +148,7 @@ var initAcc = [accNB]uint64{
 // well mixed and only needs its bits spread.
 func avalanche(h uint64) uint64 {
 	h ^= h >> 37
-	h *= 0x165667919E3779F9
+	h *= kAvalanche
 	return h ^ h>>32
 }
 
@@ -156,9 +156,9 @@ func avalanche(h uint64) uint64 {
 // whose keyed value has seen only one arithmetic step.
 func avalanche64(h uint64) uint64 {
 	h ^= h >> 33
-	h *= prime64_2
+	h *= kPrime64_2
 	h ^= h >> 29
-	h *= prime64_3
+	h *= kPrime64_3
 	h ^= h >> 32
 	return h
 }
@@ -167,9 +167,9 @@ func avalanche64(h uint64) uint64 {
 // different lengths cannot collide through the multiply alone.
 func rrmxmx(h, length uint64) uint64 {
 	h ^= bits.RotateLeft64(h, 49) ^ bits.RotateLeft64(h, 24)
-	h *= 0x9FB21C651E98DF25
+	h *= kRRMXMX
 	h ^= (h >> 35) + length
-	h *= 0x9FB21C651E98DF25
+	h *= kRRMXMX
 	return h ^ h>>28
 }
 
@@ -209,7 +209,7 @@ func mix16B(in, sec unsafe.Pointer, seed uint64) uint64 {
 func finalize128(lo, hi uint64, length uintptr, seed uint64) Uint128 {
 	return Uint128{
 		Lo: avalanche(lo + hi),
-		Hi: -avalanche(lo*prime64_1 + hi*prime64_4 + (uint64(length)-seed)*prime64_2),
+		Hi: -avalanche(lo*kPrime64_1 + hi*kPrime64_4 + (uint64(length)-seed)*kPrime64_2),
 	}
 }
 
@@ -229,7 +229,7 @@ func finalize128(lo, hi uint64, length uintptr, seed uint64) Uint128 {
 // 1% faster at 129..240 bytes on a Zen 4 and 1-3% slower at 17..64, and its
 // frame put that nosplit function over the linker's budget on 386 and mips64.
 func len129to240_128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint64) Uint128 {
-	lo := uint64(n) * prime64_1
+	lo := uint64(n) * kPrime64_1
 	hi := uint64(0)
 	{
 		i0, i1, ix := rd64(in, 0), rd64(in, 8), rd64(in, 0)+rd64(in, 8)
@@ -289,7 +289,7 @@ func len129to240_128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint
 // slower over 129..240 bytes on a Zen 4 and about 5% over 160..191, where the
 // tail runs one round -- integer scheduler steering again; see sum64NS.
 func len129to240_128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) Uint128 {
-	lo := uint64(n) * prime64_1
+	lo := uint64(n) * kPrime64_1
 	hi := uint64(0)
 	{
 		i0, i1 := rd64(in, 0), rd64(in, 8)
@@ -464,6 +464,38 @@ func hashLongSeedGeneric(keys *[2 * accNB]uint64, in unsafe.Pointer, n int, seed
 	}
 }
 
+// hashLong64Generic is the whole 64-bit long hash in portable Go: the
+// contract of the kernels that merge for themselves (see hasLongMerge).
+func hashLong64Generic(in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) uint64 {
+	var acc [accNB]uint64
+	hashLongGeneric(&acc, in, n, sec, secretLimit)
+	return mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1)
+}
+
+// hashLong128Generic is hashLong64Generic's 128-bit counterpart, the low
+// half into out[0] and the high into out[1].
+func hashLong128Generic(out *[2]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) {
+	var acc [accNB]uint64
+	hashLongGeneric(&acc, in, n, sec, secretLimit)
+	out[0] = mergeAccs(&acc, add(sec, secretMergeAccsStart), uint64(n)*prime64_1)
+	out[1] = mergeAccs(&acc, add(sec, uintptr(secretLimit+stripeLen-8*accNB-secretMergeAccsStart)),
+		^(uint64(n) * prime64_2))
+}
+
+// hashLongSeed64Generic and hashLongSeed128Generic are the same under the
+// secret seed derives.
+func hashLongSeed64Generic(in unsafe.Pointer, n int, seed uint64) uint64 {
+	var secret [secretDefaultSize]byte
+	deriveSecret(&secret, seed)
+	return hashLong64Generic(in, n, unsafe.Pointer(&secret), secretDefaultSize-stripeLen)
+}
+
+func hashLongSeed128Generic(out *[2]uint64, in unsafe.Pointer, n int, seed uint64) {
+	var secret [secretDefaultSize]byte
+	deriveSecret(&secret, seed)
+	hashLong128Generic(out, in, n, unsafe.Pointer(&secret), secretDefaultSize-stripeLen)
+}
+
 // accumBlocksGeneric absorbs nbStripes stripes starting soFar stripes into the
 // current block, scrambling at every boundary it crosses. It is the portable
 // form of the streaming kernel; see the comment on emitAccumBlocks for why the
@@ -524,4 +556,14 @@ func deriveSecret(dst *[secretDefaultSize]byte, seed uint64) {
 		binary.LittleEndian.PutUint64(out[48:], rd64(in, 48)+seed)
 		binary.LittleEndian.PutUint64(out[56:], rd64(in, 56)-seed)
 	}
+}
+
+// longTable is initAcc followed by the avalanche multiplier: the table the
+// arm64 one-shot kernels that finish the hash themselves read, for the
+// accumulators' start and for the merge's constants (prime64_1 and
+// prime64_2 are initAcc's second and third words).
+var longTable = [accNB + 1]uint64{
+	prime32_3, prime64_1, prime64_2, prime64_3,
+	prime64_4, prime32_2, prime64_5, prime32_1,
+	0x165667919E3779F9,
 }

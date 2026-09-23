@@ -139,8 +139,8 @@ type XXH64Arch interface {
 	// UnseededTwin reports whether this backend emits sum64<B>NS beside
 	// sum64<B>. On for x86, where the seed costs a load, an add on the short
 	// path and two instructions of lane setup -- worth 2.5 points against
-	// cespare/xxhash over 1..8 bytes on a Zen 4. Off for arm64 until it is
-	// measured on one.
+	// cespare/xxhash over 1..8 bytes on a Zen 4 -- and on for arm64, where it
+	// measured 8% at 4 bytes and 5-6% at 8..16 on a Neoverse N2.
 	UnseededTwin() bool
 
 	// VendorSplit reports whether this backend emits a second copy of each
@@ -238,6 +238,17 @@ type XXH64Arch interface {
 	TailSkips() int
 }
 
+// UnseededLanes is an XXH64Arch with three-operand arithmetic, which sets
+// the lanes up for the unseeded twin in four instructions -- v1 = P1+P2,
+// v2 = P2, v3 = 0, v4 = -P1, each one -- where the generic sequence moves a
+// prime and then adds to it, and starts the short path's hash from the seed
+// and P5 in one.
+type UnseededLanes interface {
+	InitLanesNS(v [4]GPR)
+	// SeedPlusPrime5 is h = seed + P5.
+	SeedPlusPrime5(h, seed GPR)
+}
+
 // The skips emitTail can place, as TailSkips bits.
 const (
 	// SkipAll leaves for the finish when n&31 is zero: a stripe-multiple
@@ -302,6 +313,8 @@ func emitSum64(a XXH64Arch, seeded bool) {
 	a.BranchI(n, 32, LT, short)
 	if seeded {
 		a.InitLanes(seed, v)
+	} else if u, ok := a.(UnseededLanes); ok {
+		u.InitLanesNS(v)
 	} else {
 		// v1 = P1+P2, v2 = P2, v3 = 0, v4 = -P1.
 		a.MovPrime(v[0], 0)
@@ -339,11 +352,13 @@ func emitSum64(a XXH64Arch, seeded bool) {
 	// Under a block there are no lanes: the hash starts from the seed and
 	// the fifth prime and is all tail.
 	b.Label(short)
-	if seeded {
+	if !seeded {
+		a.MovPrime(h, 4)
+	} else if u, ok := a.(UnseededLanes); ok {
+		u.SeedPlusPrime5(h, seed)
+	} else {
 		a.Mov(h, seed)
 		a.AddPrime(h, 4)
-	} else {
-		a.MovPrime(h, 4)
 	}
 
 	b.Label(tail)

@@ -18,3 +18,8 @@ func sum64Scalar(in unsafe.Pointer, n int, seed uint64) uint64
 //
 //go:noescape
 func blocksScalar(lanes *[4]uint64, in unsafe.Pointer, nbBlocks int)
+
+// sum64ScalarNS hashes the n bytes at in with no seed, whatever n is.
+//
+//go:noescape
+func sum64ScalarNS(in unsafe.Pointer, n int) uint64

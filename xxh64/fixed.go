@@ -26,9 +26,9 @@ func Sum64Uint32(v uint32) uint64 { return Sum64Uint32Seed(v, 0) }
 // Sum64Uint32Seed returns the XXH64 hash of v's four little-endian bytes
 // under seed.
 func Sum64Uint32Seed(v uint32, seed uint64) uint64 {
-	h := seed + prime5 + 4
-	h ^= uint64(v) * prime1
-	h = bits.RotateLeft64(h, 23)*prime2 + prime3
+	h := seed + kPrime5 + 4
+	h ^= uint64(v) * kPrime1
+	h = bits.RotateLeft64(h, 23)*kPrime2 + kPrime3
 	return avalanche(h)
 }
 
@@ -38,9 +38,9 @@ func Sum64Uint64(v uint64) uint64 { return Sum64Uint64Seed(v, 0) }
 // Sum64Uint64Seed returns the XXH64 hash of v's eight little-endian bytes
 // under seed.
 func Sum64Uint64Seed(v, seed uint64) uint64 {
-	h := seed + prime5 + 8
-	h ^= bits.RotateLeft64(v*prime2, 31) * prime1
-	h = bits.RotateLeft64(h, 27)*prime1 + prime4
+	h := seed + kPrime5 + 8
+	h ^= bits.RotateLeft64(v*kPrime2, 31) * kPrime1
+	h = bits.RotateLeft64(h, 27)*kPrime1 + kPrime4
 	return avalanche(h)
 }
 
@@ -51,21 +51,21 @@ func Sum64Uint64Seed(v, seed uint64) uint64 {
 // this is the longest of the six, and the seed's add is what put it two
 // nodes over the inliner's budget.
 func Sum64Uint128(lo, hi uint64) uint64 {
-	h := uint64(prime5 + 16)
-	h ^= bits.RotateLeft64(lo*prime2, 31) * prime1
-	h = bits.RotateLeft64(h, 27)*prime1 + prime4
-	h ^= bits.RotateLeft64(hi*prime2, 31) * prime1
-	h = bits.RotateLeft64(h, 27)*prime1 + prime4
+	h := uint64(kPrime5 + 16)
+	h ^= bits.RotateLeft64(lo*kPrime2, 31) * kPrime1
+	h = bits.RotateLeft64(h, 27)*kPrime1 + kPrime4
+	h ^= bits.RotateLeft64(hi*kPrime2, 31) * kPrime1
+	h = bits.RotateLeft64(h, 27)*kPrime1 + kPrime4
 	return avalanche(h)
 }
 
 // Sum64Uint128Seed returns the XXH64 hash of the sixteen little-endian bytes
 // of lo followed by hi, under seed.
 func Sum64Uint128Seed(lo, hi, seed uint64) uint64 {
-	h := seed + prime5 + 16
-	h ^= bits.RotateLeft64(lo*prime2, 31) * prime1
-	h = bits.RotateLeft64(h, 27)*prime1 + prime4
-	h ^= bits.RotateLeft64(hi*prime2, 31) * prime1
-	h = bits.RotateLeft64(h, 27)*prime1 + prime4
+	h := seed + kPrime5 + 16
+	h ^= bits.RotateLeft64(lo*kPrime2, 31) * kPrime1
+	h = bits.RotateLeft64(h, 27)*kPrime1 + kPrime4
+	h ^= bits.RotateLeft64(hi*kPrime2, 31) * kPrime1
+	h = bits.RotateLeft64(h, 27)*kPrime1 + kPrime4
 	return avalanche(h)
 }

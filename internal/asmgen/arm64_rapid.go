@@ -160,9 +160,10 @@ func (a *arm64Rapid) SeedMix() {
 }
 
 // SeedConst is SeedMix with the seed known to be zero; see the x86 face.
-// ChainRound is Round here: arm64's three-operand instructions build the
-// second operand without the extra move x86 needs, so there is nothing to
-// fold and nothing to keep off the critical path.
+// ChainRound is Round here, and unused: arm64 is a SplitLadder, whose rungs
+// are LadderRound. There is no operand to fold on arm64 either way -- its
+// three-operand instructions build the second one without the extra move
+// x86 needs.
 func (a *arm64Rapid) ChainRound(lane GPR, off, slot int) { a.Round(lane, off, slot) }
 
 func (a *arm64Rapid) SeedConst() { a.ldrSecret(a.Seed(), 8) }
@@ -299,7 +300,32 @@ func (a *arm64Rapid) Converge() {
 	a.eor(a.Seed(), a.Seed(), a.See(6))
 	a.eor(a.See(2), a.See(2), a.See(4))
 	a.eor(a.Seed(), a.Seed(), a.See(2))
+	// The ladder's split state with a zero low half, for an input the loop
+	// leaves 16 bytes or fewer of: no rung runs, and LadderFold xors this.
+	a.Zero(a.ladderLo())
 }
+
+// ladderLo holds the low half of the last ladder rung's product. x13 is
+// mix's scratch, which the ladder no longer calls, and Finalize takes it
+// back only after LadderFold has read it.
+func (a *arm64Rapid) ladderLo() GPR { return a.tmp2() }
+
+// LadderRound is Round with the fold moved into the next rung's input; see
+// SplitLadder. The secret word is held, as it is for every ladder rung.
+func (a *arm64Rapid) LadderRound(off, slot int, first bool) {
+	w0, w1, lo := a.tmp(), a.A(), a.ladderLo()
+	a.ldp(w0, w1, a.In(), off)
+	a.eor(w0, w0, a.secReg(slot))
+	if !first {
+		a.eor(w1, w1, lo)
+	}
+	a.eor(w1, w1, a.Seed())
+	a.mul(lo, w0, w1)
+	a.umulh(a.Seed(), w0, w1)
+}
+
+// LadderFold is b ^= lo, the half of the split seed Finalize does not fold.
+func (a *arm64Rapid) LadderFold() { a.eor(a.B(), a.B(), a.ladderLo()) }
 
 func (a *arm64Rapid) Short4to16() {
 	// seed ^= n, then a and b from the two ends, 64-bit at 8 and up.
@@ -310,17 +336,14 @@ func (a *arm64Rapid) Short4to16() {
 	// 4..7: two 32-bit reads, at 0 and at n-4.
 	a.ldrw(a.A(), a.In(), 0)
 	t := a.tmp()
-	a.MovRR(t, a.I())
-	a.SubRI(t, 4)
+	a.SubRRI(t, a.I(), 4)
 	a.ldrwReg(a.B(), a.In(), t)
 	a.Jmp(doneS)
 	a.b.Label(eight)
 	// 8..16: two 64-bit reads, at 0 and at n-8, overlapping below 16.
 	a.ldr(a.A(), a.In(), 0)
-	t2 := a.tmp()
-	a.MovRR(t2, a.I())
-	a.SubRI(t2, 8)
-	a.ldrReg(a.B(), a.In(), t2)
+	a.SubRRI(t, a.I(), 8)
+	a.ldrReg(a.B(), a.In(), t)
 	a.b.Label(doneS)
 }
 
@@ -334,8 +357,7 @@ func (a *arm64Rapid) Short1to3() {
 	t := a.tmp()
 	a.ldrb(a.A(), a.In(), 0)
 	a.lsl(a.A(), a.A(), 45)
-	a.MovRR(t, a.I())
-	a.SubRI(t, 1)
+	a.SubRRI(t, a.I(), 1)
 	a.ldrbReg(a.B(), a.In(), t)
 	a.orr(a.A(), a.A(), a.B())
 	a.ShrRRI(t, a.I(), 1)
@@ -357,6 +379,10 @@ func (a *arm64Rapid) Finalize() {
 	s1 := a.tmp()
 	a.ldrSecret(s1, 1)
 	a.eor(a.A(), a.A(), s1)
+	// hi is keyed by secret[1] ^ i, which depends on nothing the multiply
+	// does: xored together here, they take one instruction off the chain
+	// from b to the result rather than two.
+	a.eor(s1, s1, a.I())
 	a.eor(a.B(), a.B(), a.Seed())
 
 	// mum: both halves, and both are needed, so this is not mix.
@@ -368,7 +394,6 @@ func (a *arm64Rapid) Finalize() {
 	a.ldrSecret(s7, 7)
 	a.eor(lo, lo, s7)
 	a.eor(hi, hi, s1)
-	a.eor(hi, hi, a.I())
 	a.mix(a.RetGPR(), lo, hi)
 }
 

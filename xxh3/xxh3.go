@@ -26,11 +26,13 @@ func Sum64String(s string) uint64 {
 //
 // A seed does not change the cost for inputs up to 240 bytes. Beyond that XXH3
 // keys the hash with a 192-byte secret derived from the seed. On amd64 the
-// seed is applied as the secret is read, for up to a fifth more than an
-// unseeded hash of the same length; past the length where that stops paying,
-// and on other architectures from 241 bytes, the secret is derived per call,
-// and a caller hashing many such inputs under one seed is better served by a
-// Digest from NewSeed, which derives it once.
+// seed is applied as the secret is read, and on arm64 the kernel derives the
+// secret into its own stack frame with vector adds, for up to a fifth more
+// than an unseeded hash of the same length either way. On amd64 past the
+// length where that stops paying, and on other architectures from 241 bytes,
+// the secret is derived per call, and a caller hashing many such inputs
+// under one seed is better served by a Digest from NewSeed, which derives it
+// once.
 func Sum64Seed(b []byte, seed uint64) uint64 {
 	return sum64Seeded(unsafe.Pointer(unsafe.SliceData(b)), uintptr(len(b)), seed)
 }
@@ -134,7 +136,7 @@ func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) ui
 		// and a half nanoseconds the call to the ladder was the 7% by
 		// which 17..32 bytes still trailed zeebo/xxh3.
 		if n <= 32 {
-			acc := uint64(n) * prime64_1
+			acc := uint64(n) * kPrime64_1
 			acc += mix16BNS(in, sec) + mix16BNS(add(in, n-16), add(sec, 16))
 			return avalanche(acc)
 		}
@@ -150,7 +152,7 @@ func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) ui
 		// 17..128 bytes (geomean, every third length, four relinked
 		// layouts) and no class slower; the seeded core measured 1.2% the
 		// other way. Reorder either only with that sweep in hand.
-		acc := uint64(n) * prime64_1
+		acc := uint64(n) * kPrime64_1
 		if n > 64 {
 			if n > 96 {
 				acc += mix16BNS(add(in, 48), add(sec, 96)) + mix16BNS(add(in, n-64), add(sec, 112))
@@ -175,7 +177,7 @@ func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) ui
 	// 129..240-byte hash on a Zen 4, and 4% in the seeded core, and saved
 	// nothing at any shorter length.
 	if n <= midsizeMax {
-		acc0 := uint64(n)*prime64_1 + mix16BNS(in, sec) + mix16BNS(add(in, 64), add(sec, 64))
+		acc0 := uint64(n)*kPrime64_1 + mix16BNS(in, sec) + mix16BNS(add(in, 64), add(sec, 64))
 		acc1 := mix16BNS(add(in, 16), add(sec, 16)) + mix16BNS(add(in, 80), add(sec, 80))
 		acc2 := mix16BNS(add(in, 32), add(sec, 32)) + mix16BNS(add(in, 96), add(sec, 96))
 		acc3 := mix16BNS(add(in, 48), add(sec, 48)) + mix16BNS(add(in, 112), add(sec, 112))
@@ -211,6 +213,9 @@ func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) ui
 		acc += mix16BNS(add(in, n-16), add(sec, secretSizeMin-midsizeLastOffset))
 		return avalanche(acc)
 	}
+	if hasLongMerge {
+		return hashLong64(in, int(n), sec, secretLen-stripeLen)
+	}
 	var acc [accNB]uint64
 	hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
 	// The convergence is written out rather than reached through
@@ -226,7 +231,7 @@ func sum64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) ui
 	// long path through sum64SeededLong, whose kernel hands back the
 	// accumulators already keyed for the merge.
 	s := add(sec, secretMergeAccsStart)
-	m := uint64(n)*prime64_1 + mix2Accs(&acc, 0, s)
+	m := uint64(n)*kPrime64_1 + mix2Accs(&acc, 0, s)
 	m += mix2Accs(&acc, 2, add(s, 16)) + mix2Accs(&acc, 4, add(s, 32))
 	return avalanche(m + mix2Accs(&acc, 6, add(s, 48)))
 }
@@ -271,7 +276,7 @@ func sum64Seeded(in unsafe.Pointer, n uintptr, seed uint64) uint64 {
 		// The 17..128 rungs inline, as in sum64NS; each mix pays the
 		// seed's two adds and nothing else. The mixes join the chain one
 		// at a time here, where sum64NS sums them in pairs; see there.
-		acc := uint64(n) * prime64_1
+		acc := uint64(n) * kPrime64_1
 		if n > 32 {
 			if n > 64 {
 				if n > 96 {
@@ -289,7 +294,7 @@ func sum64Seeded(in unsafe.Pointer, n uintptr, seed uint64) uint64 {
 		return avalanche(acc)
 	}
 	if n <= midsizeMax {
-		acc0 := uint64(n)*prime64_1 + mix16B(in, sec, seed) + mix16B(add(in, 64), add(sec, 64), seed)
+		acc0 := uint64(n)*kPrime64_1 + mix16B(in, sec, seed) + mix16B(add(in, 64), add(sec, 64), seed)
 		acc1 := mix16B(add(in, 16), add(sec, 16), seed) + mix16B(add(in, 80), add(sec, 80), seed)
 		acc2 := mix16B(add(in, 32), add(sec, 32), seed) + mix16B(add(in, 96), add(sec, 96), seed)
 		acc3 := mix16B(add(in, 48), add(sec, 48), seed) + mix16B(add(in, 112), add(sec, 112), seed)
@@ -341,6 +346,11 @@ func sum64Seeded(in unsafe.Pointer, n uintptr, seed uint64) uint64 {
 func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) Uint128 {
 	if n > 16 {
 		if n > midsizeMax {
+			if hasLongMerge {
+				var r [2]uint64
+				hashLong128(&r, in, int(n), sec, secretLen-stripeLen)
+				return Uint128{Lo: r[0], Hi: r[1]}
+			}
 			var acc [accNB]uint64
 			hashLong(&acc, in, int(n), sec, secretLen-stripeLen)
 			// Both convergences written out, for the reason given in sum64NS.
@@ -349,10 +359,10 @@ func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) U
 			// and 2.9% at 4 KiB. Two of these back to back are a long enough
 			// serial tail that the next hash cannot hide them.
 			s := add(sec, secretMergeAccsStart)
-			lo := uint64(n)*prime64_1 + mix2Accs(&acc, 0, s)
+			lo := uint64(n)*kPrime64_1 + mix2Accs(&acc, 0, s)
 			lo += mix2Accs(&acc, 2, add(s, 16)) + mix2Accs(&acc, 4, add(s, 32))
 			t := add(sec, uintptr(secretLen-8*accNB-secretMergeAccsStart))
-			hi := ^(uint64(n) * prime64_2) + mix2Accs(&acc, 0, t)
+			hi := ^(uint64(n) * kPrime64_2) + mix2Accs(&acc, 0, t)
 			hi += mix2Accs(&acc, 2, add(t, 16)) + mix2Accs(&acc, 4, add(t, 32))
 			return Uint128{Lo: avalanche(lo + mix2Accs(&acc, 6, add(s, 48))), Hi: avalanche(hi + mix2Accs(&acc, 6, add(t, 48)))}
 		}
@@ -364,11 +374,11 @@ func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) U
 			if n <= 32 {
 				i0, i1, ix := rd64(in, 0), rd64(in, 8), rd64(in, 0)+rd64(in, 8)
 				j0, j1, jx := rd64(in, n-16), rd64(in, n-8), rd64(in, n-16)+rd64(in, n-8)
-				lo := (uint64(n)*prime64_1 + mul128Fold64(i0^rd64(sec, 0), i1^rd64(sec, 8))) ^ jx
+				lo := (uint64(n)*kPrime64_1 + mul128Fold64(i0^rd64(sec, 0), i1^rd64(sec, 8))) ^ jx
 				hi := mul128Fold64(j0^rd64(sec, 16), j1^rd64(sec, 24)) ^ ix
 				return finalize128(lo, hi, n, 0)
 			}
-			lo := uint64(n) * prime64_1
+			lo := uint64(n) * kPrime64_1
 			hi := uint64(0)
 			if n > 64 {
 				if n > 96 {
@@ -402,25 +412,25 @@ func sum128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, secretLen int) U
 	// call's worth of work, so the call to reach an out-of-line version was
 	// the largest removable part of its cost.
 	if n > 8 {
-		hi, lo := bits.Mul64(rd64(in, 0)^rd64(in, n-8)^(rd64(sec, 32)^rd64(sec, 40)), prime64_1)
+		hi, lo := bits.Mul64(rd64(in, 0)^rd64(in, n-8)^(rd64(sec, 32)^rd64(sec, 40)), kPrime64_1)
 
 		lo += uint64(n-1) << 54
 		inputHi := rd64(in, n-8) ^ (rd64(sec, 48) ^ rd64(sec, 56))
 		hi += inputHi + uint64(uint32(inputHi))*(prime32_2-1)
 		lo ^= bits.ReverseBytes64(hi)
 
-		rhi, rlo := bits.Mul64(lo, prime64_2)
-		rhi += hi * prime64_2
+		rhi, rlo := bits.Mul64(lo, kPrime64_2)
+		rhi += hi * kPrime64_2
 		return Uint128{Lo: avalanche(rlo), Hi: avalanche(rhi)}
 	}
 	if n >= 4 {
 		keyed := (uint64(rd32(in, 0)) + uint64(rd32(in, n-4))<<32) ^ (rd64(sec, 16) ^ rd64(sec, 24))
 
-		hi, lo := bits.Mul64(keyed, prime64_1+uint64(n)<<2)
+		hi, lo := bits.Mul64(keyed, kPrime64_1+uint64(n)<<2)
 		hi += lo << 1
 		lo ^= hi >> 3
 		lo ^= lo >> 35
-		lo *= 0x9FB21C651E98DF25
+		lo *= kRRMXMX
 		lo ^= lo >> 28
 		return Uint128{Lo: lo, Hi: avalanche(hi)}
 	}
@@ -468,10 +478,13 @@ func sum128SeedZero(in unsafe.Pointer, n uintptr) Uint128 {
 // the secret out and reading it back with vector loads was the larger part
 // of a short seeded long hash's cost; see SeededArch in the generator.
 func sum64SeededLong(in unsafe.Pointer, n uintptr, seed uint64) uint64 {
+	if hasLongMerge {
+		return hashLongSeed64(in, int(n), seed)
+	}
 	if useSeedKernel(n) {
 		var k [2 * accNB]uint64
 		hashLongSeed(&k, in, int(n), seed)
-		m := uint64(n)*prime64_1 + mul128Fold64(k[0], k[1])
+		m := uint64(n)*kPrime64_1 + mul128Fold64(k[0], k[1])
 		m += mul128Fold64(k[2], k[3]) + mul128Fold64(k[4], k[5])
 		return avalanche(m + mul128Fold64(k[6], k[7]))
 	}
@@ -483,12 +496,17 @@ func sum64SeededLong(in unsafe.Pointer, n uintptr, seed uint64) uint64 {
 // sum128SeededLong is sum64SeededLong's 128-bit counterpart, whose high half
 // folds the accumulators keyed for the second merge.
 func sum128SeededLong(in unsafe.Pointer, n uintptr, seed uint64) Uint128 {
+	if hasLongMerge {
+		var r [2]uint64
+		hashLongSeed128(&r, in, int(n), seed)
+		return Uint128{Lo: r[0], Hi: r[1]}
+	}
 	if useSeedKernel(n) {
 		var k [2 * accNB]uint64
 		hashLongSeed(&k, in, int(n), seed)
-		lo := uint64(n)*prime64_1 + mul128Fold64(k[0], k[1])
+		lo := uint64(n)*kPrime64_1 + mul128Fold64(k[0], k[1])
 		lo += mul128Fold64(k[2], k[3]) + mul128Fold64(k[4], k[5])
-		hi := ^(uint64(n) * prime64_2) + mul128Fold64(k[8], k[9])
+		hi := ^(uint64(n) * kPrime64_2) + mul128Fold64(k[8], k[9])
 		hi += mul128Fold64(k[10], k[11]) + mul128Fold64(k[12], k[13])
 		return Uint128{Lo: avalanche(lo + mul128Fold64(k[6], k[7])), Hi: avalanche(hi + mul128Fold64(k[14], k[15]))}
 	}
@@ -509,26 +527,26 @@ func sum128Seeded(in unsafe.Pointer, n uintptr, seed uint64) Uint128 {
 		// The short cases use the default secret, as in sum64Seeded.
 		if n > 8 {
 			bitflipl := (rd64(sec, 32) ^ rd64(sec, 40)) - seed
-			hi, lo := bits.Mul64(rd64(in, 0)^rd64(in, n-8)^bitflipl, prime64_1)
+			hi, lo := bits.Mul64(rd64(in, 0)^rd64(in, n-8)^bitflipl, kPrime64_1)
 
 			lo += uint64(n-1) << 54
 			inputHi := rd64(in, n-8) ^ ((rd64(sec, 48) ^ rd64(sec, 56)) + seed)
 			hi += inputHi + uint64(uint32(inputHi))*(prime32_2-1)
 			lo ^= bits.ReverseBytes64(hi)
 
-			rhi, rlo := bits.Mul64(lo, prime64_2)
-			rhi += hi * prime64_2
+			rhi, rlo := bits.Mul64(lo, kPrime64_2)
+			rhi += hi * kPrime64_2
 			return Uint128{Lo: avalanche(rlo), Hi: avalanche(rhi)}
 		}
 		if n >= 4 {
 			seed ^= uint64(bits.ReverseBytes32(uint32(seed))) << 32
 			keyed := (uint64(rd32(in, 0)) + uint64(rd32(in, n-4))<<32) ^ ((rd64(sec, 16) ^ rd64(sec, 24)) + seed)
 
-			hi, lo := bits.Mul64(keyed, prime64_1+uint64(n)<<2)
+			hi, lo := bits.Mul64(keyed, kPrime64_1+uint64(n)<<2)
 			hi += lo << 1
 			lo ^= hi >> 3
 			lo ^= lo >> 35
-			lo *= 0x9FB21C651E98DF25
+			lo *= kRRMXMX
 			lo ^= lo >> 28
 			return Uint128{Lo: lo, Hi: avalanche(hi)}
 		}
@@ -563,11 +581,11 @@ func sum128Seeded(in unsafe.Pointer, n uintptr, seed uint64) Uint128 {
 		if n <= 32 {
 			i0, i1 := rd64(in, 0), rd64(in, 8)
 			j0, j1 := rd64(add(in, n-16), 0), rd64(add(in, n-16), 8)
-			lo := (uint64(n)*prime64_1 + mul128Fold64(i0^(rd64(sec, 0)+seed), i1^(rd64(sec, 8)-seed))) ^ (j0 + j1)
+			lo := (uint64(n)*kPrime64_1 + mul128Fold64(i0^(rd64(sec, 0)+seed), i1^(rd64(sec, 8)-seed))) ^ (j0 + j1)
 			hi := mul128Fold64(j0^(rd64(sec, 16)+seed), j1^(rd64(sec, 24)-seed)) ^ (i0 + i1)
 			return finalize128(lo, hi, n, seed)
 		}
-		lo := uint64(n) * prime64_1
+		lo := uint64(n) * kPrime64_1
 		hi := uint64(0)
 		if n > 64 {
 			if n > 96 {

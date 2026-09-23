@@ -157,6 +157,20 @@ func TestKernelsMatchPortable(t *testing.T) {
 						t.Fatalf("hashLong len=%d secretLen=%d:\n got %v\nwant %v",
 							n, secLen, got, want)
 					}
+
+					// The kernels that finish the hash themselves, where
+					// there are any (hasLongMerge); elsewhere these are the
+					// portable forms against themselves.
+					if got, want := hashLong64(bp, n, sp, limit), hashLong64Generic(bp, n, sp, limit); got != want {
+						t.Fatalf("hashLong64 len=%d secretLen=%d: %#016x, want %#016x", n, secLen, got, want)
+					}
+					var got128, want128 [2]uint64
+					got128 = [2]uint64{7, 7}
+					hashLong128(&got128, bp, n, sp, limit)
+					hashLong128Generic(&want128, bp, n, sp, limit)
+					if got128 != want128 {
+						t.Fatalf("hashLong128 len=%d secretLen=%d: %#x, want %#x", n, secLen, got128, want128)
+					}
 				}
 
 				// accumBlocks: from every starting position in the block, with
@@ -230,6 +244,15 @@ func TestKernelsMatchPortable(t *testing.T) {
 					hashLongSeed(&got, bp, n, seed)
 					if got != want {
 						t.Fatalf("hashLongSeed len=%d seed=%#x:\n got %v\nwant %v", n, seed, got, want)
+					}
+					if got, want := hashLongSeed64(bp, n, seed), hashLongSeed64Generic(bp, n, seed); got != want {
+						t.Fatalf("hashLongSeed64 len=%d seed=%#x: %#016x, want %#016x", n, seed, got, want)
+					}
+					var got128, want128 [2]uint64
+					hashLongSeed128(&got128, bp, n, seed)
+					hashLongSeed128Generic(&want128, bp, n, seed)
+					if got128 != want128 {
+						t.Fatalf("hashLongSeed128 len=%d seed=%#x: %#x, want %#x", n, seed, got128, want128)
 					}
 				}
 			}

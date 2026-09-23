@@ -199,10 +199,26 @@ func (a *arm64Scalar) ScratchGPR() GPR { return a.ArgGPR(2) }
 // four it is. The tests are in CLAUDE.md under the N2 notes.
 func (a *arm64Scalar) BlockUnroll() int { return 4 }
 
-// UnseededTwin is off here: the twin saves a handful of instructions that an
-// arm64 core with three-operand adds mostly does not pay, and no arm64 has
-// been measured with it. See the x86 face.
-func (a *arm64Scalar) UnseededTwin() bool { return false }
+// UnseededTwin is on. What the twin saves here is the seed: the caller's
+// store of a zero, the kernel's load of it, and an instruction at the head
+// of both paths -- the short one starts from P5 itself, and the lanes are
+// set up in four instructions rather than five (InitLanesNS). See CLAUDE.md
+// for what it measured on a Neoverse N2.
+func (a *arm64Scalar) UnseededTwin() bool { return true }
+
+// InitLanesNS sets the unseeded lanes: v1 = P1+P2, v2 = P2, v3 = 0,
+// v4 = -P1.
+func (a *arm64Scalar) InitLanesNS(v [4]GPR) {
+	p1, p2 := a.p(0), a.p(1)
+	a.add3(v[0], p1, p2)
+	a.Mov(v[1], p2)
+	a.zeroGPR(v[2])
+	a.b.emit(func(m *Machine) { m.R[v[3]] = -m.R[p1] },
+		"neg %s, %s", a.GPRName(v[3]), a.GPRName(p1))
+}
+
+// SeedPlusPrime5 is the seeded short path's h = seed + P5, one add.
+func (a *arm64Scalar) SeedPlusPrime5(h, seed GPR) { a.add3(h, seed, a.p(4)) }
 
 // VendorSplit is off here: the primes reach the kernel through a pointer
 // already -- five 64-bit immediates would be four instructions each -- so

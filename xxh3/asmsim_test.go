@@ -30,9 +30,14 @@ type simRegion struct {
 	mem            []byte
 	accAt, inAt    uint64
 	secAt, initAt  uint64
+	frameAt        uint64
 	m              *asmgen.Machine
 	accOff, secOff int
 }
+
+// simFrame is the most stack a kernel's frame takes, with the eight bytes
+// below the locals where the link register is saved.
+const simFrame = 256
 
 func newSimRegion(acc *[accNB]uint64, in, sec []byte) *simRegion {
 	const pad = 64
@@ -40,23 +45,30 @@ func newSimRegion(acc *[accNB]uint64, in, sec []byte) *simRegion {
 	inOff := accOff + 8*accNB + pad
 	secOff := inOff + len(in) + pad
 	initOff := secOff + len(sec) + pad
-	mem := make([]byte, initOff+8*accNB+pad)
+	frameOff := initOff + 8*accNB + pad
+	mem := make([]byte, frameOff+simFrame+pad)
+	for i := frameOff; i < frameOff+simFrame; i++ {
+		mem[i] = byte(i * 151)
+	}
 	for i, v := range acc {
 		binary.LittleEndian.PutUint64(mem[accOff+8*i:], v)
 	}
 	copy(mem[inOff:], in)
 	copy(mem[secOff:], sec)
-	for i, v := range initAcc {
+	// longTable is initAcc and one word more, which the merging kernels
+	// read; the kernels that read initAcc read the same first eight.
+	for i, v := range longTable {
 		binary.LittleEndian.PutUint64(mem[initOff+8*i:], v)
 	}
 
 	m := asmgen.NewMachine(mem, accNB)
 	return &simRegion{
 		mem: mem, m: m, accOff: accOff, secOff: secOff,
-		accAt:  m.Base + uint64(accOff),
-		inAt:   m.Base + uint64(inOff),
-		secAt:  m.Base + uint64(secOff),
-		initAt: m.Base + uint64(initOff),
+		accAt:   m.Base + uint64(accOff),
+		inAt:    m.Base + uint64(inOff),
+		secAt:   m.Base + uint64(secOff),
+		initAt:  m.Base + uint64(initOff),
+		frameAt: m.Base + uint64(frameOff),
 	}
 }
 
@@ -235,16 +247,24 @@ func TestSimulatedBackends(t *testing.T) {
 // kernel's SecretGPR; the seed is applied to it inside the kernel. The keyed
 // accumulators it writes are sixteen words, which the padding after the
 // accumulator slot has room for.
+//
+// An arm64 seeded kernel derives the secret into its own frame, which the
+// prologue the Go assembler writes would have allocated; the stack pointer
+// is pointed at a region of the frame's size, padded like the rest, whose
+// contents are garbage on entry as a real frame's are.
 func simHashLongSeed(t *testing.T, k asmgen.Arch, keys *[2 * accNB]uint64, in []byte, seed uint64) {
 	t.Helper()
 	var acc [accNB]uint64
 	r := newSimRegion(&acc, in, kSecret[:])
 	r.m.R[k.TableGPR()] = r.initAt
-	r.m.R[k.(asmgen.SeededArch).SecretGPR()] = r.secAt
+	r.m.R[k.(interface{ SecretGPR() asmgen.GPR }).SecretGPR()] = r.secAt
 	r.m.R[k.ArgGPR(0)] = r.accAt
 	r.m.R[k.ArgGPR(1)] = r.inAt
 	r.m.R[k.ArgGPR(2)] = uint64(len(in))
 	r.m.R[k.ArgGPR(3)] = seed
+	if k.GOARCH() == "arm64" {
+		r.m.R[31] = r.frameAt
+	}
 	if err := r.m.Run(k.Build().Insts()); err != nil {
 		t.Fatal(err)
 	}
@@ -282,6 +302,102 @@ func TestSimulatedSeededKernel(t *testing.T) {
 	}
 	if ran == 0 {
 		t.Fatal("no backend has a seeded kernel")
+	}
+}
+
+// simLong runs one of a MergeArch backend's kernels, which finish the hash:
+// kind is its index among EmitLong's. A 64-bit one returns the hash in
+// RetGPR; a 128-bit one writes it to its out argument, which goes where
+// the accumulators would. The seeded ones derive the secret into a frame.
+func simLong(t *testing.T, k asmgen.Arch, kind int, in, sec []byte, seed uint64) [2]uint64 {
+	t.Helper()
+	var acc [accNB]uint64
+	for i := range acc {
+		acc[i] = garbageAcc[i]
+	}
+	r := newSimRegion(&acc, in, sec)
+	r.m.R[k.TableGPR()] = r.initAt
+	r.m.R[31] = r.frameAt
+	a := 0
+	if kind%2 == 1 { // hashLong128, hashLongSeed128
+		r.m.R[k.ArgGPR(0)] = r.accAt
+		a = 1
+	}
+	r.m.R[k.ArgGPR(a)] = r.inAt
+	r.m.R[k.ArgGPR(a+1)] = uint64(len(in))
+	if kind < 2 {
+		r.m.R[k.ArgGPR(a+2)] = r.secAt
+		r.m.R[k.ArgGPR(a+3)] = uint64(len(sec) - stripeLen)
+	} else {
+		r.m.R[k.(interface{ SecretGPR() asmgen.GPR }).SecretGPR()] = r.secAt
+		r.m.R[k.ArgGPR(a+2)] = seed
+	}
+	if err := r.m.Run(k.Build().Insts()); err != nil {
+		t.Fatal(err)
+	}
+	if kind%2 == 0 {
+		return [2]uint64{r.m.R[k.RetGPR()]}
+	}
+	got := r.acc()
+	return [2]uint64{got[0], got[1]}
+}
+
+// TestSimulatedMergeKernels holds the kernels that finish the hash
+// themselves -- 64- and 128-bit, unseeded under the secret sizes that move
+// the block and the merges' keys, and seeded -- to the portable forms of
+// their contracts, on every backend that has them.
+func TestSimulatedMergeKernels(t *testing.T) {
+	buf := testBuffer(20000)
+	ran := 0
+	for _, b := range asmgen.Backends() {
+		ks := asmgen.EmitLong(b.New)
+		if ks == nil {
+			continue
+		}
+		ran++
+		t.Run(b.Name, func(t *testing.T) {
+			for _, secLen := range []int{136, 137, 192, 193, 256} {
+				sec := testSecret(secLen)
+				if secLen == secretDefaultSize {
+					sec = kSecret[:]
+				}
+				sp := unsafe.Pointer(&sec[0])
+				for _, n := range simLengths {
+					in := buf[:n]
+					ip := unsafe.Pointer(&in[0])
+					want64 := hashLong64Generic(ip, n, sp, secLen-stripeLen)
+					if got := simLong(t, ks[0], 0, in, sec, 0); got[0] != want64 {
+						t.Fatalf("hashLong64 len=%d secretLen=%d: %#016x, want %#016x", n, secLen, got[0], want64)
+					}
+					var want128 [2]uint64
+					hashLong128Generic(&want128, ip, n, sp, secLen-stripeLen)
+					if got := simLong(t, ks[1], 1, in, sec, 0); got != want128 {
+						t.Fatalf("hashLong128 len=%d secretLen=%d: %#x, want %#x", n, secLen, got, want128)
+					}
+				}
+			}
+			if len(ks) < 4 {
+				return
+			}
+			for _, seed := range []uint64{1, 42, 0x9E3779B185EBCA87, 1 << 63, ^uint64(0)} {
+				for _, n := range simLengths {
+					in := buf[:n]
+					ip := unsafe.Pointer(&in[0])
+					want64 := hashLongSeed64Generic(ip, n, seed)
+					if got := simLong(t, ks[2], 2, in, kSecret[:], seed); got[0] != want64 {
+						t.Fatalf("hashLongSeed64 len=%d seed=%#x: %#016x, want %#016x", n, seed, got[0], want64)
+					}
+					var want128 [2]uint64
+					hashLongSeed128Generic(&want128, ip, n, seed)
+					if got := simLong(t, ks[3], 3, in, kSecret[:], seed); got != want128 {
+						t.Fatalf("hashLongSeed128 len=%d seed=%#x: %#x, want %#x", n, seed, got, want128)
+					}
+				}
+			}
+		})
+	}
+	if ran == 0 {
+		t.Fatal("no backend has merging kernels")
 	}
 }
 

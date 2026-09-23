@@ -66,6 +66,9 @@ type arm64 struct {
 	// kprimeHi is kprime shifted into the high half of each 64-bit lane; only
 	// the NEON scramble uses it.
 	kprimeHi VReg
+	// winE and winO, when set, hold the vector lanes' secret across an
+	// unrolled group, the way ssec holds the scalar lanes'; see keyWindow.
+	winE, winO []VReg
 }
 
 // newNEON builds the NEON kernel, which is the arm64 baseline.
@@ -87,6 +90,11 @@ func newNEON(unroll int) *arm64 {
 // newNEONHybrid builds a split kernel: scalarLanes of the stripe's eight
 // lanes go through general-purpose registers, the rest through NEON.
 //
+// The four-lane split runs eight stripes an iteration with its vector keys
+// from a window (see stripeNEONWindow): the loop is bound by the operations
+// the N2 dispatches, and the unroll halves what its bookkeeping costs a
+// stripe.
+//
 // Four is the N2's split, by measurement rather than structure: two leaves
 // thirteen vector operations per stripe, and that core sustains about 1.5
 // of those per cycle, which costs more than the instructions it saves. Two
@@ -95,6 +103,7 @@ func newNEON(unroll int) *arm64 {
 // accumulates issue at one per cycle on an Apple M2) and pure NEON is bound
 // by the vector pipes; it holds the odd vector register in the reference's
 // xtn/shrn form. See CLAUDE.md for what each measured.
+
 func newNEONHybrid(name string, unroll, scalarLanes int) *arm64 {
 	if scalarLanes%2 != 0 || scalarLanes < 2 || scalarLanes > 4 || unroll%scalarLanes != 0 {
 		panic("asmgen: scalar lanes must be 2 or 4 and divide the unroll")
@@ -113,6 +122,10 @@ func newNEONHybrid(name string, unroll, scalarLanes int) *arm64 {
 		a.stmp = append(a.stmp, 20, 21)
 		a.laneReassoc = true
 		a.sec8 = 24
+	} else {
+		// The accumulators take v0-v1 and v4-v5 here, leaving v2-v3 and
+		// v6-v7 for the key window.
+		a.winE, a.winO = []VReg{2, 3}, []VReg{6, 7}
 	}
 	return a
 }
@@ -148,7 +161,7 @@ func (a *arm64) ArgGPR(i int) GPR { return armArgGPR[i] }
 // initAcc, in hashLong, and x26 is the highest register no kernel here
 // touches: the split kernels reach x25, and x27 and up are the assembler's
 // and the runtime's.
-func (a *arm64) RetGPR() GPR      { return -1 }
+func (a *arm64) RetGPR() GPR      { return 0 }
 func (a *arm64) TableGPR() GPR    { return 26 }
 func (a *arm64) TmpGPR(i int) GPR { return armTmpGPR[i] }
 
@@ -523,6 +536,11 @@ func (a *arm64) zeroGPR(dst GPR) {
 // After four stripes the pointer has advanced four words and the mapping is
 // back where it started, so the loop body maintains its own invariant.
 func (a *arm64) GroupBegin(sec GPR) {
+	if a.winE != nil {
+		a.vloadPair(a.winE[0], a.winE[1], sec, 0)
+		a.vload(a.winO[0], sec, 8)
+		a.vload(a.winO[1], sec, 24)
+	}
 	if a.scalarLanes == 0 {
 		return
 	}
@@ -654,13 +672,23 @@ func (a *arm64) swap64(dst, src VReg) {
 }
 
 func (a *arm64) Setup(scramble bool) {
-	if !scramble {
-		// SVE still needs its governing predicate, whatever else it skips.
-		if a.sve {
-			a.b.emit(func(m *Machine) {}, "ptrue p0.d")
-		}
-		return
+	if scramble {
+		a.SetupScramble()
 	}
+	// SVE needs its governing predicate, whatever else it skips.
+	if a.sve {
+		a.b.emit(func(m *Machine) {}, "ptrue p0.d")
+	}
+}
+
+// WriteOutTail is on for every arm64 backend that can address the secret
+// at an offset, which is all but SVE; see TailWriter.
+func (a *arm64) WriteOutTail() bool { return true }
+
+// SetupScramble builds the scramble's multiplier: in x12 for the scalar
+// lanes, and broadcast into kprime (and, for NEON, kprimeHi). hashLong
+// builds it only where it reaches a block; see LateScrambleSetup.
+func (a *arm64) SetupScramble() {
 	const prime32_1 = 0x9E3779B1
 	r := a.GPRName(armConstGPR)
 	a.b.emit(func(m *Machine) { m.R[armConstGPR] = prime32_1 & 0xffff },
@@ -674,7 +702,6 @@ func (a *arm64) Setup(scramble bool) {
 				m.V[a.kprime][i] = m.R[armConstGPR]
 			}
 		}, "mov %s, %s", a.z(a.kprime, "d"), r)
-		a.b.emit(func(m *Machine) {}, "ptrue p0.d")
 		return
 	}
 	a.b.emit(func(m *Machine) {
@@ -754,6 +781,216 @@ func (a *arm64) StoreAcc(p GPR) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// The seeded kernel; see DerivedSeedArch
+// ---------------------------------------------------------------------------
+
+// SecretGPR is x4: hashLong's limit register, which the four-argument
+// seeded kernel does not take as an argument, and which is free until the
+// derivation has read the default secret through it.
+func (a *arm64) SecretGPR() GPR { return 4 }
+
+// spGPR is the register number the stack pointer has in the instructions
+// that can name it; the simulator models it as R[31].
+const spGPR GPR = 31
+
+// FrameSecret points dst at the frame's secret buffer. The Go assembler puts
+// a frame's locals at RSP+8, so RSP+16 is the first 16-byte-aligned address
+// in them.
+func (a *arm64) FrameSecret(dst GPR) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[spGPR] + 16 },
+		"add %s, sp, #16", a.GPRName(dst))
+}
+
+// DeriveSecret derives with NEON whatever the backend: the secret is 192
+// bytes of memory to memory, which a vector width does not change, and NEON
+// can pair its loads and stores where SVE's offsets are counted in vector
+// lengths. Every 16-byte piece of the secret starts at an even word, so one
+// pattern, [seed, -seed], keys all twelve. The registers are the stripe
+// loop's scratch, which nothing holds yet; the scramble constant Setup has
+// already built is in v14 and v15, below them.
+func (a *arm64) DeriveSecret(dst, src, seed GPR) {
+	neg := a.TmpGPR(1)
+	p := VReg(28)
+	a.b.emit(func(m *Machine) { m.R[neg] = -m.R[seed] },
+		"neg %s, %s", a.GPRName(neg), a.GPRName(seed))
+	a.b.emit(func(m *Machine) { m.V[p] = [8]uint64{m.R[seed]} },
+		"fmov d%d, %s", int(p), a.GPRName(seed))
+	a.b.emit(func(m *Machine) { m.V[p][1] = m.R[neg] },
+		"mov %s[1], %s", a.v(p, "d"), a.GPRName(neg))
+	const pieces = secretDefaultSize / 16
+	for i := 0; i < pieces; i += 2 {
+		a.ldpq(VReg(16+i), VReg(17+i), src, 16*i)
+	}
+	for i := 0; i < pieces; i++ {
+		r := VReg(16 + i)
+		a.b.emit(func(m *Machine) {
+			m.V[r] = [8]uint64{m.V[r][0] + m.V[p][0], m.V[r][1] + m.V[p][1]}
+		}, "add %s, %s, %s", a.v(r, "2d"), a.v(r, "2d"), a.v(p, "2d"))
+	}
+	for i := 0; i < pieces; i += 2 {
+		a.stpq(VReg(16+i), VReg(17+i), dst, 16*i)
+	}
+}
+
+// ldpq and stpq are the NEON pair load and store whatever the backend, with
+// the NEON semantics: two 64-bit lanes per register, the rest zeroed.
+func (a *arm64) ldpq(d0, d1 VReg, r GPR, off int) {
+	a.b.emit(func(m *Machine) {
+		m.V[d0] = m.LoadVec(m.R[r]+uint64(off), 2)
+		m.V[d1] = m.LoadVec(m.R[r]+uint64(off)+16, 2)
+	}, "ldp %s, %s, [%s, #%d]", a.q(d0), a.q(d1), a.GPRName(r), off)
+}
+
+func (a *arm64) stpq(s0, s1 VReg, r GPR, off int) {
+	a.b.emit(func(m *Machine) {
+		m.StoreVec(m.R[r]+uint64(off), m.V[s0], 2)
+		m.StoreVec(m.R[r]+uint64(off)+16, m.V[s1], 2)
+	}, "stp %s, %s, [%s, #%d]", a.q(s0), a.q(s1), a.GPRName(r), off)
+}
+
+// ---------------------------------------------------------------------------
+// The merging one-shot kernels; see MergeArch
+// ---------------------------------------------------------------------------
+
+// LongStart sets dst = n * table[slot], or its complement.
+func (a *arm64) LongStart(dst, n GPR, slot int, not bool) {
+	t := a.TableGPR()
+	a.b.emit(func(m *Machine) { m.R[dst] = m.Load64(m.R[t] + uint64(8*slot)) },
+		"ldr %s, [%s, #%d]", a.GPRName(dst), a.GPRName(t), 8*slot)
+	a.b.emit(func(m *Machine) { m.R[dst] *= m.R[n] },
+		"mul %s, %s, %s", a.GPRName(dst), a.GPRName(dst), a.GPRName(n))
+	if not {
+		a.b.emit(func(m *Machine) { m.R[dst] = ^m.R[dst] },
+			"mvn %s, %s", a.GPRName(dst), a.GPRName(dst))
+	}
+}
+
+// KeyAt is dst = src + off, one add.
+func (a *arm64) KeyAt(dst, src GPR, off int) {
+	a.b.emit(func(m *Machine) { m.R[dst] = m.R[src] + uint64(off) },
+		"add %s, %s, #%d", a.GPRName(dst), a.GPRName(src), off)
+}
+
+func (a *arm64) StorePair(lo, hi, p GPR) { a.stp(lo, hi, p, 0) }
+
+// mergeScratch is every general-purpose register a kernel's end may use
+// for the merge, in the order it takes them: the stripe loop's
+// temporaries, the scramble constant, the scalar lanes' secret window and
+// scratch, and the argument registers past the fourth.
+var mergeScratch = []GPR{5, 6, 7, 8, 9, 10, 11, 12, 22, 23, 24, 25, 13, 14, 15, 16}
+
+// MergeLong keys the accumulators, moves the vector lanes into
+// general-purpose registers and folds them there. NEON keys its lanes as
+// vectors first, one xor a register pair against two a lane pair, and moves
+// the keyed lanes across; SVE moves each 128-bit quarter of a register down
+// to where NEON can read it and keys the lanes as integers. The scalar
+// lanes are in general-purpose registers already.
+func (a *arm64) MergeLong(ret, start, key GPR, keep ...GPR) {
+	busy := map[GPR]bool{ret: true, start: true, key: true, a.TableGPR(): true}
+	for _, r := range keep {
+		busy[r] = true
+	}
+	for _, r := range a.scc {
+		busy[r] = true
+	}
+	var free []GPR
+	for _, r := range mergeScratch {
+		if !busy[r] {
+			free = append(free, r)
+		}
+	}
+	take := func() GPR {
+		if len(free) == 0 {
+			panic("asmgen: MergeLong ran out of registers")
+		}
+		r := free[0]
+		free = free[1:]
+		return r
+	}
+	// move puts the two 64-bit lanes of NEON register t in l0 and l1.
+	move := func(t VReg) (GPR, GPR) {
+		l0, l1 := take(), take()
+		a.b.emit(func(m *Machine) { m.R[l0] = m.V[t][0] }, "fmov %s, d%d", a.GPRName(l0), int(t))
+		a.b.emit(func(m *Machine) { m.R[l1] = m.V[t][1] }, "mov %s, %s[1]", a.GPRName(l1), a.v(t, "d"))
+		return l0, l1
+	}
+	var lane [accNB]GPR
+	vlanes := accNB - a.scalarLanes
+	if !a.sve {
+		for j := 0; j < a.nvec; j += 2 {
+			t0 := a.tmp[j]
+			if j+1 < a.nvec {
+				t1 := a.tmp[j+1]
+				a.vloadPair(t0, t1, key, 16*j)
+				a.vxor(t0, t0, a.accA[j])
+				a.vxor(t1, t1, a.accA[j+1])
+				lane[2*j], lane[2*j+1] = move(t0)
+				lane[2*j+2], lane[2*j+3] = move(t1)
+				continue
+			}
+			a.vload(t0, key, 16*j)
+			a.vxor(t0, t0, a.accA[j])
+			lane[2*j], lane[2*j+1] = move(t0)
+		}
+	} else {
+		t := a.tmp[0]
+		for j := 0; j < a.nvec; j++ {
+			for c := 0; c < a.lanes/2; c++ {
+				src := a.accA[j]
+				if c > 0 {
+					c, acc := c, a.accA[j]
+					a.b.emit(func(m *Machine) {
+						for i := 0; i < a.lanes; i += 2 {
+							m.V[t][i], m.V[t][i+1] = m.V[acc][2*c], m.V[acc][2*c+1]
+						}
+					}, "dup %s, %s[%d]", a.z(t, "q"), a.z(acc, "q"), c)
+					src = t
+				}
+				w := a.lanes*j + 2*c
+				lane[w], lane[w+1] = move(src)
+			}
+		}
+		for w := 0; w < vlanes; w += 2 {
+			k0, k1 := take(), take()
+			a.ldp(k0, k1, key, 8*w)
+			a.eor3(lane[w], lane[w], k0)
+			a.eor3(lane[w+1], lane[w+1], k1)
+			free = append(free, k0, k1)
+		}
+	}
+	for i := 0; i < a.scalarLanes; i += 2 {
+		w := vlanes + i
+		k0, k1 := take(), take()
+		a.ldp(k0, k1, key, 8*w)
+		a.eor3(k0, k0, a.scc[i])
+		a.eor3(k1, k1, a.scc[i+1])
+		lane[w], lane[w+1] = k0, k1
+	}
+	// The four folds, lo ^ hi of each lane pair's product, then their sum
+	// from start as a tree, then the avalanche.
+	h := take()
+	var f [4]GPR
+	for i := 0; i < 4; i++ {
+		lo, hi := lane[2*i], lane[2*i+1]
+		f[i] = lo
+		a.b.emit(func(m *Machine) { m.R[h] = mulHigh(m.R[lo], m.R[hi]) },
+			"umulh %s, %s, %s", a.GPRName(h), a.GPRName(lo), a.GPRName(hi))
+		a.mul3(lo, lo, hi)
+		a.eor3(lo, lo, h)
+	}
+	a.add3(f[1], f[1], f[2])
+	a.add3(f[0], f[0], f[3])
+	a.add3(ret, start, f[1])
+	a.add3(ret, ret, f[0])
+	a.eorShr(ret, ret, ret, 37)
+	c, t := h, a.TableGPR()
+	a.b.emit(func(m *Machine) { m.R[c] = m.Load64(m.R[t] + 8*longSlotAvalanche) },
+		"ldr %s, [%s, #%d]", a.GPRName(c), a.GPRName(t), 8*longSlotAvalanche)
+	a.mul3(ret, ret, c)
+	a.eorShr(ret, ret, ret, 32)
+}
+
 // No arm64 backend keeps the secret schedule in registers. NEON and the
 // shorter SVE lengths spend two or four registers per stripe, so a block's
 // worth does not fit; only SVE2 at a 512-bit vector length could, and that
@@ -787,6 +1024,10 @@ func (a *arm64) Stripe(k int, in GPR, inOff int, sec GPR, secOff int) {
 // stripeNEON works on register pairs, because uzp1/uzp2 deinterleave two
 // registers in one instruction each.
 func (a *arm64) stripeNEON(k int, grouped bool, in GPR, inOff int, sec GPR, secOff int) {
+	if a.winE != nil && grouped {
+		a.stripeNEONWindow(k, in, inOff, sec, secOff)
+		return
+	}
 	if a.sec8 != 0 && grouped {
 		if k == 0 {
 			// The first stripe of the group sets the odd stripes' base; the
@@ -830,6 +1071,51 @@ func (a *arm64) stripeNEON(k int, grouped bool, in GPR, inOff int, sec GPR, secO
 		a.vadd(a.accB[j], a.accB[j], d0)
 		a.vadd(a.accB[j+1], a.accB[j+1], d1)
 	}
+}
+
+// stripeNEONWindow is stripeNEON for a two-register stripe inside an
+// unrolled group, with its keys from the window rather than from memory.
+//
+// Stripe k reads the four secret words from k: two 16-byte keys, which for
+// an even k start at even words and for an odd k at odd ones. Consecutive
+// stripes of one parity share a key -- stripe k's second is stripe k+2's
+// first -- so each parity keeps a window of two, and each stripe loads the
+// one key it does not share, into the register of the one it has just
+// finished with. That is one 16-byte load a stripe where the pair was two
+// on the even stripes and two unaligned ones on the odd, and on a Neoverse
+// N2, which issues this loop as fast as it dispatches it, an ldp of two
+// vectors dispatches as two operations like the loads it replaces: the
+// window saves an operation a stripe, and measured 3.7% of the loop in a
+// probe of it. The load reaches four words past the stripe, which a
+// secret always has: hashLong's own window for the scalar lanes reaches
+// eight.
+//
+// The window turns over two keys a parity every four stripes, so it needs
+// an unroll that is a multiple of four to come back to the register it
+// started in; GroupBegin fills it.
+func (a *arm64) stripeNEONWindow(k int, in GPR, inOff int, sec GPR, secOff int) {
+	if a.nvec != 2 || a.unroll%4 != 0 {
+		panic("asmgen: the key window is for a two-register stripe and an unroll of a multiple of four")
+	}
+	win := a.winE
+	if k%2 == 1 {
+		win = a.winO
+	}
+	ka, kb := win[(k/2)%2], win[(k/2+1)%2]
+	t := a.tmp[6*(k%2):]
+	d0, d1, x0, x1, lo, hi := t[0], t[1], t[2], t[3], t[4], t[5]
+	a.vloadPair(d0, d1, in, inOff)
+	a.vxor(x0, d0, ka)
+	a.vxor(x1, d1, kb)
+	// ka is done with: it takes the key two stripes of this parity on,
+	// which starts four words past this stripe's.
+	a.vload(ka, sec, secOff+32)
+	a.uzp(lo, x0, x1, false)
+	a.uzp(hi, x0, x1, true)
+	a.umlalNEON(a.accA[0], lo, hi, false)
+	a.umlalNEON(a.accA[1], lo, hi, true)
+	a.vadd(a.accB[0], a.accB[0], d0)
+	a.vadd(a.accB[1], a.accB[1], d1)
 }
 
 func (a *arm64) stripeSVE(k int, in GPR, inOff int, sec GPR, secOff int) {

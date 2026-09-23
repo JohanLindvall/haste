@@ -262,7 +262,8 @@ func (d *Digest) write(p []byte) {
 }
 
 // absorb handles a write that does not fit the staging area, and reports
-// whether it took all of p.
+// whether it took all of p. Which path a write takes is drainMax's call; see
+// konst_other.go and konst_arm64.go.
 //
 // A small write drains: the staged whole stripes are absorbed with one
 // kernel call and the window and the staged remainder slide down, so that p
@@ -294,7 +295,7 @@ func (d *Digest) absorb(p []byte) bool {
 	sec := d.secretPtr()
 	soFar := d.nbStripesSoFar
 
-	if len(p) < internalBufferSize-(stripeLen-1) {
+	if len(p) < drainMax {
 		k := int(uint(d.bufUsed) / stripeLen)
 		accumBlocks(&d.acc, unsafe.Pointer(&d.buf[stripeLen]), k, sec, d.secretLimit, soFar)
 		d.nbStripesSoFar = d.wrap(soFar + k)
@@ -411,13 +412,16 @@ func (d *Digest) Sum64() uint64 {
 	// derived at construction. After a drain, digestLong absorbs what is
 	// staged and the final stripe, on a copy of the accumulators so that the
 	// Digest stays usable.
+	if hasLongMerge && d.totalLen <= internalBufferSize {
+		return hashLong64(unsafe.Pointer(&d.buf[stripeLen]), int(d.totalLen), d.secretPtr(), d.secretLimit)
+	}
 	var acc [accNB]uint64
 	if d.totalLen > internalBufferSize {
 		d.digestLong(&acc)
 	} else {
 		hashLongStaged(&acc, unsafe.Pointer(&d.buf[stripeLen]), int(d.totalLen), d.secretPtr(), d.secretLimit)
 	}
-	return mergeAccs(&acc, add(d.secretPtr(), secretMergeAccsStart), d.totalLen*prime64_1)
+	return mergeAccs(&acc, add(d.secretPtr(), secretMergeAccsStart), d.totalLen*kPrime64_1)
 }
 
 // Sum128 returns the 128-bit hash of everything written so far.
@@ -430,6 +434,11 @@ func (d *Digest) Sum128() Uint128 {
 		return sum128NS(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
 			d.secretPtr(), d.secretLimit+stripeLen)
 	}
+	if hasLongMerge && d.totalLen <= internalBufferSize {
+		var r [2]uint64
+		hashLong128(&r, unsafe.Pointer(&d.buf[stripeLen]), int(d.totalLen), d.secretPtr(), d.secretLimit)
+		return Uint128{Lo: r[0], Hi: r[1]}
+	}
 	var acc [accNB]uint64
 	if d.totalLen > internalBufferSize {
 		d.digestLong(&acc)
@@ -438,9 +447,9 @@ func (d *Digest) Sum128() Uint128 {
 	}
 	sec := d.secretPtr()
 	return Uint128{
-		Lo: mergeAccs(&acc, add(sec, secretMergeAccsStart), d.totalLen*prime64_1),
+		Lo: mergeAccs(&acc, add(sec, secretMergeAccsStart), d.totalLen*kPrime64_1),
 		Hi: mergeAccs(&acc, add(sec, uintptr(d.secretLimit+stripeLen-8*accNB-secretMergeAccsStart)),
-			^(d.totalLen * prime64_2)),
+			^(d.totalLen * kPrime64_2)),
 	}
 }
 

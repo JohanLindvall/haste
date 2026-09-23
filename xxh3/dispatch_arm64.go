@@ -99,8 +99,8 @@ func setBackend(name string) bool {
 	return false
 }
 
-// The four entry points are assembly, in dispatch_arm64.s: each reads
-// backend and jumps to the kernel it names, as the amd64 ones do. A Go
+// The entry points are assembly, in dispatch_arm64.s: each reads backend
+// and jumps to the kernel it names, as the amd64 ones do. A Go
 // switch here was a real call between sum64NS and the kernel -- six cases
 // are far past the inliner's budget -- with a frame, a stack check and the
 // eight arguments spilled for the ABI0 call inside it: 22 instructions on
@@ -128,12 +128,31 @@ func accumBlocks2(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsa
 func hashLongStaged(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
 
 // useSeedKernel reports whether a seeded input of n bytes should take
-// hashLongSeed. Here it never does: there is no seeded kernel, the seeded
-// long paths derive the secret into memory and take hashLong, and
-// hashLongSeed is the portable form of the kernel's contract, for the tests
-// that hold the amd64 kernels to it.
+// hashLongSeed, amd64's seeded kernel. Here nothing does: hasLongMerge
+// routes every seeded long input to hashLongSeed64 or hashLongSeed128, and
+// hashLongSeed is the portable form of the amd64 contract, for the tests
+// that are written once for every build.
 func useSeedKernel(n uintptr) bool { return false }
 
 func hashLongSeed(keys *[2 * accNB]uint64, in unsafe.Pointer, n int, seed uint64) {
 	hashLongSeedGeneric(keys, in, n, seed)
 }
+
+// hasLongMerge says the one-shot long paths take the kernels that finish
+// the hash themselves: hashLong64 and hashLong128, and the seeded pair,
+// which derive the secret into their own frame. See MergeArch and
+// DerivedSeedArch in the generator. All four are assembly, in
+// dispatch_arm64.s: a jump to the kernel of the backend dispatch picked.
+const hasLongMerge = true
+
+//go:noescape
+func hashLong64(in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) uint64
+
+//go:noescape
+func hashLong128(out *[2]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
+
+//go:noescape
+func hashLongSeed64(in unsafe.Pointer, n int, seed uint64) uint64
+
+//go:noescape
+func hashLongSeed128(out *[2]uint64, in unsafe.Pointer, n int, seed uint64)

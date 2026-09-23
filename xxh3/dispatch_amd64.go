@@ -148,3 +148,24 @@ var seedKernelMax = [4]uintptr{
 
 //go:noescape
 func hashLongSeed(keys *[2 * accNB]uint64, in unsafe.Pointer, n int, seed uint64)
+
+// hasLongMerge says the one-shot long paths take kernels that finish the
+// hash themselves, which only arm64 has. These are their portable forms,
+// which nothing here calls but the tests written once for every build.
+const hasLongMerge = false
+
+func hashLong64(in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) uint64 {
+	return hashLong64Generic(in, n, sec, secretLimit)
+}
+
+func hashLong128(out *[2]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) {
+	hashLong128Generic(out, in, n, sec, secretLimit)
+}
+
+func hashLongSeed64(in unsafe.Pointer, n int, seed uint64) uint64 {
+	return hashLongSeed64Generic(in, n, seed)
+}
+
+func hashLongSeed128(out *[2]uint64, in unsafe.Pointer, n int, seed uint64) {
+	hashLongSeed128Generic(out, in, n, seed)
+}

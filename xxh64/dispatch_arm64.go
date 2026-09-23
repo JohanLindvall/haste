@@ -36,10 +36,10 @@ func Backend() string {
 	return "madd"
 }
 
-// sum64NS is the unseeded entry points' route to the kernel. Only amd64
-// generates a twin for it; here it is the seeded kernel with a zero, which is
-// what arm64 did before the twin existed.
-func sum64NS(p unsafe.Pointer, n int) uint64 { return sum64(p, n, 0) }
+// sum64NS is the unseeded entry points' route to the kernel: the twin with
+// the seed folded to zero, which neither the caller nor the kernel then
+// passes, loads or adds.
+func sum64NS(p unsafe.Pointer, n int) uint64 { return sum64ScalarNS(p, n) }
 
 // setBackend forces a form, for tests and benchmarks; both run on any arm64
 // core.

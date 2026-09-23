@@ -30,7 +30,7 @@ const (
 // The 4..8 byte path reads the first and last four bytes, which for a
 // four-byte input are the same four, so v appears twice.
 func Sum64Uint32(v uint32) uint64 {
-	return rrmxmx(uint64(v)|uint64(v)<<32^bitflip4to8, 4)
+	return rrmxmx(uint64(v)|uint64(v)<<32^kBitflip4to8, 4)
 }
 
 // Sum64Uint64 returns the 64-bit XXH3 hash of v's eight little-endian bytes.
@@ -38,7 +38,7 @@ func Sum64Uint32(v uint32) uint64 {
 // The same path swaps the halves of the input before keying it, which for a
 // whole 64-bit word is one rotate.
 func Sum64Uint64(v uint64) uint64 {
-	return rrmxmx(bits.RotateLeft64(v, 32)^bitflip4to8, 8)
+	return rrmxmx(bits.RotateLeft64(v, 32)^kBitflip4to8, 8)
 }
 
 // Sum64Uint32Seed returns the 64-bit XXH3 hash of v's four little-endian
@@ -46,21 +46,21 @@ func Sum64Uint64(v uint64) uint64 {
 // makes it usable per hash table rather than per program.
 func Sum64Uint32Seed(v uint32, seed uint64) uint64 {
 	seed ^= uint64(bits.ReverseBytes32(uint32(seed))) << 32
-	return rrmxmx(uint64(v)|uint64(v)<<32^(bitflip4to8-seed), 4)
+	return rrmxmx(uint64(v)|uint64(v)<<32^(kBitflip4to8-seed), 4)
 }
 
 // Sum64Uint64Seed returns the 64-bit XXH3 hash of v's eight little-endian
 // bytes, keyed by seed.
 func Sum64Uint64Seed(v, seed uint64) uint64 {
 	seed ^= uint64(bits.ReverseBytes32(uint32(seed))) << 32
-	return rrmxmx(bits.RotateLeft64(v, 32)^(bitflip4to8-seed), 8)
+	return rrmxmx(bits.RotateLeft64(v, 32)^(kBitflip4to8-seed), 8)
 }
 
 // Sum64Uint128Seed returns the 64-bit XXH3 hash of sixteen bytes, keyed by
 // seed. See Sum64Uint128 for the byte order.
 func Sum64Uint128Seed(lo, hi, seed uint64) uint64 {
-	a := lo ^ (bitflip9lo + seed)
-	b := hi ^ (bitflip9hi - seed)
+	a := lo ^ (kBitflip9lo + seed)
+	b := hi ^ (kBitflip9hi - seed)
 	return avalanche(16 + bits.ReverseBytes64(a) + b + mul128Fold64(a, b))
 }
 
@@ -75,7 +75,7 @@ func Sum64Uint128Seed(lo, hi, seed uint64) uint64 {
 // Taking the halves by value rather than the array by pointer is what keeps
 // this inside the inliner's budget.
 func Sum64Uint128(lo, hi uint64) uint64 {
-	a := lo ^ bitflip9lo
-	b := hi ^ bitflip9hi
+	a := lo ^ kBitflip9lo
+	b := hi ^ kBitflip9hi
 	return avalanche(16 + bits.ReverseBytes64(a) + b + mul128Fold64(a, b))
 }

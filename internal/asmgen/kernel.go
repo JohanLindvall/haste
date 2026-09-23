@@ -13,6 +13,10 @@ import "fmt"
 //	accum<B>(acc, in, nbStripes, sec)                  one run, no scramble
 //	accumBlocks2<B>(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)
 //	                                                   streaming, two runs
+//
+// A SeededArch backend (x86) adds hashLongSeed, and a MergeArch one (arm64)
+// the one-shot kernels that finish the hash themselves: hashLong64,
+// hashLong128 and, for a DerivedSeedArch, hashLongSeed64 and hashLongSeed128.
 
 // Funcs returns the four function definitions a backend generates, in the
 // order EmitAll emits them.
@@ -70,6 +74,16 @@ func SeededFunc(suffix string) FuncDef {
 	}
 }
 
+// SeededFuncFor is SeededFunc for the backend a, or false if it has no
+// such kernel. A DerivedSeedArch backend has seeded kernels of its own
+// shape instead, among LongFuncs.
+func SeededFuncFor(a Arch, suffix string) (FuncDef, bool) {
+	if _, ok := a.(SeededArch); ok {
+		return SeededFunc(suffix), true
+	}
+	return FuncDef{}, false
+}
+
 // EmitSeeded emits the seeded one-shot kernel, if the backend has one.
 func EmitSeeded(new func() Arch) (Arch, bool) {
 	a := new()
@@ -78,6 +92,42 @@ func EmitSeeded(new func() Arch) (Arch, bool) {
 	}
 	return emit(a, emitHashLongSeed), true
 }
+
+// DerivedSeedArch is a backend whose seeded kernels derive the secret into
+// memory, as the reference does, rather than applying the seed at every
+// secret load the way SeededArch does.
+//
+// The derivation is what made the reference's way slow in Go -- a loop of
+// 24 scalar loads, adds and stores, a zeroed 192-byte array and two more
+// call levels, some 150 instructions of a 256-byte hash -- and on a Zen 4
+// its 8-byte stores also could not be forwarded to the kernel's wide loads.
+// Neither holds for a kernel on arm64: twelve 16-byte vector adds derive
+// the whole secret into the kernel's own frame, which needs no zeroing, and
+// a Neoverse N2 forwards 16-byte stores to the loads that follow them,
+// misaligned ones included, at a cost measured at about two cycles. What is
+// left is a fixed cost per hash, where the seed applied at every load is a
+// cost per stripe: on that core two or three more instructions a stripe,
+// 7-8% of a loop bound by how many it dispatches, where the fixed cost is
+// a few dozen instructions. So these kernels have no length cap. Their
+// merges are MergeArch's, from the derived copy.
+type DerivedSeedArch interface {
+	Arch
+	// SecretGPR is the register the prologue puts the default secret's
+	// address in.
+	SecretGPR() GPR
+	// FrameSecret sets dst to the address of the 192-byte buffer in the
+	// kernel's frame, 16-byte aligned.
+	FrameSecret(dst GPR)
+	// DeriveSecret writes the secret the seed in r derives from the default
+	// one at [src] to [dst]: each word plus the seed where its index is even
+	// and minus it where it is odd.
+	DeriveSecret(dst, src, seed GPR)
+}
+
+// seededFrame is the frame a DerivedSeedArch kernel asks for. arm64 puts a
+// frame's locals at [RSP+8, RSP+8+size), so the secret goes at RSP+16 to
+// be 16-byte aligned, and the frame is that much larger than the secret.
+const seededFrame = secretDefaultSize + 16
 
 // SeededArch is a backend that can run the seeded one-shot kernel.
 //
@@ -315,12 +365,190 @@ func emit(a Arch, f func(Arch)) Arch {
 // assembly dispatcher that landed beside it, Sum64 is 6-7% quicker over
 // 256..1024 bytes and Sum128 4-7%.
 func emitHashLong(a Arch) {
+	emitHashLongWith(a, nil, func() { a.StoreAcc(a.ArgGPR(0)) })
+}
+
+// longArgs are the registers hashLong's body finds its input, length,
+// secret and limit in.
+type longArgs struct{ in, n, sec, lim GPR }
+
+// MergeArch is a backend whose one-shot kernels finish the hash themselves:
+// the accumulators keyed, folded and summed and the result avalanched in
+// the kernel, where hashLong stores them for Go to reload and do the same.
+//
+// What that saves is everything around the merge rather than the merge's
+// own arithmetic, which is the same instructions either way: the zeroing of
+// the array Go passes for the accumulators (the compiler owes a //go:noescape
+// callee that), the kernel's stores into it and Go's loads out of it, and a
+// 64-bit constant or two; on arm64 a vector-to-general-purpose move stands in
+// for a store and a reload. On a Neoverse N2 that was 22 instructions of a
+// 256-byte hash: Sum64 2.7% faster there, Sum128 4.6%, 3.3% and 1.7% at 256,
+// 512 and 1024 bytes, and the seeded hashes 7% from 256 bytes to a
+// kibibyte. The constants come from the table the kernel already holds for
+// initAcc, which is why these kernels read longTable -- initAcc and then the
+// avalanche multiplier -- rather than initAcc: an earlier version of this,
+// with the constants built by movz and movk, measured neutral.
+type MergeArch interface {
+	Arch
+	// LongStart sets dst to n times the table's word slot, complemented if
+	// not: the merge's starting value.
+	LongStart(dst, n GPR, slot int, not bool)
+	// KeyAt sets dst = src + off.
+	KeyAt(dst, src GPR, off int)
+	// MergeLong leaves in ret avalanche(start + the four folds of the
+	// materialized accumulators, keyed by the eight words at [key]). It
+	// leaves the accumulators as they were, and the registers named in keep.
+	MergeLong(ret, start, key GPR, keep ...GPR)
+	// StorePair stores lo and hi to [p] and [p+8].
+	StorePair(lo, hi, p GPR)
+}
+
+// The words of longTable the merging kernels read beyond the accumulators'
+// start: prime64_1 and prime64_2 are initAcc's second and third, and the
+// avalanche multiplier follows initAcc.
+const (
+	longSlotPrime1    = 1
+	longSlotPrime2    = 2
+	longSlotAvalanche = 8
+)
+
+// LongFuncs are the one-shot kernels of a MergeArch backend that return the
+// hash rather than the accumulators, unseeded and, for a DerivedSeedArch,
+// seeded.
+func LongFuncs(a Arch, suffix string) []FuncDef {
+	if _, ok := a.(MergeArch); !ok {
+		return nil
+	}
+	defs := []FuncDef{{
+		Name:  "hashLong64" + suffix,
+		Args:  []string{"in", "n", "sec", "secretLimit"},
+		Ret:   "uint64",
+		Table: "longTable",
+		Doc:   "is the 64-bit XXH3 of a long input: hashLong, and then the merge and avalanche in the kernel",
+	}, {
+		Name:  "hashLong128" + suffix,
+		Args:  []string{"out", "in", "n", "sec", "secretLimit"},
+		Table: "longTable",
+		Doc:   "is the 128-bit XXH3 of a long input, low half then high into out: hashLong, and then both merges and avalanches in the kernel",
+	}}
+	if _, ok := a.(DerivedSeedArch); ok {
+		defs = append(defs, FuncDef{
+			Name:   "hashLongSeed64" + suffix,
+			Args:   []string{"in", "n", "seed"},
+			Ret:    "uint64",
+			Table:  "longTable",
+			Secret: "kSecret",
+			Frame:  seededFrame,
+			Doc:    "is the 64-bit XXH3 of a long input under seed: the secret derived into the kernel's frame, hashLong over it, and the merge in the kernel",
+		}, FuncDef{
+			Name:   "hashLongSeed128" + suffix,
+			Args:   []string{"out", "in", "n", "seed"},
+			Table:  "longTable",
+			Secret: "kSecret",
+			Frame:  seededFrame,
+			Doc:    "is the 128-bit XXH3 of a long input under seed, low half then high into out",
+		})
+	}
+	return defs
+}
+
+// EmitLong emits LongFuncs' kernels, in the same order.
+func EmitLong(new func() Arch) []Arch {
+	if _, ok := new().(MergeArch); !ok {
+		return nil
+	}
+	ks := []Arch{emit(new(), emitHashLong64), emit(new(), emitHashLong128)}
+	if _, ok := new().(DerivedSeedArch); ok {
+		ks = append(ks, emit(new(), emitHashLongSeed64), emit(new(), emitHashLongSeed128))
+	}
+	return ks
+}
+
+func emitHashLong64(a Arch) {
+	args := longArgs{a.ArgGPR(0), a.ArgGPR(1), a.ArgGPR(2), a.ArgGPR(3)}
+	emitHashLongArgs(a, args, nil, func() { emitMerge64(a, args) })
+}
+
+func emitHashLong128(a Arch) {
+	args := longArgs{a.ArgGPR(1), a.ArgGPR(2), a.ArgGPR(3), a.ArgGPR(4)}
+	emitHashLongArgs(a, args, nil, func() { emitMerge128(a, args, a.ArgGPR(0)) })
+}
+
+// seededLong is the seeded merging kernels' prologue:
+// the secret derived into the frame, and sec and lim pointed at it.
+func seededLong(a Arch, seed, sec, lim GPR) func() {
+	da := a.(DerivedSeedArch)
+	if da.SecretGPR() != lim {
+		panic("asmgen: the seeded kernel expects its secret where hashLong's limit goes")
+	}
+	return func() {
+		buf := a.TmpGPR(0)
+		da.FrameSecret(buf)
+		da.DeriveSecret(buf, da.SecretGPR(), seed)
+		a.MovRR(sec, buf)
+		a.MovRI(lim, seededSecretLimit)
+	}
+}
+
+func emitHashLongSeed64(a Arch) {
+	// The seed arrives where hashLong's secret goes; the derived secret's
+	// pointer takes the next register and its limit the one after, which
+	// is where the prologue left the default secret.
+	args := longArgs{a.ArgGPR(0), a.ArgGPR(1), a.ArgGPR(3), a.ArgGPR(4)}
+	emitHashLongArgs(a, args, seededLong(a, a.ArgGPR(2), args.sec, args.lim), func() { emitMerge64(a, args) })
+}
+
+func emitHashLongSeed128(a Arch) {
+	args := longArgs{a.ArgGPR(1), a.ArgGPR(2), a.ArgGPR(3), a.ArgGPR(4)}
+	emitHashLongArgs(a, args, seededLong(a, a.ArgGPR(3), args.sec, args.lim), func() { emitMerge128(a, args, a.ArgGPR(0)) })
+}
+
+// emitMerge64 is the 64-bit merge: start from n*prime64_1, keyed by the
+// secret at secretMergeAccsStart, into RetGPR.
+func emitMerge64(a Arch, args longArgs) {
+	ma := a.(MergeArch)
+	start, key := a.TmpGPR(0), a.TmpGPR(1)
+	ma.LongStart(start, args.n, longSlotPrime1, false)
+	ma.KeyAt(key, args.sec, secretMergeAccsStart)
+	ma.MergeLong(a.RetGPR(), start, key)
+}
+
+// emitMerge128 is both merges: the low half as the 64-bit hash, the high
+// half from ^(n*prime64_2) keyed by the secret secretMergeAccsStart before
+// its last stripe, and both stored to [out].
+func emitMerge128(a Arch, args longArgs, out GPR) {
+	ma := a.(MergeArch)
+	start, key, lo, hi := a.TmpGPR(0), a.TmpGPR(1), a.TmpGPR(2), a.TmpGPR(3)
+	ma.LongStart(start, args.n, longSlotPrime1, false)
+	ma.KeyAt(key, args.sec, secretMergeAccsStart)
+	ma.MergeLong(lo, start, key, out)
+	ma.LongStart(start, args.n, longSlotPrime2, true)
+	a.AddRRR(key, args.sec, args.lim)
+	a.SubRI(key, secretMergeAccsStart)
+	ma.MergeLong(hi, start, key, out, lo)
+	ma.StorePair(lo, hi, out)
+}
+
+// emitHashLongWith is emitHashLong with two hooks: prologue runs after
+// Setup, before the accumulators are loaded, and store replaces the final
+// StoreAcc. emitHashLongArgs is the same with the argument registers named:
+// the merging kernels take different arguments, and the seeded ones derive
+// their secret in the first hook and merge in the second.
+func emitHashLongWith(a Arch, prologue, store func()) {
+	emitHashLongArgs(a, longArgs{a.ArgGPR(1), a.ArgGPR(2), a.ArgGPR(3), a.ArgGPR(4)}, prologue, store)
+}
+
+func emitHashLongArgs(a Arch, args longArgs, prologue, store func()) {
 	b := a.Build()
-	acc, in, n, sec, lim := a.ArgGPR(0), a.ArgGPR(1), a.ArgGPR(2), a.ArgGPR(3), a.ArgGPR(4)
+	in, n, sec, lim := args.in, args.n, args.sec, args.lim
 	blk, rem, cnt, s, end, tmp := a.TmpGPR(0), a.TmpGPR(1), a.TmpGPR(2), a.TmpGPR(3), a.TmpGPR(4), a.TmpGPR(5)
 	noOverlap(a, 5, 6)
 
-	a.Setup(true)
+	late, lateSetup := a.(LateScrambleSetup)
+	a.Setup(!lateSetup)
+	if prologue != nil {
+		prologue()
+	}
 	a.LoadAcc(a.TableGPR(), true)
 
 	// end = in + n - 64, the address of the final stripe.
@@ -356,9 +584,16 @@ func emitHashLong(a Arch) {
 		a.Jmp(afterBlocks)
 		b.Label(generic)
 	}
-	b.Label(blockLoop)
-	a.BranchR(rem, blk, LT, afterBlocks)
-	{
+	if lateSetup {
+		// The scramble's constants are built only on the path that reaches
+		// a scramble, and the block loop is tested at its foot: an input
+		// of a kibibyte or less, which runs no block, skips both.
+		if a.FastBlockStripes() > 0 {
+			panic("asmgen: a late scramble setup with a fast block loop")
+		}
+		a.BranchR(rem, blk, LT, afterBlocks)
+		late.SetupScramble()
+		b.Label(blockLoop)
 		a.ShrRRI(cnt, lim, 3)
 		a.MovRR(s, sec)
 		emitStripeLoop(a, in, s, cnt)
@@ -368,14 +603,31 @@ func emitHashLong(a Arch) {
 		a.Scramble(tmp, 0)
 
 		a.SubRR(rem, blk)
-		a.Jmp(blockLoop)
+		a.BranchR(rem, blk, GE, blockLoop)
+	} else {
+		b.Label(blockLoop)
+		a.BranchR(rem, blk, LT, afterBlocks)
+		{
+			a.ShrRRI(cnt, lim, 3)
+			a.MovRR(s, sec)
+			emitStripeLoop(a, in, s, cnt)
+
+			a.Materialize(false)
+			a.AddRRR(tmp, sec, lim)
+			a.Scramble(tmp, 0)
+
+			a.SubRR(rem, blk)
+			a.Jmp(blockLoop)
+		}
 	}
 	b.Label(afterBlocks)
 
 	// The stripes after the last whole block reuse the secret from its start.
+	// Nothing reads in or s after them, which lets a backend that wants it
+	// take the last few without advancing either.
 	a.ShrRRI(cnt, rem, 6)
 	a.MovRR(s, sec)
-	emitStripeLoop(a, in, s, cnt)
+	emitStripeLoopTail(a, in, s, cnt, true)
 
 	// The final stripe is taken from the end of the input, overlapping
 	// whatever came before it, under a secret deliberately misaligned from the
@@ -385,7 +637,7 @@ func emitHashLong(a Arch) {
 	a.Stripe(Standalone, end, 0, tmp, 0)
 
 	a.Materialize(true)
-	a.StoreAcc(acc)
+	store()
 	a.Finish()
 }
 
@@ -537,7 +789,29 @@ func emitBlockWalk(a Arch, runs int) {
 // operations, so the loop overhead would otherwise be a measurable share of
 // it; the remainder loop handles counts that are not a multiple of the unroll,
 // which happens on the trailing stripes of every input.
-func emitStripeLoop(a Arch, in, s, cnt GPR) {
+func emitStripeLoop(a Arch, in, s, cnt GPR) { emitStripeLoopTail(a, in, s, cnt, false) }
+
+// LateScrambleSetup is a backend whose hashLong builds the scramble's
+// constants only on the path that reaches a scramble, rather than in its
+// prologue. Setup(false) then covers whatever every path needs.
+type LateScrambleSetup interface {
+	// SetupScramble builds what Scramble needs beyond Setup(false).
+	SetupScramble()
+}
+
+// TailWriter is a backend whose stripe loop, where nothing reads its
+// pointers afterwards, takes the at most three stripes the groups leave
+// written out at fixed offsets rather than as a loop that advances them:
+// a compare and a branch a stripe where the loop spends two adds, a
+// subtract and a branch. hashLong's tail is the one such place, and every
+// input of 1..1024 bytes past the ladders ends in it.
+type TailWriter interface {
+	WriteOutTail() bool
+}
+
+// emitStripeLoopTail is emitStripeLoop; dead says nothing reads in or s
+// after it, which a TailWriter takes up.
+func emitStripeLoopTail(a Arch, in, s, cnt GPR, dead bool) {
 	b := a.Build()
 	u := a.Unroll()
 	unrolled, single, done := b.NewLabel("unroll"), b.NewLabel("one"), b.NewLabel("done")
@@ -602,6 +876,18 @@ func emitStripeLoop(a Arch, in, s, cnt GPR) {
 		a.BranchI(cnt, 0, LE, done)
 		b.Label(singles)
 	}
+	if tw, ok := a.(TailWriter); ok && dead && tw.WriteOutTail() && a.SecretImm() {
+		// The zero test above has left one to three; the groups leave
+		// fewer than four whatever the unroll.
+		for i := 0; i < 3; i++ {
+			if i > 0 {
+				a.BranchI(cnt, int64(i), LE, done)
+			}
+			a.Stripe(Standalone, in, stripeLen*i, s, secretConsumeRate*i)
+		}
+		b.Label(done)
+		return
+	}
 	loop := b.NewLabel("onebody")
 	b.Label(loop)
 	a.Stripe(Standalone, in, 0, s, 0)
@@ -614,9 +900,14 @@ func emitStripeLoop(a Arch, in, s, cnt GPR) {
 // Constants shared with the parent package. They are wire format: the hash
 // changes if any of them does.
 const (
-	stripeLen          = 64
-	secretConsumeRate  = 8
-	secretLastAccStart = 7
+	stripeLen            = 64
+	secretConsumeRate    = 8
+	secretLastAccStart   = 7
+	secretMergeAccsStart = 11
+
+	// secretDefaultSize is the default secret's length, the only one the
+	// seeded kernels derive.
+	secretDefaultSize = 192
 
 	// stdBlockStripes is the block length the default 192-byte secret gives:
 	// (192-64)/8. It is not wire format -- a custom secret of another length
