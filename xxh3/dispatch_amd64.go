@@ -120,3 +120,31 @@ func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsaf
 
 //go:noescape
 func accumBlocks2(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int, in2 unsafe.Pointer, nbStripes2 int)
+
+// hashLongStaged is hashLong for an input the Digest has just staged; see
+// dispatch_amd64.s for why it, accumBlocks and accumStripes take the AVX2
+// kernels where hashLong and accumBlocks2 would take AVX-512.
+//
+//go:noescape
+func hashLongStaged(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
+
+// useSeedKernel reports whether a seeded input of n bytes should take
+// hashLongSeed, which applies the seed to the default secret in registers,
+// rather than a derived copy of the secret written out for hashLong to read
+// (see SeededArch in the generator for why that copy is costly). The kernel
+// pays for it by adding the seed at every secret load, a fixed cost per
+// stripe, and past seedKernelMax that sum is more than the copy's one-off
+// cost: measured on a Zen 4, SSE2 is 3-7% faster at a kibibyte, level at
+// 1.5 KiB and 14% slower at 8 KiB; AVX2 2-3% faster at 4 KiB and 5-7%
+// slower at 8 KiB. AVX-512 holds the keyed secret in registers from two
+// blocks on and pays nothing per stripe, so it has no limit.
+func useSeedKernel(n uintptr) bool { return n <= seedKernelMax[backend&3] }
+
+var seedKernelMax = [4]uintptr{
+	backendSSE2:   1024,
+	backendAVX2:   4096,
+	backendAVX512: ^uintptr(0),
+}
+
+//go:noescape
+func hashLongSeed(keys *[2 * accNB]uint64, in unsafe.Pointer, n int, seed uint64)

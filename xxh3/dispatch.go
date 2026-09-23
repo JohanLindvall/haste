@@ -44,3 +44,20 @@ func Backend() string { return "generic" }
 // setBackend exists so that tests can be written once for every build; there
 // is nothing to select here.
 func setBackend(name string) bool { return name == "generic" }
+
+// hashLongStaged is hashLong for an input the Digest has just staged; here
+// there is only one kernel to take.
+func hashLongStaged(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int) {
+	hashLongGeneric(acc, in, n, sec, secretLimit)
+}
+
+// useSeedKernel reports whether a seeded input of n bytes should take
+// hashLongSeed. Here it never does: there is no seeded kernel, the seeded
+// long paths derive the secret into memory and take hashLong, and
+// hashLongSeed is the portable form of the kernel's contract, for the tests
+// that hold the amd64 kernels to it.
+func useSeedKernel(n uintptr) bool { return false }
+
+func hashLongSeed(keys *[2 * accNB]uint64, in unsafe.Pointer, n int, seed uint64) {
+	hashLongSeedGeneric(keys, in, n, seed)
+}

@@ -89,12 +89,6 @@ func round(acc, input uint64) uint64 {
 	return acc * prime1
 }
 
-// mergeRound folds one finished lane into the hash.
-func mergeRound(h, v uint64) uint64 {
-	h ^= round(0, v)
-	return h*prime1 + prime4
-}
-
 // initLanes is the lane state before the first block.
 func initLanes(seed uint64) [4]uint64 {
 	return [4]uint64{seed + prime1 + prime2, seed + prime2, seed, seed - prime1}
@@ -105,10 +99,12 @@ func initLanes(seed uint64) [4]uint64 {
 func mergeLanes(v *[4]uint64) uint64 {
 	h := bits.RotateLeft64(v[0], 1) + bits.RotateLeft64(v[1], 7) +
 		bits.RotateLeft64(v[2], 12) + bits.RotateLeft64(v[3], 18)
-	h = mergeRound(h, v[0])
-	h = mergeRound(h, v[1])
-	h = mergeRound(h, v[2])
-	h = mergeRound(h, v[3])
+	// Each lane folds in as round(0, v), then a multiply and an add: written
+	// out on each line, for the reason given in blocksGeneric.
+	h = (h^round(0, v[0]))*prime1 + prime4
+	h = (h^round(0, v[1]))*prime1 + prime4
+	h = (h^round(0, v[2]))*prime1 + prime4
+	h = (h^round(0, v[3]))*prime1 + prime4
 	return h
 }
 
@@ -119,11 +115,17 @@ func blocksGeneric(v *[4]uint64, p unsafe.Pointer, nb int) {
 	v1, v2, v3, v4 := v[0], v[1], v[2], v[3]
 	// Walked by offset rather than by advancing p: the pointer one past the
 	// last block is not inside the input, and checkptr says so.
+	//
+	// The rounds are written out rather than called through round: a call
+	// on a line of its own leaves an inline mark with no instruction of the
+	// caller's to sit on, which the compiler emits as a NOP, and with the
+	// load's it was two a lane -- eight in a block loop of 33 instructions
+	// on amd64, and the same on every architecture this loop is what runs.
 	for off := 0; off < nb*blockLen; off += blockLen {
-		v1 = round(v1, rd64(p, off))
-		v2 = round(v2, rd64(p, off+8))
-		v3 = round(v3, rd64(p, off+16))
-		v4 = round(v4, rd64(p, off+24))
+		v1 = bits.RotateLeft64(v1+rd64(p, off)*prime2, 31) * prime1
+		v2 = bits.RotateLeft64(v2+rd64(p, off+8)*prime2, 31) * prime1
+		v3 = bits.RotateLeft64(v3+rd64(p, off+16)*prime2, 31) * prime1
+		v4 = bits.RotateLeft64(v4+rd64(p, off+24)*prime2, 31) * prime1
 	}
 	v[0], v[1], v[2], v[3] = v1, v2, v3, v4
 }

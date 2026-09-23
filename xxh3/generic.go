@@ -62,6 +62,10 @@ const (
 	midsizeStartOffset = 3
 	midsizeLastOffset  = 17
 
+	// lastRound is where the 128-bit ladders key their final, reversed
+	// round: the 64-bit ladder's last chunk and the sixteen bytes before it.
+	lastRound = secretSizeMin - midsizeLastOffset - 16
+
 	// secretLastAccStart offsets the secret for the final stripe, and
 	// secretMergeAccsStart offsets it for accumulator convergence; both are
 	// intentionally unaligned relative to the per-stripe secret schedule.
@@ -121,15 +125,31 @@ var initAcc = [accNB]uint64{
 	prime64_4, prime32_2, prime64_5, prime32_1,
 }
 
-// xorshift64 is the shift-xor step shared by the avalanche finalizers.
-func xorshift64(v uint64, shift uint) uint64 { return v ^ (v >> shift) }
+// A note on spelling, which applies to every small helper in this package:
+// an inlined call leaves an inline mark, which the compiler turns into a
+// real one-byte NOP unless some instruction of its own sits on the calling
+// line. A helper that calls another helper on a line of its own -- the way
+// avalanche once called a xorshift64 for each of its shifts -- therefore
+// executes a NOP per call, and so does a line that does nothing but load
+// through rd64. On a Zen 4 the short paths dispatch at five ops a cycle,
+// so those NOPs were slots: two per avalanche, and up to ten per 128-bit
+// hash. The helpers are written flat, and each call sits on a line that
+// does arithmetic of its own.
+//
+// Two places keep their NOPs on purpose, sum128Seeded's 17..128 rungs and
+// len129to240_128NS: on a Zen 4 the same code without them measured 5-15%
+// slower over the lengths they serve, stalled on integer scheduler tokens
+// in one or two of the four queues while the others idled. How ops are
+// spread across the queues follows their order in the stream, and the NOPs
+// happen to spread the multiplies. Each says so where it is. So a spelling
+// change here is judged across a sweep of lengths, not by its NOP count.
 
 // avalanche is XXH3's own finalizer, used wherever a value has already been
 // well mixed and only needs its bits spread.
 func avalanche(h uint64) uint64 {
-	h = xorshift64(h, 37)
+	h ^= h >> 37
 	h *= 0x165667919E3779F9
-	return xorshift64(h, 32)
+	return h ^ h>>32
 }
 
 // avalanche64 is XXH64's stronger finalizer, used for the very short inputs
@@ -150,7 +170,7 @@ func rrmxmx(h, length uint64) uint64 {
 	h *= 0x9FB21C651E98DF25
 	h ^= (h >> 35) + length
 	h *= 0x9FB21C651E98DF25
-	return xorshift64(h, 28)
+	return h ^ h>>28
 }
 
 // mul128Fold64 multiplies to 128 bits and folds the halves together with xor,
@@ -168,129 +188,20 @@ func mix16BNS(in, sec unsafe.Pointer) uint64 {
 	return mul128Fold64(rd64(in, 0)^rd64(sec, 0), rd64(in, 8)^rd64(sec, 8))
 }
 
-// mix16B consumes 16 bytes of input against 16 bytes of secret.
+// mix16B consumes 16 bytes of input against 16 bytes of secret. The call is
+// one line on purpose: split across three, its line held no instruction and
+// every mix16B executed a NOP.
 func mix16B(in, sec unsafe.Pointer, seed uint64) uint64 {
-	return mul128Fold64(
-		rd64(in, 0)^(rd64(sec, 0)+seed),
-		rd64(in, 8)^(rd64(sec, 8)-seed),
-	)
-}
-
-// cross16 is the raw crossover term of a 16-byte chunk: its two words added.
-func cross16(p unsafe.Pointer) uint64 { return rd64(p, 0) + rd64(p, 8) }
-
-// mixHalf is one half of the 128-bit round. It folds a keyed 16-byte chunk
-// into acc and crosses in the other chunk's raw term, which is what makes each
-// half of the 128-bit hash depend on both chunks.
-//
-// The crossover is passed in rather than loaded here, and the two halves are
-// separate functions rather than one. Both exist to keep this under the
-// inliner's budget: a round that did all of it at once would be a call, and
-// the mid-size ladders run up to eight of them.
-func mixHalf(acc uint64, in, sec unsafe.Pointer, seed, cross uint64) uint64 {
-	return (acc + mix16B(in, sec, seed)) ^ cross
+	return mul128Fold64(rd64(in, 0)^(rd64(sec, 0)+seed), rd64(in, 8)^(rd64(sec, 8)-seed))
 }
 
 // ---------------------------------------------------------------------------
-// 64-bit, mid-size inputs
+// Mid-size inputs
 //
-// The 0..128 cases live in xxh3.go: they are short enough that a call would show
-// up in the measurement. Everything from here on is called.
-// ---------------------------------------------------------------------------
-
-// len129to240_64 runs a fixed 8-chunk prologue, avalanches, then a
-// length-dependent tail. The mid-stream avalanche is what keeps this path from
-// degenerating into a plain sum over many chunks.
-//
-// The prologue is written out rather than looped, and split across four
-// partial sums. Both are safe: the chunk offsets are constants here, and the
-// sums are added in the end, so regrouping them cannot change the result.
-// What it buys is eight independent 128-bit multiplies in flight instead of a
-// single chain of dependent adds.
-func len129to240_64(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint64) uint64 {
-	acc0 := uint64(n)*prime64_1 + mix16B(in, sec, seed)
-	acc1 := mix16B(add(in, 16), add(sec, 16), seed)
-	acc2 := mix16B(add(in, 32), add(sec, 32), seed)
-	acc3 := mix16B(add(in, 48), add(sec, 48), seed)
-	acc0 += mix16B(add(in, 64), add(sec, 64), seed)
-	acc1 += mix16B(add(in, 80), add(sec, 80), seed)
-	acc2 += mix16B(add(in, 96), add(sec, 96), seed)
-	acc3 += mix16B(add(in, 112), add(sec, 112), seed)
-	acc := avalanche((acc0 + acc1) + (acc2 + acc3))
-
-	// The tail walks whatever whole 16-byte chunks are left, against a secret
-	// offset by three bytes so it does not reuse the prologue's alignment.
-	// Unrolled as in the seed-free twin; see the comment there.
-	if n >= 144 {
-		acc += mix16B(add(in, 128), add(sec, midsizeStartOffset), seed)
-		if n >= 160 {
-			acc += mix16B(add(in, 144), add(sec, midsizeStartOffset+16), seed)
-			if n >= 176 {
-				acc += mix16B(add(in, 160), add(sec, midsizeStartOffset+32), seed)
-				if n >= 192 {
-					acc += mix16B(add(in, 176), add(sec, midsizeStartOffset+48), seed)
-					if n >= 208 {
-						acc += mix16B(add(in, 192), add(sec, midsizeStartOffset+64), seed)
-						if n >= 224 {
-							acc += mix16B(add(in, 208), add(sec, midsizeStartOffset+80), seed)
-							if n >= 240 {
-								acc += mix16B(add(in, 224), add(sec, midsizeStartOffset+96), seed)
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	acc += mix16B(add(in, n-16), add(sec, secretSizeMin-midsizeLastOffset), seed)
-	return avalanche(acc)
-}
-
-// len129to240_64NS is len129to240_64 without the seed; see mix16BNS.
-func len129to240_64NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) uint64 {
-	acc0 := uint64(n)*prime64_1 + mix16BNS(in, sec)
-	acc1 := mix16BNS(add(in, 16), add(sec, 16))
-	acc2 := mix16BNS(add(in, 32), add(sec, 32))
-	acc3 := mix16BNS(add(in, 48), add(sec, 48))
-	acc0 += mix16BNS(add(in, 64), add(sec, 64))
-	acc1 += mix16BNS(add(in, 80), add(sec, 80))
-	acc2 += mix16BNS(add(in, 96), add(sec, 96))
-	acc3 += mix16BNS(add(in, 112), add(sec, 112))
-	acc := avalanche((acc0 + acc1) + (acc2 + acc3))
-
-	// The tail is the reference's loop unrolled: mix i of the loop ran while
-	// i < n/16, which is the chain of length tests below, in the same order
-	// and adding into the same accumulator, so the hash cannot move. What the
-	// loop paid per mix was its counter, its bound, and a multiply for the
-	// offset; here every offset is an immediate, which is what lets the tail
-	// issue as densely as the prologue above it.
-	if n >= 144 {
-		acc += mix16BNS(add(in, 128), add(sec, midsizeStartOffset))
-		if n >= 160 {
-			acc += mix16BNS(add(in, 144), add(sec, midsizeStartOffset+16))
-			if n >= 176 {
-				acc += mix16BNS(add(in, 160), add(sec, midsizeStartOffset+32))
-				if n >= 192 {
-					acc += mix16BNS(add(in, 176), add(sec, midsizeStartOffset+48))
-					if n >= 208 {
-						acc += mix16BNS(add(in, 192), add(sec, midsizeStartOffset+64))
-						if n >= 224 {
-							acc += mix16BNS(add(in, 208), add(sec, midsizeStartOffset+80))
-							if n >= 240 {
-								acc += mix16BNS(add(in, 224), add(sec, midsizeStartOffset+96))
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	acc += mix16BNS(add(in, n-16), add(sec, secretSizeMin-midsizeLastOffset))
-	return avalanche(acc)
-}
-
-// ---------------------------------------------------------------------------
-// 128-bit, short and mid-size inputs
+// Everything up to 240 bytes lives in the cores in xxh3.go, where a call would
+// show up in the measurement, except the 128-bit 129..240 ladders: they are
+// long enough to amortize one, and inlined into the seeded core the ladder
+// cost more at shorter lengths than it saved.
 // ---------------------------------------------------------------------------
 
 // finalize128 converges the two accumulator halves into a 128-bit result. The
@@ -302,73 +213,84 @@ func finalize128(lo, hi uint64, length uintptr, seed uint64) Uint128 {
 	}
 }
 
+// len129to240_128 runs four fixed 32-byte rounds, avalanches both halves, then
+// a length-dependent tail. Each round keys one 16-byte chunk into each half and
+// crosses in the other chunk's two words added, which is what makes each half
+// of the 128-bit hash depend on both chunks.
+//
+// The rounds and the tail are both written out: Go does not unroll even a
+// constant-count loop, and a round whose offsets are immediates issues
+// measurably denser than one that computes them. The tail's length tests
+// replicate the reference loop's bound in its order, so the hash cannot move.
+// Each round sums its chunks' words on the line that loads them, which keeps
+// those lines from executing a NOP apiece; see the spelling note above.
+//
+// It is a call rather than inlined into sum128Seeded: inlined, it measured
+// 1% faster at 129..240 bytes on a Zen 4 and 1-3% slower at 17..64, and its
+// frame put that nosplit function over the linker's budget on 386 and mips64.
 func len129to240_128(in unsafe.Pointer, n uintptr, sec unsafe.Pointer, seed uint64) Uint128 {
 	lo := uint64(n) * prime64_1
 	hi := uint64(0)
-
-	// Four fixed 32-byte rounds, written out for the same reason as in
-	// len129to240_64. They are not split into partial sums: mix32B feeds each
-	// half with the other's input, so the two halves are already interleaved.
-	// Written out rather than looped: every offset is then a constant, and
-	// mixHalf inlines, so the four rounds become straight-line code with
-	// eight independent multiplies in flight.
-	c0, c1 := cross16(in), cross16(add(in, 16))
-	c2, c3 := cross16(add(in, 32)), cross16(add(in, 48))
-	c4, c5 := cross16(add(in, 64)), cross16(add(in, 80))
-	c6, c7 := cross16(add(in, 96)), cross16(add(in, 112))
-	lo = mixHalf(lo, in, sec, seed, c1)
-	hi = mixHalf(hi, add(in, 16), add(sec, 16), seed, c0)
-	lo = mixHalf(lo, add(in, 32), add(sec, 32), seed, c3)
-	hi = mixHalf(hi, add(in, 48), add(sec, 48), seed, c2)
-	lo = mixHalf(lo, add(in, 64), add(sec, 64), seed, c5)
-	hi = mixHalf(hi, add(in, 80), add(sec, 80), seed, c4)
-	lo = mixHalf(lo, add(in, 96), add(sec, 96), seed, c7)
-	hi = mixHalf(hi, add(in, 112), add(sec, 112), seed, c6)
-	lo = avalanche(lo)
-	hi = avalanche(hi)
-
-	// The tail rounds unrolled; see len129to240_64NS for why the length
-	// tests reproduce the loop's bound exactly.
+	{
+		i0, i1, ix := rd64(in, 0), rd64(in, 8), rd64(in, 0)+rd64(in, 8)
+		j0, j1, jx := rd64(in, 16), rd64(in, 24), rd64(in, 16)+rd64(in, 24)
+		lo = (lo + mul128Fold64(i0^(rd64(sec, 0)+seed), i1^(rd64(sec, 8)-seed))) ^ jx
+		hi = (hi + mul128Fold64(j0^(rd64(sec, 16)+seed), j1^(rd64(sec, 24)-seed))) ^ ix
+	}
+	{
+		i0, i1, ix := rd64(in, 32), rd64(in, 40), rd64(in, 32)+rd64(in, 40)
+		j0, j1, jx := rd64(in, 48), rd64(in, 56), rd64(in, 48)+rd64(in, 56)
+		lo = (lo + mul128Fold64(i0^(rd64(sec, 32)+seed), i1^(rd64(sec, 40)-seed))) ^ jx
+		hi = (hi + mul128Fold64(j0^(rd64(sec, 48)+seed), j1^(rd64(sec, 56)-seed))) ^ ix
+	}
+	{
+		i0, i1, ix := rd64(in, 64), rd64(in, 72), rd64(in, 64)+rd64(in, 72)
+		j0, j1, jx := rd64(in, 80), rd64(in, 88), rd64(in, 80)+rd64(in, 88)
+		lo = (lo + mul128Fold64(i0^(rd64(sec, 64)+seed), i1^(rd64(sec, 72)-seed))) ^ jx
+		hi = (hi + mul128Fold64(j0^(rd64(sec, 80)+seed), j1^(rd64(sec, 88)-seed))) ^ ix
+	}
+	{
+		i0, i1, ix := rd64(in, 96), rd64(in, 104), rd64(in, 96)+rd64(in, 104)
+		j0, j1, jx := rd64(in, 112), rd64(in, 120), rd64(in, 112)+rd64(in, 120)
+		lo = avalanche((lo + mul128Fold64(i0^(rd64(sec, 96)+seed), i1^(rd64(sec, 104)-seed))) ^ jx)
+		hi = avalanche((hi + mul128Fold64(j0^(rd64(sec, 112)+seed), j1^(rd64(sec, 120)-seed))) ^ ix)
+	}
 	if n >= 160 {
-		a, b := add(in, 128), add(in, 144)
-		ca, cb := cross16(a), cross16(b)
-		lo = mixHalf(lo, a, add(sec, midsizeStartOffset), seed, cb)
-		hi = mixHalf(hi, b, add(sec, midsizeStartOffset+16), seed, ca)
+		i0, i1, ix := rd64(in, 128), rd64(in, 136), rd64(in, 128)+rd64(in, 136)
+		j0, j1, jx := rd64(in, 144), rd64(in, 152), rd64(in, 144)+rd64(in, 152)
+		lo = (lo + mul128Fold64(i0^(rd64(sec, midsizeStartOffset)+seed), i1^(rd64(sec, midsizeStartOffset+8)-seed))) ^ jx
+		hi = (hi + mul128Fold64(j0^(rd64(sec, midsizeStartOffset+16)+seed), j1^(rd64(sec, midsizeStartOffset+24)-seed))) ^ ix
 		if n >= 192 {
-			a, b := add(in, 160), add(in, 176)
-			ca, cb := cross16(a), cross16(b)
-			lo = mixHalf(lo, a, add(sec, midsizeStartOffset+32), seed, cb)
-			hi = mixHalf(hi, b, add(sec, midsizeStartOffset+48), seed, ca)
+			i0, i1, ix := rd64(in, 160), rd64(in, 168), rd64(in, 160)+rd64(in, 168)
+			j0, j1, jx := rd64(in, 176), rd64(in, 184), rd64(in, 176)+rd64(in, 184)
+			lo = (lo + mul128Fold64(i0^(rd64(sec, midsizeStartOffset+32)+seed), i1^(rd64(sec, midsizeStartOffset+40)-seed))) ^ jx
+			hi = (hi + mul128Fold64(j0^(rd64(sec, midsizeStartOffset+48)+seed), j1^(rd64(sec, midsizeStartOffset+56)-seed))) ^ ix
 			if n >= 224 {
-				a, b := add(in, 192), add(in, 208)
-				ca, cb := cross16(a), cross16(b)
-				lo = mixHalf(lo, a, add(sec, midsizeStartOffset+64), seed, cb)
-				hi = mixHalf(hi, b, add(sec, midsizeStartOffset+80), seed, ca)
+				i0, i1, ix := rd64(in, 192), rd64(in, 200), rd64(in, 192)+rd64(in, 200)
+				j0, j1, jx := rd64(in, 208), rd64(in, 216), rd64(in, 208)+rd64(in, 216)
+				lo = (lo + mul128Fold64(i0^(rd64(sec, midsizeStartOffset+64)+seed), i1^(rd64(sec, midsizeStartOffset+72)-seed))) ^ jx
+				hi = (hi + mul128Fold64(j0^(rd64(sec, midsizeStartOffset+80)+seed), j1^(rd64(sec, midsizeStartOffset+88)-seed))) ^ ix
 			}
 		}
 	}
-	// The tail deliberately takes its two chunks in reverse order.
-	{
-		a, b := add(in, n-16), add(in, n-32)
-		ca, cb := cross16(a), cross16(b)
-		s := add(sec, secretSizeMin-midsizeLastOffset-16)
-		lo = mixHalf(lo, a, s, 0-seed, cb)
-		hi = mixHalf(hi, b, add(s, 16), 0-seed, ca)
-	}
+	// The last round deliberately takes its two chunks in reverse order, and
+	// negates the seed.
+	i0, i1, ix := rd64(in, n-16), rd64(in, n-8), rd64(in, n-16)+rd64(in, n-8)
+	j0, j1, jx := rd64(in, n-32), rd64(in, n-24), rd64(in, n-32)+rd64(in, n-24)
+	lo = (lo + mul128Fold64(i0^(rd64(sec, lastRound)-seed), i1^(rd64(sec, lastRound+8)+seed))) ^ jx
+	hi = (hi + mul128Fold64(j0^(rd64(sec, lastRound+16)-seed), j1^(rd64(sec, lastRound+24)+seed))) ^ ix
 	return finalize128(lo, hi, n, seed)
 }
 
-// len129to240_128NS is len129to240_128 without the seed.
+// len129to240_128NS is len129to240_128 without the seed, and spelled
+// differently on purpose: its loads sit on lines of their own, each of which
+// executes a NOP (see the note on spelling above). Spelled as
+// len129to240_128 is, 23 instructions fewer at 162 bytes, it measured 2.6%
+// slower over 129..240 bytes on a Zen 4 and about 5% over 160..191, where the
+// tail runs one round -- integer scheduler steering again; see sum64NS.
 func len129to240_128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) Uint128 {
 	lo := uint64(n) * prime64_1
 	hi := uint64(0)
-
-	// The four fixed rounds and the tail are both written out; Go does not
-	// unroll even a constant-count loop, and a round whose offsets are
-	// immediates issues measurably denser than one that computes them. The
-	// tail's length tests replicate the reference loop's bound in its order,
-	// so the hash cannot move; see len129to240_64NS. Each round loads its
-	// input words once, as in sum128NS.
 	{
 		i0, i1 := rd64(in, 0), rd64(in, 8)
 		j0, j1 := rd64(add(in, 16), 0), rd64(add(in, 16), 8)
@@ -418,8 +340,8 @@ func len129to240_128NS(in unsafe.Pointer, n uintptr, sec unsafe.Pointer) Uint128
 	{
 		i0, i1 := rd64(add(in, n-16), 0), rd64(add(in, n-16), 8)
 		j0, j1 := rd64(add(in, n-32), 0), rd64(add(in, n-32), 8)
-		lo = (lo + mul128Fold64(i0^rd64(add(sec, secretSizeMin-midsizeLastOffset-16), 0), i1^rd64(add(sec, secretSizeMin-midsizeLastOffset-16), 8))) ^ (j0 + j1)
-		hi = (hi + mul128Fold64(j0^rd64(add(sec, secretSizeMin-midsizeLastOffset), 0), j1^rd64(add(sec, secretSizeMin-midsizeLastOffset), 8))) ^ (i0 + i1)
+		lo = (lo + mul128Fold64(i0^rd64(add(sec, lastRound), 0), i1^rd64(add(sec, lastRound), 8))) ^ (j0 + j1)
+		hi = (hi + mul128Fold64(j0^rd64(add(sec, lastRound+16), 0), j1^rd64(add(sec, lastRound+16), 8))) ^ (i0 + i1)
 	}
 	return finalize128(lo, hi, n, 0)
 }
@@ -455,23 +377,27 @@ func accumulateGeneric(acc *[accNB]uint64, in, sec unsafe.Pointer, nbStripes int
 		// The stripe is walked one pair at a time, not loaded up front: the
 		// lane swap only ever couples d[i] with d[i^1], so a pair is done with
 		// its data as soon as it is absorbed. Loading all eight words first
-		// needs 8 data + 8 accumulator registers and spills the accumulators
-		// on amd64, which has ~14 to give; pair-wise, everything stays in
-		// registers.
-		d0, d1 := rd64(in, 0), rd64(in, 8)
-		a0 += d1 + mul32(d0^rd64(sec, 0))
-		a1 += d0 + mul32(d1^rd64(sec, 8))
-		d2, d3 := rd64(in, 16), rd64(in, 24)
-		a2 += d3 + mul32(d2^rd64(sec, 16))
-		a3 += d2 + mul32(d3^rd64(sec, 24))
-		d4, d5 := rd64(in, 32), rd64(in, 40)
-		a4 += d5 + mul32(d4^rd64(sec, 32))
-		a5 += d4 + mul32(d5^rd64(sec, 40))
-		d6, d7 := rd64(in, 48), rd64(in, 56)
-		a6 += d7 + mul32(d6^rd64(sec, 48))
-		a7 += d6 + mul32(d7^rd64(sec, 56))
-		in = add(in, stripeLen)
-		sec = add(sec, secretConsumeRate)
+		// needs 8 data + 8 accumulator registers; amd64 has ~14 to give, and
+		// pair-wise halved its spills. A RISC target's 32 hold either.
+		//
+		// Each word is read on the line that uses it and read again on the
+		// other line of its pair; the compiler merges the two reads into one
+		// load. Read on a line of their own, the pair's loads left that line
+		// with no instruction, and each became an executed NOP: eight a
+		// stripe, 7% of this loop on amd64. See the note on spelling above.
+		a0 += rd64(in, 8) + mul32(rd64(in, 0)^rd64(sec, 0))
+		a1 += rd64(in, 0) + mul32(rd64(in, 8)^rd64(sec, 8))
+		a2 += rd64(in, 24) + mul32(rd64(in, 16)^rd64(sec, 16))
+		a3 += rd64(in, 16) + mul32(rd64(in, 24)^rd64(sec, 24))
+		a4 += rd64(in, 40) + mul32(rd64(in, 32)^rd64(sec, 32))
+		a5 += rd64(in, 32) + mul32(rd64(in, 40)^rd64(sec, 40))
+		a6 += rd64(in, 56) + mul32(rd64(in, 48)^rd64(sec, 48))
+		a7 += rd64(in, 48) + mul32(rd64(in, 56)^rd64(sec, 56))
+		// unsafe.Add rather than add: the compiler moves the increments
+		// away from these lines, which left add's inline marks as two
+		// executed NOPs a stripe.
+		in = unsafe.Add(in, stripeLen)
+		sec = unsafe.Add(sec, secretConsumeRate)
 	}
 	acc[0], acc[1], acc[2], acc[3] = a0, a1, a2, a3
 	acc[4], acc[5], acc[6], acc[7] = a4, a5, a6, a7
@@ -487,7 +413,7 @@ func mul32(dataKey uint64) uint64 {
 // input cannot be reduced to a simple sum over its stripes.
 func scrambleGeneric(acc *[accNB]uint64, sec unsafe.Pointer) {
 	for i := uintptr(0); i < accNB; i++ {
-		acc[i] = (xorshift64(acc[i], 47) ^ rd64(sec, 8*i)) * prime32_1
+		acc[i] = (acc[i] ^ acc[i]>>47 ^ rd64(sec, 8*i)) * prime32_1
 	}
 }
 
@@ -520,6 +446,22 @@ func hashLongGeneric(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Po
 
 	accumulate512Generic(acc, add(in, uintptr(n-stripeLen)),
 		add(sec, uintptr(secretLimit-secretLastAccStart)))
+}
+
+// hashLongSeedGeneric is the contract of the seeded kernel in portable Go:
+// the accumulators of a long input under the secret seed derives, each
+// already xored with its word of the two merges' keys -- the derived secret
+// at secretMergeAccsStart for keys[0:8] and at secretDefaultSize less a
+// stripe less that for keys[8:16]. See sum64SeededLong.
+func hashLongSeedGeneric(keys *[2 * accNB]uint64, in unsafe.Pointer, n int, seed uint64) {
+	var secret [secretDefaultSize]byte
+	deriveSecret(&secret, seed)
+	var acc [accNB]uint64
+	hashLongGeneric(&acc, in, n, unsafe.Pointer(&secret), secretDefaultSize-stripeLen)
+	for i := uintptr(0); i < accNB; i++ {
+		keys[i] = acc[i] ^ rd64(unsafe.Pointer(&secret), secretMergeAccsStart+8*i)
+		keys[accNB+i] = acc[i] ^ rd64(unsafe.Pointer(&secret), secretDefaultSize-8*accNB-secretMergeAccsStart+8*i)
+	}
 }
 
 // accumBlocksGeneric absorbs nbStripes stripes starting soFar stripes into the
@@ -558,11 +500,9 @@ func mix2Accs(acc *[accNB]uint64, i uintptr, sec unsafe.Pointer) uint64 {
 // hash, with nothing left to overlap it, so its dependency chain is its cost:
 // worth 9% on a 256-byte hash and 4% on a kibibyte.
 func mergeAccs(acc *[accNB]uint64, sec unsafe.Pointer, start uint64) uint64 {
-	m0 := mix2Accs(acc, 0, sec)
-	m1 := mix2Accs(acc, 2, add(sec, 16))
-	m2 := mix2Accs(acc, 4, add(sec, 32))
-	m3 := mix2Accs(acc, 6, add(sec, 48))
-	return avalanche((start + m0) + (m1 + m2) + m3)
+	m := start + mix2Accs(acc, 0, sec)
+	m += mix2Accs(acc, 2, add(sec, 16)) + mix2Accs(acc, 4, add(sec, 32))
+	return avalanche(m + mix2Accs(acc, 6, add(sec, 48)))
 }
 
 // deriveSecret builds the seeded secret used by long inputs. A seeded long hash

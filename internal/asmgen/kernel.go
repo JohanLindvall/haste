@@ -56,6 +56,227 @@ func EmitAll(new func() Arch) []Arch {
 	}
 }
 
+// SeededFunc is the fifth kernel, which only a SeededArch backend has.
+func SeededFunc(suffix string) FuncDef {
+	return FuncDef{
+		Name: "hashLongSeed" + suffix,
+		Args: []string{"keys", "in", "n", "seed"},
+		// The accumulators start from initAcc, as in hashLong, and the
+		// secret is the default one, whose address the prologue puts in
+		// SecretGPR: the seed is applied to it in registers.
+		Table:  "initAcc",
+		Secret: "kSecret",
+		Doc:    "is hashLong under the secret a seed derives from the default one, applying the seed in registers rather than reading a derived copy; it writes the accumulators already keyed for the two merges, by the derived secret at secretMergeAccsStart into keys[0:8] and at secretDefaultSize-64-secretMergeAccsStart into keys[8:16]",
+	}
+}
+
+// EmitSeeded emits the seeded one-shot kernel, if the backend has one.
+func EmitSeeded(new func() Arch) (Arch, bool) {
+	a := new()
+	if _, ok := a.(SeededArch); !ok {
+		return nil, false
+	}
+	return emit(a, emitHashLongSeed), true
+}
+
+// SeededArch is a backend that can run the seeded one-shot kernel.
+//
+// A seeded XXH3 of more than 240 bytes is defined as the unseeded hash under
+// a secret derived from the default one: word w of it is kSecret's word w
+// plus the seed where w is even and minus it where w is odd. Deriving that
+// secret into memory and handing it to hashLong, which is what the reference
+// does, puts 24 eight-byte stores in front of a kernel whose first act is to
+// load 16, 32 or 64 bytes at a time across them. No such load can be
+// forwarded from narrower stores, so each one waits for the stores to reach
+// the cache: on a Zen 4 that was 20-30 store-to-load-interlock failures and
+// about 30 cycles per call, which with the derivation itself made a seeded
+// 241-byte hash cost twice an unseeded one.
+//
+// Every secret load the kernel makes starts at a whole word, at a
+// stripe-dependent word index k, and covers consecutive words, so the
+// derived value is the default secret's plus a vector of alternating seed
+// and negated seed, whose phase is the parity of k. That is one add per
+// secret load, of a pattern built once from the seed, and the final
+// stripe's key -- which starts one byte into a word -- is the two derived
+// vectors either side of it, shifted together. The secret never exists in
+// memory at all.
+type SeededArch interface {
+	Arch
+	// SecretGPR is the register the prologue puts the default secret's
+	// address in.
+	SecretGPR() GPR
+	// SetupSeed builds the seed pattern from the seed in r.
+	SetupSeed(r GPR)
+	// RefreshSeed rebuilds whatever of the pattern the fast block loop's
+	// secret registers overwrote.
+	RefreshSeed()
+	// LoadSecretRegsSeeded is LoadSecretRegs over the seeded secret.
+	LoadSecretRegsSeeded(sec GPR)
+	// StripeSeeded is Stripe keyed by the seeded secret; odd says the
+	// stripe's secret starts at an odd word.
+	StripeSeeded(k int, in GPR, inOff int, sec GPR, secOff int, odd bool)
+	// FinalStripeSeeded absorbs the final stripe, whose key starts one byte
+	// into the odd word at [sec+secOff].
+	FinalStripeSeeded(in GPR, inOff int, sec GPR, secOff int)
+	// ScrambleSeeded is Scramble keyed by the seeded secret at an even word.
+	ScrambleSeeded(sec GPR, secOff int)
+	// StoreMergeKeysSeeded stores the materialized accumulators to [p]
+	// twice, xored with the seeded secret at the two merges' offsets.
+	StoreMergeKeysSeeded(p, sec GPR)
+}
+
+// seededSecretLimit is the default secret's secretLimit, the only one the
+// seeded kernel handles.
+const seededSecretLimit = stdBlockStripes * secretConsumeRate
+
+// emitHashLongSeed is emitHashLong under the seeded default secret; see
+// SeededArch. The structure is the same -- blocks, scrambles, trailing
+// stripes, the final stripe -- with the secret fixed at the default one's
+// shape, which makes the block length and the scramble's offset constants.
+func emitHashLongSeed(a Arch) {
+	sa := a.(SeededArch)
+	b := a.Build()
+	acc, in, n, seed := a.ArgGPR(0), a.ArgGPR(1), a.ArgGPR(2), a.ArgGPR(3)
+	// The secret pointer and limit take the registers hashLong has them in,
+	// once the seed has been spent on the pattern.
+	sec, lim := a.ArgGPR(3), a.ArgGPR(4)
+	blk, rem, cnt, s, end, tmp := a.TmpGPR(0), a.TmpGPR(1), a.TmpGPR(2), a.TmpGPR(3), a.TmpGPR(4), a.TmpGPR(5)
+	noOverlap(a, 5, 6)
+	if sa.SecretGPR() != lim {
+		panic("asmgen: the seeded kernel expects its secret where hashLong's limit goes")
+	}
+
+	a.Setup(true)
+	sa.SetupSeed(seed)
+	a.MovRR(sec, sa.SecretGPR())
+	a.MovRI(lim, seededSecretLimit)
+	a.LoadAcc(a.TableGPR(), true)
+
+	a.AddRRR(end, in, n)
+	a.SubRI(end, stripeLen)
+	a.MovRI(blk, stdBlockStripes*stripeLen)
+	a.SubRRI(rem, n, 1)
+
+	blockLoop, afterBlocks := b.NewLabel("block"), b.NewLabel("tail")
+	if ns := a.FastBlockStripes(); ns > 0 {
+		if ns != stdBlockStripes {
+			panic("asmgen: seeded fast block of an unexpected length")
+		}
+		fast, generic := b.NewLabel("fast"), b.NewLabel("gen")
+		a.BranchI(rem, int64(ns*stripeLen*minFastBlocksSeeded), LT, generic)
+		sa.LoadSecretRegsSeeded(sec)
+		a.AddRRR(tmp, sec, lim)
+		b.Label(fast)
+		for k := 0; k < ns; k++ {
+			a.FastStripe(k, in, stripeLen*k)
+		}
+		a.AddRI(in, int64(stripeLen*ns))
+		a.Materialize(false)
+		sa.ScrambleSeeded(tmp, 0)
+		a.SubRR(rem, blk)
+		a.BranchR(rem, blk, GE, fast)
+		sa.RefreshSeed()
+		a.Jmp(afterBlocks)
+		b.Label(generic)
+	}
+	b.Label(blockLoop)
+	a.BranchR(rem, blk, LT, afterBlocks)
+	{
+		a.MovRI(cnt, stdBlockStripes)
+		a.MovRR(s, sec)
+		emitStripeLoopSeeded(sa, in, s, cnt)
+
+		a.Materialize(false)
+		a.AddRRR(tmp, sec, lim)
+		sa.ScrambleSeeded(tmp, 0)
+
+		a.SubRR(rem, blk)
+		a.Jmp(blockLoop)
+	}
+	b.Label(afterBlocks)
+
+	a.ShrRRI(cnt, rem, 6)
+	a.MovRR(s, sec)
+	emitStripeLoopSeeded(sa, in, s, cnt)
+
+	// The final stripe's key starts secretLastAccStart bytes before the
+	// limit, which is one byte into the odd word before it.
+	sa.FinalStripeSeeded(end, 0, sec, seededSecretLimit-secretConsumeRate)
+
+	// The merges read the secret at unaligned offsets too, and a Go merge
+	// assembling those words from the seed took sixteen of them for a
+	// 128-bit hash -- more live values than x86 has registers, which
+	// spilled. The kernel has the seed pattern in vector registers already,
+	// so it keys both merges' inputs itself, and the Go side only folds.
+	a.Materialize(true)
+	sa.StoreMergeKeysSeeded(acc, sec)
+	a.Finish()
+}
+
+// Merge-key geometry for the seeded kernel: the 64-bit merge (and the 128-bit
+// hash's low half) reads the secret at secretMergeAccsStart, eleven bytes,
+// which is word 1 shifted down three bytes; the 128-bit high half reads it at
+// the default size less a stripe less that, 117 bytes, which is word 14
+// shifted down five.
+const (
+	seededMergeLoWord  = 1
+	seededMergeLoShift = 24
+	seededMergeHiWord  = 14
+	seededMergeHiShift = 40
+)
+
+// emitStripeLoopSeeded is emitStripeLoop for the seeded kernel, which needs
+// to know each stripe's parity. Every run starts at an even word -- the
+// start of a block or of the tail -- and the groups are an even number of
+// stripes, so within a group the parity is the stripe's index; the at most
+// three stripes left after the groups are written out rather than looped,
+// so theirs is fixed too.
+//
+// Those last stripes read at fixed offsets and leave in and s where the
+// groups left them. Only the tail reaches them -- a block is sixteen
+// stripes, a whole number of groups at either unroll -- and the tail's
+// pointers are dead afterwards.
+func emitStripeLoopSeeded(sa SeededArch, in, s, cnt GPR) {
+	a := Arch(sa)
+	b := a.Build()
+	u := a.Unroll()
+	if u%2 != 0 || u > 8 {
+		panic("asmgen: seeded stripe loop needs an even unroll of at most eight")
+	}
+	unrolled, single, done := b.NewLabel("unroll"), b.NewLabel("one"), b.NewLabel("done")
+
+	a.SubBranch(cnt, int64(u), LT, single)
+	a.GroupBegin(s)
+	b.Label(unrolled)
+	for k := 0; k < u; k++ {
+		sa.StripeSeeded(k, in, stripeLen*k, s, secretConsumeRate*k, k%2 == 1)
+	}
+	a.AddRI(in, int64(stripeLen*u))
+	a.AddRI(s, int64(secretConsumeRate*u))
+	a.SubBranch(cnt, int64(u), GE, unrolled)
+
+	b.Label(single)
+	a.AddRI(cnt, int64(u))
+	if u >= 8 {
+		half := u / 2
+		singles := b.NewLabel("singles")
+		a.BranchI(cnt, int64(half), LT, singles)
+		a.GroupBegin(s)
+		for k := 0; k < half; k++ {
+			sa.StripeSeeded(k, in, stripeLen*k, s, secretConsumeRate*k, k%2 == 1)
+		}
+		a.AddRI(in, int64(stripeLen*half))
+		a.AddRI(s, int64(secretConsumeRate*half))
+		a.SubRI(cnt, int64(half))
+		b.Label(singles)
+	}
+	for i := 0; i < 3; i++ {
+		a.BranchI(cnt, int64(i), LE, done)
+		sa.StripeSeeded(Standalone, in, stripeLen*i, s, secretConsumeRate*i, i%2 == 1)
+	}
+	b.Label(done)
+}
+
 // noOverlap refuses a kernel whose first ntmp temporaries share a register
 // with one of its nargs arguments. The two pools overlap on purpose at the
 // far end -- a kernel with few arguments may use the registers the eight-
@@ -409,4 +630,13 @@ const (
 	// between three blocks and seven: at 2 KiB the register-resident block is
 	// 8% slower, at 4 KiB 2% slower, at 8 KiB 2% faster and at 16 KiB 3%.
 	minFastBlocks = 4
+
+	// minFastBlocksSeeded is minFastBlocks for the seeded kernel, which pays
+	// from fewer blocks: its registers hold keys the generic loop would have
+	// to add the seed to, one vpaddq a stripe, where the unseeded kernel's
+	// only save a folded load. Measured on a Zen 4 against four: 4.4% faster
+	// at 3 KiB and 7.8% at 4 KiB (the 128-bit hash 0.6% and 3.8%), and no
+	// different elsewhere. One block is too few: 3-5% slower over
+	// 1025..2048 bytes, for the sixteen adds of the fill up front.
+	minFastBlocksSeeded = 2
 )

@@ -217,6 +217,22 @@ func TestKernelsMatchPortable(t *testing.T) {
 					}
 				}
 			}
+
+			// hashLongSeed, called directly: the public API stops handing a
+			// backend's seeded kernel inputs past useSeedKernel's limit, so
+			// this is what holds its block loop to the portable contract at
+			// every length. Its keys are output only, like hashLong's acc.
+			for _, seed := range []uint64{1, 0x9E3779B185EBCA87, 1 << 63, ^uint64(0)} {
+				for _, n := range simLengths {
+					var want, got [2 * accNB]uint64
+					copy(got[:], garbageAcc[:])
+					hashLongSeedGeneric(&want, bp, n, seed)
+					hashLongSeed(&got, bp, n, seed)
+					if got != want {
+						t.Fatalf("hashLongSeed len=%d seed=%#x:\n got %v\nwant %v", n, seed, got, want)
+					}
+				}
+			}
 		})
 	}
 }

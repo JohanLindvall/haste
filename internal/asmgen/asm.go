@@ -117,7 +117,11 @@ type FuncDef struct {
 	// How it is reached is the architecture's: by address in TableGPR, or
 	// slot by slot into registers -- see TableLoader.
 	Table string
-	Doc   string
+	// Secret names a second package-level variable whose address the
+	// prologue loads, into the register the kernel's SecretGPR names; only
+	// the seeded one-shot kernel has one.
+	Secret string
+	Doc    string
 
 	// FormJump names a kernel this one hands the whole call off to when
 	// FormFlag is nonzero: the prologue tests the flag and, if set, jumps to

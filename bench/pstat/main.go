@@ -54,6 +54,16 @@ var tables = map[string]table{
 			"tokens": {"de_dis_dispatch_token_stalls1.int_phy_reg_file_rsrc_stall",
 				"de_dis_dispatch_token_stalls1.fp_reg_file_rsrc_stall", "de_dis_dispatch_token_stalls1.load_queue_rsrc_stall",
 				"de_dis_dispatch_token_stalls1.store_queue_rsrc_stall", "de_dis_dispatch_token_stalls2.retire_token_stall"},
+			// Dispatch waiting on a token from one of the four integer
+			// scheduler queues. Read these when a short path's cycles move
+			// and its instruction count, the front end and the predictor do
+			// not: on a Zen 4 the same instructions in another order
+			// measured 10-15% apart, with one or two of these queues full
+			// and the others idle. Four events, so that with cycles they
+			// fit the five counters the NMI watchdog leaves.
+			"sched": {"de_dis_dispatch_token_stalls2.int_sch0_token_stall",
+				"de_dis_dispatch_token_stalls2.int_sch1_token_stall", "de_dis_dispatch_token_stalls2.int_sch2_token_stall",
+				"de_dis_dispatch_token_stalls2.int_sch3_token_stall"},
 			"fp": {"fp_ops_retired_by_width.all", "fp_ops_retired_by_width.pack_512_uops_retired",
 				"fp_ops_retired_by_width.pack_256_uops_retired", "fp_ops_retired_by_width.pack_128_uops_retired", "fp_disp_faults.all"},
 		},
@@ -69,6 +79,10 @@ var tables = map[string]table{
 			"de_dis_dispatch_token_stalls1.load_queue_rsrc_stall":       "ldq",
 			"de_dis_dispatch_token_stalls1.store_queue_rsrc_stall":      "stq",
 			"de_dis_dispatch_token_stalls2.retire_token_stall":          "retire",
+			"de_dis_dispatch_token_stalls2.int_sch0_token_stall":        "sch0",
+			"de_dis_dispatch_token_stalls2.int_sch1_token_stall":        "sch1",
+			"de_dis_dispatch_token_stalls2.int_sch2_token_stall":        "sch2",
+			"de_dis_dispatch_token_stalls2.int_sch3_token_stall":        "sch3",
 			"fp_ops_retired_by_width.all":                               "fpops", "fp_ops_retired_by_width.pack_512_uops_retired": "fp512",
 			"fp_ops_retired_by_width.pack_256_uops_retired": "fp256", "fp_ops_retired_by_width.pack_128_uops_retired": "fp128",
 			"fp_disp_faults.all": "fpfault",
@@ -133,7 +147,7 @@ var cellRE = regexp.MustCompile(`(?m)^(\S+?)(?:-\d+)?\s+(\d+)\s+([\d.]+) ns/op`)
 func main() {
 	bin := flag.String("bin", "", "test binary to run")
 	bench := flag.String("bench", "", "-test.bench regexp selecting exactly one cell")
-	groupList := flag.String("groups", "core", "comma-separated event groups; amd: core, front, mem, tokens, fp; intel: core, topdown, front, mem, ports, exec; arm: core, spec")
+	groupList := flag.String("groups", "core", "comma-separated event groups; amd: core, front, mem, tokens, sched, fp; intel: core, topdown, front, mem, ports, exec; arm: core, spec")
 	events := flag.String("events", "", "explicit comma-separated events, at most five, instead of -groups")
 	benchtime := flag.String("benchtime", "1s", "-test.benchtime for each run")
 	core := flag.Int("core", 2, "core to pin the benchmark to")

@@ -108,9 +108,12 @@ func mum(a, b uint64) (lo, hi uint64) {
 	return lo, hi
 }
 
-// mix folds a 128-bit product down to 64 bits.
+// mix folds a 128-bit product down to 64 bits. It multiplies itself rather
+// than calling mum: a helper whose line holds nothing but a call to another
+// leaves an inline mark the compiler emits as a NOP, and that was one per
+// mix, fourteen in each 224-byte iteration of the portable block loop.
 func mix(a, b uint64) uint64 {
-	lo, hi := mum(a, b)
+	hi, lo := bits.Mul64(a, b)
 	return lo ^ hi
 }
 

@@ -120,3 +120,20 @@ func accumBlocks(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsaf
 
 //go:noescape
 func accumBlocks2(acc *[accNB]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit, soFar int, in2 unsafe.Pointer, nbStripes2 int)
+
+// hashLongStaged is hashLong for an input the Digest has just staged; on
+// arm64 it is hashLong itself.
+//
+//go:noescape
+func hashLongStaged(acc *[accNB]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
+
+// useSeedKernel reports whether a seeded input of n bytes should take
+// hashLongSeed. Here it never does: there is no seeded kernel, the seeded
+// long paths derive the secret into memory and take hashLong, and
+// hashLongSeed is the portable form of the kernel's contract, for the tests
+// that hold the amd64 kernels to it.
+func useSeedKernel(n uintptr) bool { return false }
+
+func hashLongSeed(keys *[2 * accNB]uint64, in unsafe.Pointer, n int, seed uint64) {
+	hashLongSeedGeneric(keys, in, n, seed)
+}

@@ -230,6 +230,61 @@ func TestSimulatedBackends(t *testing.T) {
 	}
 }
 
+// simHashLongSeed runs a backend's seeded one-shot kernel. The secret region
+// holds the default secret, whose address the prologue would put in the
+// kernel's SecretGPR; the seed is applied to it inside the kernel. The keyed
+// accumulators it writes are sixteen words, which the padding after the
+// accumulator slot has room for.
+func simHashLongSeed(t *testing.T, k asmgen.Arch, keys *[2 * accNB]uint64, in []byte, seed uint64) {
+	t.Helper()
+	var acc [accNB]uint64
+	r := newSimRegion(&acc, in, kSecret[:])
+	r.m.R[k.TableGPR()] = r.initAt
+	r.m.R[k.(asmgen.SeededArch).SecretGPR()] = r.secAt
+	r.m.R[k.ArgGPR(0)] = r.accAt
+	r.m.R[k.ArgGPR(1)] = r.inAt
+	r.m.R[k.ArgGPR(2)] = uint64(len(in))
+	r.m.R[k.ArgGPR(3)] = seed
+	if err := r.m.Run(k.Build().Insts()); err != nil {
+		t.Fatal(err)
+	}
+	for i := range keys {
+		keys[i] = binary.LittleEndian.Uint64(r.mem[r.accOff+8*i:])
+	}
+}
+
+// TestSimulatedSeededKernel holds the seeded kernel to the portable loop over
+// a derived secret, at every structural length and under seeds that set and
+// clear every bit the carries of the add and subtract can reach.
+func TestSimulatedSeededKernel(t *testing.T) {
+	buf := testBuffer(20000)
+	ran := 0
+	for _, b := range asmgen.Backends() {
+		k, ok := asmgen.EmitSeeded(b.New)
+		if !ok {
+			continue
+		}
+		ran++
+		t.Run(b.Name, func(t *testing.T) {
+			for _, seed := range []uint64{1, 42, 0x9E3779B185EBCA87, 1 << 63, ^uint64(0)} {
+				for _, n := range simLengths {
+					in := buf[:n]
+					var want [2 * accNB]uint64
+					hashLongSeedGeneric(&want, unsafe.Pointer(&in[0]), n, seed)
+					var got [2 * accNB]uint64
+					simHashLongSeed(t, k, &got, in, seed)
+					if got != want {
+						t.Fatalf("hashLongSeed len=%d seed=%#x:\n got %v\nwant %v", n, seed, got, want)
+					}
+				}
+			}
+		})
+	}
+	if ran == 0 {
+		t.Fatal("no backend has a seeded kernel")
+	}
+}
+
 // TestSimulatedCustomSecret covers the secret sizes that change the block
 // length, including one whose limit is not a multiple of the consume rate.
 func TestSimulatedCustomSecret(t *testing.T) {

@@ -41,7 +41,11 @@ func (b Backend) Defs() []FuncDef {
 		k := b.New64()
 		return XXH64FuncsFor(b.Suffix, k.Dual(), k.UnseededTwin(), k.VendorSplit())
 	}
-	return Funcs(b.Suffix)
+	defs := Funcs(b.Suffix)
+	if _, ok := b.New().(SeededArch); ok {
+		defs = append(defs, SeededFunc(b.Suffix))
+	}
+	return defs
 }
 
 // EmitAll emits every function of this backend.
@@ -54,6 +58,9 @@ func (b Backend) EmitAll() []Kernel {
 	}
 	var ks []Kernel
 	for _, a := range EmitAll(b.New) {
+		ks = append(ks, a)
+	}
+	if a, ok := EmitSeeded(b.New); ok {
 		ks = append(ks, a)
 	}
 	return ks

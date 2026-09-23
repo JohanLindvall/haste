@@ -14,12 +14,12 @@ under `internal/asmgen` or any `.s` file.
 | `xxh3/generic.go` | portable implementation: mid-size ladders, accumulator loop, convergence |
 | `xxh3/digest.go` | streaming `Digest`; same output as `XXH3_update`, different staging |
 | `xxh3/dispatch_{amd64,arm64}.go` | CPU detection and backend selection |
-| `xxh3/dispatch_amd64.s` | hand-written: the four entry points as tail jumps to the kernel `backend` names |
-| `xxh3/dispatch_arm64.s` | the same four for arm64 |
-| `xxh3/dispatch.go` | the same three entry points for purego / other architectures |
+| `xxh3/dispatch_amd64.s` | hand-written: the entry points as tail jumps to the kernel `backend` names |
+| `xxh3/dispatch_arm64.s` | the same for arm64 |
+| `xxh3/dispatch.go` | the same entry points for purego / other architectures |
 | `xxh3/stub_{amd64,arm64}.go` | **generated** Go declarations for the kernels |
 | `xxh3/xxh_*_{amd64,arm64}.s` | **generated** kernels |
-| `internal/asmgen` | the generator, for both hashes |
+| `internal/asmgen` | the generator, for all three hashes |
 | `internal/cpu` | shared amd64 CPUID/XGETBV probes and arm64 core identification |
 | `xxh3/cpu_linux_arm64.go` | SVE2 detection, and the MIDR list gating the hybrid |
 | `xxh64/` | XXH64: API and portable implementation (`xxh64.go`), `Digest`, per-arch dispatch, **generated** stubs and kernels, its own vectors and tests |
@@ -38,15 +38,22 @@ under `internal/asmgen` or any `.s` file.
 `bench/` is its own module on purpose: the library itself must keep importing
 nothing outside the standard library.
 
-## The four kernel entry points
+## The kernel entry points
 
-Everything architecture-specific is behind exactly these:
+Everything architecture-specific is behind these four:
 
 ```go
 hashLong(acc, in, n, sec, secretLimit)   // whole long input: blocks, scrambles, final stripe
 accumBlocks(acc, in, nbStripes, sec, secretLimit, soFar)  // streaming: walks block boundaries
 accumStripes(acc, in, nbStripes, sec)    // one run, one secret position, no scramble
 accumBlocks2(acc, in, nbStripes, sec, secretLimit, soFar, in2, nbStripes2)  // two runs, one walk
+```
+
+and, on amd64, two more, which every other build spells in Go over the four:
+
+```go
+hashLongStaged(acc, in, n, sec, secretLimit)  // hashLong over the Digest's staging area
+hashLongSeed(keys, in, n, seed)               // seeded long input, secret keyed in registers
 ```
 
 `accumBlocks2` is `accumBlocks` over two runs of stripes -- the ones staged
@@ -79,7 +86,7 @@ a Zen 4 within one binary, copy against no copy: -1.5% at 256 bytes, -1.8% at
 512, -1.9% at a kibibyte, -0.5% at 4 KiB; unmeasured on arm64, where it can
 only remove eight stores and eight loads from Go.
 
-On amd64 all four entry points are assembly, in `dispatch_amd64.s`: each
+On amd64 all the entry points are assembly, in `dispatch_amd64.s`: each
 reads `backend` and tail-jumps to the kernel it names, so a Go caller reaches
 a kernel in one direct call. They used to be a Go switch, which at three
 cases costs 199 nodes against the inliner's budget of 80 and so was a real
@@ -101,6 +108,53 @@ hybrid the Neoverse cores take is tested first and falls through to its
 jump, so it pays a byte load, a compare, a not-taken branch and the jump;
 plain NEON is next. The Go switch remains only for purego and the
 architectures without kernels.
+
+`hashLongSeed` is the seeded one-shot past 240 bytes. XXH3 defines that hash
+as the unseeded one under a secret derived from the seed -- each of the 24
+words the default secret's plus or minus the seed -- and the Go path derives
+it into a 192-byte stack buffer before calling `hashLong`. The kernel never
+writes it: every backend holds the pattern [seed, -seed, ...] in a vector
+register and adds it to the default secret's words as it loads them (a
+`vpaddq` from memory where the unseeded kernel has a load), and it hands
+back the eight accumulators twice, each copy already xored with one merge's
+key, so all Go has left is the folds. `keys` is `*[16]uint64` and output
+only. It is emitted beside the other kernels for any backend that implements
+`SeededArch` (`internal/asmgen/x86_seed.go`), references `·kSecret` from its
+prologue (`FuncDef.Secret`), and is held to `hashLongSeedGeneric` by
+`TestSimulatedSeededKernel` and, natively and at every length whatever the
+cap below, by `TestKernelsMatchPortable`, under seeds chosen to reach every
+carry of the add and the subtract. Deriving and re-reading the secret was
+most of a short seeded long hash. Measured on a Zen 4, AVX-512 in one
+binary over four layouts: `Sum64Seed` -53% at 241..256 bytes, -48% at 512,
+-40% at a kibibyte, -22% at 2 KiB, -15% at 4 KiB, -5% at 16 KiB and -1.6% at
+64 KiB; `Sum128Seed` -48%, -45%, -40%, -24%, -15%, -7% and -0.9%.
+
+The kernel's price is an add at every secret load, a cost per stripe where
+the derived secret's is a cost per call, so `useSeedKernel` caps the length
+it is given per backend and longer inputs derive the secret as before. The
+AVX-512 kernel keeps a block's keyed secret in registers from two blocks up
+(`minFastBlocksSeeded`, which the unseeded kernel's four is not: its
+registers save an add a stripe rather than a folded load) and has no cap.
+AVX2 is capped at 4 KiB, where it is still 1-4% ahead and at 8 KiB 5-7%
+behind; SSE2 at a kibibyte, 5-6% ahead there and level at 1.5 KiB. Below the
+caps, against the tree before: AVX2 -43..-45% at 241 bytes, -37% at 512,
+-22..-24% at a kibibyte, -20..-28% at 2 KiB; SSE2 -19%, -16..-17% and
+-5..-6%. arm64 has no seeded kernel yet; `useSeedKernel` is false there and
+the derive path runs.
+
+`hashLongStaged` is `hashLong` for a Digest summed before its first drain,
+whose message is still whole in the staging area. It differs from
+`hashLong` only on a machine with AVX-512, where it takes the AVX2 kernel,
+and `accumBlocks` and `accumStripes` do the same: all three read a staging
+area that the writes before them have just filled with 16-byte moves, and a
+64-byte load spanning four stores that have not yet reached the cache waits
+for them, where a 32-byte one spans two. Measured on a Zen 4 with each
+kernel otherwise equal: 21.5 store-to-load-interlock failures a call at 256
+bytes on AVX-512 against 14.8 on AVX2, and 8-21% of the time of a message
+written whole and summed over 241..1024 bytes; 2-8% of a mebibyte streamed
+in 64..960-byte writes, whose drains run `accumBlocks`. `accumBlocks2` keeps
+the AVX-512 kernel: its second run comes from the caller's slice, which
+nothing has just written, and a large write is 5-13% faster there for it.
 
 `secretLimit` is `len(secret) - 64`, **not** `nbStripesPerBlock * 8`. They
 differ when the secret length is not a multiple of 8, and the reference uses
@@ -217,6 +271,13 @@ enters through `hashLong` and the streaming walk is never keyed by it — which
 is exactly where the `secretLimit` trap above would hide. The fuzz targets in
 `fuzz_test.go` cover the same ground with the lengths and split points chosen
 adversarially rather than by hand.
+
+The seeded kernel has the same three checks under other names:
+`TestBackendsNative` reaches it through `Sum64Seed` below each backend's
+`useSeedKernel` cap, `TestKernelsMatchPortable` calls `hashLongSeed` directly
+at every length whatever the cap, and `TestSimulatedSeededKernel` runs its
+instruction stream. The last two matter because the first never reaches
+SSE2's block loop: the loop wants more than a kibibyte, which is the cap.
 
 ### The simulator
 
@@ -439,7 +500,11 @@ simply disappear.
   five events so nothing is multiplexed. Anchor every element of the name:
   `go test` matches them separately, and `8` matches `128`. It carries
   three event tables, Zen 4's, the Golden Cove line's and the Neoverse N2's;
-  the vendor in `/proc/cpuinfo` picks one and arm64 the third. The Intel
+  the vendor in `/proc/cpuinfo` picks one and arm64 the third. The Zen 4
+  groups are `core`, `front`, `mem`, `tokens` (dispatch stalls for the
+  register files, the load and store queues and the retire queue), `sched`
+  (the same for each of the four integer scheduler queues; see the
+  2026-09-23 pass for why they are worth reading) and `fp`. The Intel
   groups are `core`, `topdown` (printed as a share of slots), `front`,
   `mem`, `ports` and `exec`; the arm ones `core` (instructions, ops and
   branches retired, mispredicts, and the front-end and back-end stall
@@ -595,8 +660,11 @@ simply disappear.
   scramble constant, which now goes through R10. `noOverlap` in
   `internal/asmgen/kernel.go` holds every emitter to the argument and
   temporary registers it declares, since the two pools overlap at the far
-  end on purpose. Nothing yet uses X15, which would give the vector pools a
-  sixteenth register.
+  end on purpose. X15 is outside the vector pools, and the seeded kernels
+  keep their seed pattern in it: xmm15 on SSE2; ymm15 on AVX2, with ymm13,
+  which AVX2's smaller scratch pool leaves free; zmm15 on AVX-512, with
+  zmm31, rebuilt after the fast block loop has used it for the secret
+  schedule. See `x86_seed.go`.
 - **Go ABI, arm64**: R18 is platform-reserved, R27 is the assembler's
   temporary, R28 holds g, R29/R30 are frame and link. R12–R17 and R19–R25 are
   free. All V registers are scratch. The split kernels spend every one of
@@ -626,7 +694,9 @@ simply disappear.
   start from `initAcc` and ignore what the array holds; `TestKernelsMatchPortable`
   and the simulator hand them garbage to prove it. The kernels reach the table
   through `TableGPR` -- r9 on amd64, x26 on arm64 -- and the prologue refuses a
-  kernel whose table register also carries an argument.
+  kernel whose table register also carries an argument. `hashLongSeed`'s
+  `keys` is output only in the same way, and its second Go symbol,
+  `·kSecret`, arrives in `SecretGPR` (r8) under the same check.
 - **AVX-512 requires DQ, not just F**: the scramble multiplies whole 64-bit
   lanes with `VPMULLQ`, which is AVX512DQ. `pickBackend` checks for both. A
   machine with F but not DQ (Knights Landing) must land on AVX2.
@@ -1499,10 +1569,10 @@ worth nothing.
   wrapper around `write` rather than handling the common case itself.
 - Go's inliner budget (80) drives several structural choices: the public
   entry points are thin so they inline; the 0..16-byte cases live inside
-  the seeded and unseeded cores rather than in their own functions; `mixHalf`
-  takes its crossover term as a parameter purely to stay under the budget. Check with
+  the seeded and unseeded cores rather than in their own functions. Check with
   `go build -gcflags='-m=2'` before restructuring these — an accidental
-  non-inlined call in the short path costs 5-15%.
+  non-inlined call in the short path costs 5-15%. An inlined call is not
+  free either: see the inline-mark NOPs under the 2026-09-23 Zen 4 pass.
 
 #### The 2026-09 counter pass, on an Azure Cobalt 100 VM
 
@@ -2170,9 +2240,10 @@ confirmed by deleting it:
   re-tested the length tree and the boundary blocked load hoisting -- and
   removing it measured 64-bit 3.35 -> 3.04 ns at 64 bytes and 5.27 -> 5.03 at
   128; 128-bit 5.13 -> 4.53 and 8.50 -> 6.66, from -7% and -17% behind zeebo
-  to +5% ahead. The 129..240 rungs keep the call on purpose: they were
-  already ahead, and their bodies would bloat a nosplit function. The ladder
-  functions were removed once the seeded digest path reused the seeded cores.
+  to +5% ahead. The 129..240 rungs kept the call then, being already
+  ahead; the 64-bit ones have since been inlined as well and the 128-bit
+  ones still have not, both for measured reasons given under the 2026-09-23
+  pass below.
 - **The 128-bit rounds run hi-half first, j-side loads first** (zeebo's
   statement order), worth 3-4% on its own before the inlining: the function
   is dense in multiplies contending for the one integer-multiply port, and
@@ -2181,15 +2252,141 @@ confirmed by deleting it:
   carry the short cases and the 17..128 rungs inline, so Sum64Seed reaches
   the arithmetic in one call instead of two-plus-re-dispatch. Seeded 8 B went
   3.29 -> 2.33 ns (level with zeebo, was -36%), 64 B 4.88 -> 3.50 (+7%
-  ahead). The >240 derive branch lives in sum64SeededLong because the
-  192-byte secret frame does not fit the nosplit budget once the race
-  detector inflates it. The digest now reuses these seeded cores below 241
-  bytes too; the older secret-parameterized seeded cores have been removed.
+  ahead). The >240 branch lives in sum64SeededLong because the 192-byte
+  derived secret's frame does not fit the nosplit budget once the race
+  detector inflates it; on amd64 that function now calls `hashLongSeed` and
+  derives nothing (see the entry points). The digest reuses these seeded
+  cores below 241 bytes too; the older secret-parameterized seeded cores
+  have been removed.
 
 After those, a fresh per-length sweep on this core has both widths level or
 ahead of zeebo at every class: 0..3 bytes included (the old 3-8% deficit
 there is gone under go1.26.5), and the 128-bit 33..128 zone that briefly
 measured -5..-9% behind is +5..+6% ahead direct-call.
+
+#### The 2026-09-23 counter pass
+
+Every path the three packages reach natively on this core, under in-process
+counters: the one-shot, seeded and custom-secret hashes through all three
+x86 backends and the portable one, streaming at write sizes from a byte to
+64 KiB, whole-message digests, and the fixed-size entry points. The
+counters were cycles, instructions, taken and mispredicted branches,
+dispatch slots starved by the front end and stalled by the back end,
+store-to-load-interlock failures, and the dispatch-token stalls that
+`bench/pstat`'s `tokens` and `sched` groups now print. What it found, most
+valuable first:
+
+- **A seeded long hash was mostly its secret.** Past 240 bytes the seeded
+  hash is the unseeded one under a 192-byte secret derived from the seed,
+  which the Go path wrote to the stack and the kernel then read straight
+  back with vector loads that could not be forwarded from the narrower
+  stores: 45-60 cycles of a 241..2048-byte hash. `hashLongSeed` keys the
+  default secret in registers instead, -40% to -53% from 241 bytes to a
+  kibibyte; see the entry points for how, the numbers, and the per-backend
+  cap past which deriving the secret is still cheaper.
+- **Staged data wants the narrower kernel on an AVX-512 machine.** A
+  Digest's staging area has just been written with 16-byte moves, and a
+  64-byte load spanning four of them waits for all four; see
+  `hashLongStaged` under the entry points.
+- **An inlined call can execute a NOP.** The compiler keeps an inline mark
+  where each inlined call was, and when no instruction of the caller's own
+  lands on that line it emits a one-byte NOP to carry the mark. A helper
+  calling a helper (`avalanche` calling `xorshift64` for each shift), a call
+  split over several lines, a line that does nothing but load through
+  `rd64`, and a pointer advanced with `add` in a loop all did: two NOPs per
+  `avalanche`, one per `mix16B`, up to ten in a short 128-bit hash, eight
+  per stripe in the portable accumulate loop, eight per block in XXH64's
+  portable loop and fourteen per iteration in rapidhash's. The helpers are
+  flat now, under the note on spelling at the top of `xxh3/generic.go`;
+  count the `90` bytes in `go tool objdump` to check. What removing them is
+  worth is tangled with the next item, which is why some were put back.
+- **On this core the order of a short path's instructions can cost more
+  than their number.** Zen 4 hands each integer op to one of four scheduler
+  queues, and a sequence that sends too much to one of them stalls dispatch
+  on that queue's tokens while the others idle -- pstat's `sched` group.
+  Four cases from this pass, each reproduced across four relinked layouts,
+  so sequence and not placement: seeded `Sum64` at 97..128 bytes, whose
+  machine code differed from the tree before only by fourteen missing NOPs,
+  went 6-9% slower with 1.4 and 1.1 cycles a hash stalled on queues 0 and 2
+  against 0.05 and 0.03, and 30 back-end-stalled dispatch slots against 9;
+  `sum128Seeded`'s rungs spelled as `sum128NS`'s are, nine instructions
+  fewer at 86 bytes, 10-15% slower over 33..128 with 3.9 and 2.5 cycles on
+  queues 0 and 1; `len129to240_128NS` spelled without its NOPs, 23
+  instructions fewer, 5% slower over 160..191; and summing a rung's two
+  mixes before they join the chain, which changes no instruction count,
+  moved length classes 5-10% in opposite directions in the seeded and
+  unseeded 64-bit cores. So a short-path change here is judged by a geomean
+  over a dense sweep of lengths and several layouts, never at one length,
+  and removing instructions is a new draw rather than a sure win. The
+  shipped spellings are the draws that won, and the comments in `xxh3.go`
+  and `generic.go` mark the ones this holds in place.
+- **The cores, reorganised under that rule.** The 64-bit cores test the
+  short cases first; `sum128NS` keeps the long cases first, because the
+  same code short-first measured 11% slower at 33..64 bytes and 26% at
+  65..128. The 64-bit cores inline their 129..240 ladder, worth 6% there
+  unseeded and 4% seeded against calling it, with its prologue summed in
+  pairs (three NOPs fewer, 0.7% and 2.1%). The seeded 128-bit ladder stays a
+  call: inlined it was 1% faster at 129..240 and 1-3% slower at 17..64, and
+  it put `sum128Seeded`'s frame over the nosplit limit on 386 and mips64,
+  which the cross-compile loop caught. Against the tree before this pass,
+  in one binary, geomean over each class of the median of four relinked
+  layouts (every length to 32 bytes, every other one to 240; the `Sum128`
+  129..240 cell every third, after the ladder above was put back):
+
+  | bytes | `Sum64` | `Sum64Seed` | `Sum128` | `Sum128Seed` |
+  |---|---|---|---|---|
+  | 0..16 | -0.4% | -1.1% | -3.1% | -1.1% |
+  | 17..32 | -8.1% | -4.3% | -4.1% | -2.7% |
+  | 33..64 | -4.0% | -7.3% | -4.5% | -3.2% |
+  | 65..128 | -0.2% | +1.7% | -4.4% | -0.7% |
+  | 129..240 | -8.5% | -5.0% | -0.4% | -6.1% |
+  | 241..1024 | level | -40..-53% | -1% | -40..-48% |
+
+  The seeded 65..128 cell is the queue-0 stall above, at 97..128 bytes; of
+  five other spellings tried, none was better over 17..128 by more than
+  0.2%.
+- **The Digest.** `write` tests the shortest sizes first, each case
+  returning where it ends. As a switch from the longest down, a one-byte
+  write took nine taken branches and starved the front end -- 716,000 empty
+  dispatch slots per 64 KiB streamed a byte at a time, 5,000 now. `Sum64`
+  and `Sum128` test the short case first, which keeps the accumulator array
+  the compiler zeroes off that path, and a message still whole in the
+  staging area goes through `hashLongStaged`. Per mebibyte streamed, against
+  the tree before, eight Digests at different heap offsets: 1..16-byte
+  writes 12-17% faster on every backend, 31..32-byte writes 6-10%, and
+  63-byte writes and up within 3% but for 65-byte writes on AVX2, +3.9%.
+  Written whole and then summed: 0..16 bytes 5-12% faster; 241..1024 bytes
+  7-11% on AVX-512 and 5-10% on SSE2, and on AVX2 2-3% for the 64-bit hash
+  and between -5.5% and +2.6% for the 128-bit one; and `Sum128` of 64 and
+  128 bytes 1-4% slower on every backend, which the core alone is not
+  (-4.5% there) -- the steering again, in the Digest's calling sequence.
+- **XXH64 and rapidhash** got only the NOPs. XXH64's `mergeLanes` lost four,
+  which on this core is a wash: `Digest.Sum64` alone up to 1.2% faster
+  from 32 bytes and 3-16% at 33, whole digests 2-7% faster at 32..33 bytes
+  and 1-4% slower at 64..1024, in both of two relinked layouts; the cells
+  below 32 bytes, whose path the change does not touch, swung by up to 19%
+  in both directions between the two. Their portable loops, and xxh3's,
+  lost 2-21% of their instructions under `-tags purego` with cycles moving
+  both ways here (xxh3's accumulate loop 4% faster over 256..1024 bytes and
+  1-2% slower from 4 KiB); the RISC targets that run those loops are where
+  it is meant to pay, and have not been measured.
+- **Measured and left alone.**
+  - The AVX2 kernel steps up ten cycles between 832 and 833 bytes -- twelve
+    and thirteen stripes in the loop that follows the whole blocks -- and the
+    floating-point register file's dispatch stalls go from 0.75 to 10.4
+    cycles a hash with it. It is the core and not the loop's shape: the half
+    group and plain single stripes show the same step, and AVX-512, with
+    half the registers per stripe, shows none.
+  - For a one-shot hash on an AVX-512 machine AVX2 is 3% faster only over
+    241..320 bytes; AVX-512 wins from 352 and by 16% from 896, so `hashLong`
+    keeps it. It is staged data that wants AVX2.
+  - Single-Digest streaming cells are hostage to 4K aliasing between the
+    caller's buffer and the staging area. At 960-byte writes one placement,
+    the Digest 3208 bytes past the source modulo 4096, cost 10,750 cycles
+    per 64 KiB against about 9,000 at every other, which is a 10-20% swing
+    between two builds that happen to allocate differently; an AVX-512
+    "anomaly" of 27 interlock failures a call at exactly 2048 bytes was the
+    same thing. Measure streaming over several Digests at different offsets.
 
 ### amd64, measured on Redwood Cove (Core Ultra 9 185H, Meteor Lake)
 

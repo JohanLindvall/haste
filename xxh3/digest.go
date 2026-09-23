@@ -180,20 +180,23 @@ func (d *Digest) write(p []byte) {
 	// whether the period is learned turned out to depend on the number of
 	// taken branches per write, the caller's included, so no shape here can
 	// settle it. Recorded so the next reader does not chase it.
-	if d.bufUsed+n > internalBufferSize && d.absorb(p) {
-		return
+	//
+	// bufUsed is read once, into a local that only a drain refreshes: read
+	// through d again after the test, it was a second load on every write.
+	used := d.bufUsed
+	if used+n > internalBufferSize {
+		if d.absorb(p) {
+			return
+		}
+		used = d.bufUsed
 	}
+	d.bufUsed = used + n
 	// The slot is formed by arithmetic rather than by indexing, which
-	// would test the index against the array on every write: bufUsed+n has
-	// just been held to the staging area and bufUsed is never negative, so
+	// would test the index against the array on every write: used+n has
+	// just been held to the staging area and used is never negative, so
 	// the n bytes land inside it.
-	dst := add(unsafe.Pointer(&d.buf), uintptr(stripeLen+d.bufUsed))
+	dst := add(unsafe.Pointer(&d.buf), uintptr(stripeLen+used))
 	src := unsafe.Pointer(unsafe.SliceData(p))
-	d.bufUsed += n
-	if n > 64 {
-		copy(unsafe.Slice((*byte)(dst), n), p)
-		return
-	}
 
 	// Up to 64 bytes the copy is made here with overlapping fixed-size
 	// moves, not with copy: copy is a call into memmove, and for a write of
@@ -211,32 +214,51 @@ func (d *Digest) write(p []byte) {
 	// move absorbs. On a Redwood Cove a 64-byte write spent 39% of its
 	// cycles in this function, retiring at the core's width, so its
 	// instructions are its cost.
+	//
+	// The sizes are tested shortest first, each case returning where it
+	// ends. As a switch from the longest down they were a chain in which
+	// every test a short write failed was a taken branch, and on a Zen 4 a
+	// one-byte write took nine of them and a starved front end: 716,000
+	// empty dispatch slots per 64 KiB streamed a byte at a time, against
+	// 5,000 now, and 12-18% of the time of every write of 1..16 bytes and
+	// 7% of 24..32.
 	dstEnd := add(dst, uintptr(n))
 	srcEnd := add(src, uintptr(n))
-	switch {
-	case n > 32:
+	if n <= 16 {
+		if n > 8 {
+			*(*[8]byte)(dst) = *(*[8]byte)(src)
+			*(*[8]byte)(unsafe.Add(dstEnd, -8)) = *(*[8]byte)(unsafe.Add(srcEnd, -8))
+			return
+		}
+		if n > 4 {
+			*(*[4]byte)(dst) = *(*[4]byte)(src)
+			*(*[4]byte)(unsafe.Add(dstEnd, -4)) = *(*[4]byte)(unsafe.Add(srcEnd, -4))
+			return
+		}
+		if n > 0 {
+			// 1..4 bytes: the first and the last, then the two in
+			// between, which at three bytes are both the middle one. An
+			// empty write falls out here.
+			*(*byte)(dst) = *(*byte)(src)
+			*(*byte)(unsafe.Add(dstEnd, -1)) = *(*byte)(unsafe.Add(srcEnd, -1))
+			*(*byte)(add(dst, uintptr(n)>>1)) = *(*byte)(add(src, uintptr(n)>>1))
+			*(*byte)(add(dst, uintptr(n)-1-uintptr(n)>>1)) = *(*byte)(add(src, uintptr(n)-1-uintptr(n)>>1))
+		}
+		return
+	}
+	if n <= 32 {
+		*(*[16]byte)(dst) = *(*[16]byte)(src)
+		*(*[16]byte)(unsafe.Add(dstEnd, -16)) = *(*[16]byte)(unsafe.Add(srcEnd, -16))
+		return
+	}
+	if n <= 64 {
 		*(*[16]byte)(dst) = *(*[16]byte)(src)
 		*(*[16]byte)(add(dst, 16)) = *(*[16]byte)(add(src, 16))
 		*(*[16]byte)(unsafe.Add(dstEnd, -32)) = *(*[16]byte)(unsafe.Add(srcEnd, -32))
 		*(*[16]byte)(unsafe.Add(dstEnd, -16)) = *(*[16]byte)(unsafe.Add(srcEnd, -16))
-	case n > 16:
-		*(*[16]byte)(dst) = *(*[16]byte)(src)
-		*(*[16]byte)(unsafe.Add(dstEnd, -16)) = *(*[16]byte)(unsafe.Add(srcEnd, -16))
-	case n > 8:
-		*(*[8]byte)(dst) = *(*[8]byte)(src)
-		*(*[8]byte)(unsafe.Add(dstEnd, -8)) = *(*[8]byte)(unsafe.Add(srcEnd, -8))
-	case n > 4:
-		*(*[4]byte)(dst) = *(*[4]byte)(src)
-		*(*[4]byte)(unsafe.Add(dstEnd, -4)) = *(*[4]byte)(unsafe.Add(srcEnd, -4))
-	case n > 0:
-		// 1..4 bytes: the first and the last, then the two in between,
-		// which at three bytes are both the middle one. An empty write
-		// falls out here, having cost the lengths above nothing.
-		*(*byte)(dst) = *(*byte)(src)
-		*(*byte)(unsafe.Add(dstEnd, -1)) = *(*byte)(unsafe.Add(srcEnd, -1))
-		*(*byte)(add(dst, uintptr(n)>>1)) = *(*byte)(add(src, uintptr(n)>>1))
-		*(*byte)(add(dst, uintptr(n)-1-uintptr(n)>>1)) = *(*byte)(add(src, uintptr(n)-1-uintptr(n)>>1))
+		return
 	}
+	copy(unsafe.Slice((*byte)(dst), n), p)
 }
 
 // absorb handles a write that does not fit the staging area, and reports
@@ -370,40 +392,56 @@ func (d *Digest) digestLong(acc *[accNB]uint64) {
 
 // Sum64 returns the 64-bit hash of everything written so far.
 func (d *Digest) Sum64() uint64 {
-	// Until the first drain, the entire message is contiguous in buf. Reuse
-	// the one-shot path, including its single kernel call for long messages.
+	// Up to 240 bytes the message is short and whole in the staging area,
+	// and takes the one-shot core; a seeded Digest uses its seed there, as
+	// Sum64Seed does. Testing that first keeps the short hashes' path to one
+	// compare, and the accumulator array -- which the compiler zeroes where
+	// it is declared -- off it.
+	if d.totalLen <= midsizeMax {
+		if d.useSeed {
+			return sum64Seeded(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen), d.seed)
+		}
+		return sum64NS(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
+			d.secretPtr(), d.secretLimit+stripeLen)
+	}
+	// Until the first drain the whole message is still contiguous in the
+	// staging area, and one kernel call takes it, as the one-shot path
+	// would -- through hashLongStaged, because the writes that staged it
+	// have only just stored it; see there. A seeded Digest's secret was
+	// derived at construction. After a drain, digestLong absorbs what is
+	// staged and the final stripe, on a copy of the accumulators so that the
+	// Digest stays usable.
+	var acc [accNB]uint64
 	if d.totalLen > internalBufferSize {
-		var acc [accNB]uint64
 		d.digestLong(&acc)
-		return mergeAccs(&acc, add(d.secretPtr(), secretMergeAccsStart), d.totalLen*prime64_1)
+	} else {
+		hashLongStaged(&acc, unsafe.Pointer(&d.buf[stripeLen]), int(d.totalLen), d.secretPtr(), d.secretLimit)
 	}
-	// Short seeded inputs use the seed directly; longer ones use the secret
-	// derived at construction, which sum64NS consumes without deriving again.
-	if d.useSeed && d.totalLen <= midsizeMax {
-		return sum64Seeded(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen), d.seed)
-	}
-	return sum64NS(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
-		d.secretPtr(), d.secretLimit+stripeLen)
+	return mergeAccs(&acc, add(d.secretPtr(), secretMergeAccsStart), d.totalLen*prime64_1)
 }
 
 // Sum128 returns the 128-bit hash of everything written so far.
 func (d *Digest) Sum128() Uint128 {
-	// Use the same buffered/absorbed split and seed handling as Sum64.
-	if d.totalLen > internalBufferSize {
-		var acc [accNB]uint64
-		d.digestLong(&acc)
-		sec := d.secretPtr()
-		return Uint128{
-			Lo: mergeAccs(&acc, add(sec, secretMergeAccsStart), d.totalLen*prime64_1),
-			Hi: mergeAccs(&acc, add(sec, uintptr(d.secretLimit+stripeLen-8*accNB-secretMergeAccsStart)),
-				^(d.totalLen * prime64_2)),
+	// The same split as Sum64.
+	if d.totalLen <= midsizeMax {
+		if d.useSeed {
+			return sum128Seeded(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen), d.seed)
 		}
+		return sum128NS(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
+			d.secretPtr(), d.secretLimit+stripeLen)
 	}
-	if d.useSeed && d.totalLen <= midsizeMax {
-		return sum128Seeded(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen), d.seed)
+	var acc [accNB]uint64
+	if d.totalLen > internalBufferSize {
+		d.digestLong(&acc)
+	} else {
+		hashLongStaged(&acc, unsafe.Pointer(&d.buf[stripeLen]), int(d.totalLen), d.secretPtr(), d.secretLimit)
 	}
-	return sum128NS(unsafe.Pointer(&d.buf[stripeLen]), uintptr(d.totalLen),
-		d.secretPtr(), d.secretLimit+stripeLen)
+	sec := d.secretPtr()
+	return Uint128{
+		Lo: mergeAccs(&acc, add(sec, secretMergeAccsStart), d.totalLen*prime64_1),
+		Hi: mergeAccs(&acc, add(sec, uintptr(d.secretLimit+stripeLen-8*accNB-secretMergeAccsStart)),
+			^(d.totalLen * prime64_2)),
+	}
 }
 
 // Sum appends the 64-bit hash to b in big-endian order, as hash.Hash requires.

@@ -29,6 +29,11 @@ func accumSSE2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Poin
 //go:noescape
 func accumBlocks2SSE2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int, in2 unsafe.Pointer, nbStripes2 int)
 
+// hashLongSeedSSE2 is hashLong under the secret a seed derives from the default one, applying the seed in registers rather than reading a derived copy; it writes the accumulators already keyed for the two merges, by the derived secret at secretMergeAccsStart into keys[0:8] and at secretDefaultSize-64-secretMergeAccsStart into keys[8:16].
+//
+//go:noescape
+func hashLongSeedSSE2(keys *[16]uint64, in unsafe.Pointer, n int, seed uint64)
+
 // hashLongAVX2 consumes a whole long input -- blocks, scrambles, trailing stripes and the overlapping final stripe -- into acc, starting from initAcc.
 //
 //go:noescape
@@ -49,6 +54,11 @@ func accumAVX2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Poin
 //go:noescape
 func accumBlocks2AVX2(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int, in2 unsafe.Pointer, nbStripes2 int)
 
+// hashLongSeedAVX2 is hashLong under the secret a seed derives from the default one, applying the seed in registers rather than reading a derived copy; it writes the accumulators already keyed for the two merges, by the derived secret at secretMergeAccsStart into keys[0:8] and at secretDefaultSize-64-secretMergeAccsStart into keys[8:16].
+//
+//go:noescape
+func hashLongSeedAVX2(keys *[16]uint64, in unsafe.Pointer, n int, seed uint64)
+
 // hashLongAVX512 consumes a whole long input -- blocks, scrambles, trailing stripes and the overlapping final stripe -- into acc, starting from initAcc.
 //
 //go:noescape
@@ -68,3 +78,8 @@ func accumAVX512(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Po
 //
 //go:noescape
 func accumBlocks2AVX512(acc *[8]uint64, in unsafe.Pointer, nbStripes int, sec unsafe.Pointer, secretLimit int, soFar int, in2 unsafe.Pointer, nbStripes2 int)
+
+// hashLongSeedAVX512 is hashLong under the secret a seed derives from the default one, applying the seed in registers rather than reading a derived copy; it writes the accumulators already keyed for the two merges, by the derived secret at secretMergeAccsStart into keys[0:8] and at secretDefaultSize-64-secretMergeAccsStart into keys[8:16].
+//
+//go:noescape
+func hashLongSeedAVX512(keys *[16]uint64, in unsafe.Pointer, n int, seed uint64)

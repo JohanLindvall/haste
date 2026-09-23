@@ -113,3 +113,10 @@ vl512:
 	JMP	·accumBlocks2SVE2VL512(SB)
 vl128:
 	JMP	·accumBlocks2SVE2VL128(SB)
+
+// func hashLongStaged(acc *[8]uint64, in unsafe.Pointer, n int, sec unsafe.Pointer, secretLimit int)
+//
+// On arm64 the Digest's staged input takes the same kernels as any other;
+// the width question dispatch_amd64.s answers for AVX-512 does not arise.
+TEXT ·hashLongStaged(SB), NOSPLIT, $0-40
+	JMP	·hashLong(SB)
